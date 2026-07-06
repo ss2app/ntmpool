@@ -82,6 +82,22 @@ type Notifier interface {
 	Run(ctx context.Context, ch chan<- core.TipEvent) error
 }
 
+// WalletMaintainer 可选扩展：钱包整备（note/UTXO 定时合并）。
+// 隐私链（DragonX/Zcash 系）coinbase 必须先 shield，池 z 地址积累大量小 note；
+// 打款要花掉几百个 note → 交易体积超限/构造超时/被网络拒收（dragonx 实战：
+// z_shieldcoinbase/z_mergetoaddress 单笔惯例上限 ~45-50 个、shield 10min 超时、分页处理）。
+// bitcoin 系的小额 coinbase UTXO、门罗系的碎 output 同理。
+// 引擎按配置定时调用；调用方持有该币打款锁（与正常打款/fee sweep 串行互斥），
+// 整备 tx 同样走意图落库（payment_batches kind='consolidate'）。
+type WalletMaintainer interface {
+	// NeedsMaintenance 报告当前碎片程度（note/UTXO 数）是否达到触发阈值，desc 供日志。
+	NeedsMaintenance(ctx context.Context) (need bool, desc string, err error)
+
+	// Maintain 执行一轮整备（一批 shield / merge / consolidate），返回产生的 txid。
+	// 一轮只做一批（尊重单笔输入上限），碎片多时由引擎多轮推进，不长时间独占打款锁。
+	Maintain(ctx context.Context) (txids []string, err error)
+}
+
 // RawTxWallet 可选扩展（bitcoin 系支持）：拆步打款，txid 在广播前就确定，
 // 崩溃恢复零歧义（docs/05 场景 A）。打款引擎优先走此接口；
 // 不支持的链退回 SendMany + unknown 状态人工恢复。

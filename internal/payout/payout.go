@@ -7,8 +7,13 @@
 //	→ 回填 txid(sent) → 周期追踪 TxConfirmations(confirming)
 //	→ ≥N 确认且仍在主链 = confirmed ／ 掉链 = failed（人工介入，绝不自动重发,C4）
 //
-// 每币一把打款锁：正常打款、手续费归集、手续费一键转移（fee sweep）串行互斥，
+// 每币一把打款锁：正常打款、手续费归集、手续费一键转移（fee sweep）、
+// 钱包整备（note/UTXO 合并，adapter.WalletMaintainer）四者串行互斥，
 // 与其他币互不影响（R9）。payouts 总开关第一天就有（铁律）。
+//
+// 钱包整备（隐私链必开，dragonx 实战）：打款周期开始时若碎片数超阈值，
+// 先做一批合并（每批尊重单笔输入上限 ~45，多轮推进不长占锁）再打款；
+// 整备 tx 同样意图落库（payment_batches kind='consolidate'）并追踪确认。
 package payout
 
 import (

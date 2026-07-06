@@ -33,6 +33,16 @@ type PortConfig struct {
 	MaxConns int           `json:"maxConns"`
 }
 
+// ConsolidationConfig 钱包整备（note/UTXO 定时合并，docs/02 §6）。
+// 隐私链（dragonx 类）必开：不合并则打款 tx 要打包大量 note，体积超限/超时/被拒。
+type ConsolidationConfig struct {
+	Enabled      bool `json:"enabled"`
+	IntervalSec  int  `json:"intervalSeconds"`  // 定时检查间隔（如 3600）
+	TriggerCount int  `json:"triggerCount"`     // 碎片（note/UTXO）数超过多少触发
+	MaxInputs    int  `json:"maxInputsPerTx"`   // 每笔整备 tx 最多合并数（zcash 系惯例 ~45）
+	MinConf      int  `json:"minConfirmations"` // 只合并已成熟碎片
+}
+
 type PayoutConfig struct {
 	Enabled       bool    `json:"enabled"`       // 铁律：第一天就有的总开关
 	Scheme        string  `json:"scheme"`        // "pplns"（solo 由端口 mode 决定）
@@ -42,6 +52,8 @@ type PayoutConfig struct {
 	Confirmations int64   `json:"confirmations"` // 打款所需确认数（热参数；低于链成熟期=预打款）
 	IntervalSec   int     `json:"intervalSeconds"`
 	OrphanDebts   bool    `json:"orphanDebts"` // 预打款垫付孤块后是否追缴（R4）
+
+	Consolidation ConsolidationConfig `json:"consolidation"`
 }
 
 type NodeEndpoint struct {

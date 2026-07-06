@@ -93,7 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_payments_pool_status ON payments(poolid, status) 
 CREATE TABLE IF NOT EXISTS payment_batches (
     id           BIGSERIAL PRIMARY KEY,
     poolid       TEXT        NOT NULL,
-    kind         TEXT        NOT NULL DEFAULT 'payout', -- payout | fee_collect | fee_sweep
+    kind         TEXT        NOT NULL DEFAULT 'payout', -- payout | fee_collect | fee_sweep | consolidate(钱包整备:note/UTXO合并)
     -- 状态机：created(已扣余额) → prepared(已签名未广播,txid已确定) → sent → confirming → confirmed
     --         / failed(人工介入) / unknown(不支持rawtx的链崩溃窗口,冻结打款+人工比对, docs/05 场景A)
     status       TEXT        NOT NULL DEFAULT 'created',
