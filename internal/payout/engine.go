@@ -47,7 +47,16 @@ type Config struct {
 	FeePercent    float64
 	MinPayout     float64
 	Maturity      int64 // 打款所需确认数（低于链成熟期 = 预打款）
+
+	// 手续费自动归集（R9）：未归集费 ≥ FeeCollectMin 时在打款周期尾部自动
+	// 池钱包→FeeAddress（与打款共用每币锁，天然串行）。
+	FeeAddress        string
+	FeeCollectEnabled bool
+	FeeCollectMin     string // 十进制字符串（金额铁律）；空/0 = 有多少归多少
 }
+
+// EventFunc 运营事件上报（notify.Hub 适配；nil = 不上报）。绝不阻塞调用方。
+type EventFunc func(kind, title string, fields map[string]string)
 
 // Engine 打款引擎（每币一个）。持有该币打款锁：正常打款/手续费/整备互斥。
 type Engine struct {
@@ -64,6 +73,8 @@ type Engine struct {
 
 	// minOverrides 地址级起付额覆盖（矿工 mp= 设置，minersettings 注入；可为 nil）
 	minOverrides func() map[string]float64
+	// events 运营事件上报（可为 nil）
+	events EventFunc
 }
 
 func NewEngine(cfg Config, l accounting.Ledger, node NodeClassifier, w adapter.WalletAdapter, store BatchStore) *Engine {
@@ -92,6 +103,27 @@ func (e *Engine) SetMinPayoutOverrides(f func() map[string]float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.minOverrides = f
+}
+
+// SetEvents 注入事件上报（启动时一次）。
+func (e *Engine) SetEvents(f EventFunc) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.events = f
+}
+
+// emit 上报事件（须持 e.mu 或在启动前）；nil 安全。
+func (e *Engine) emit(kind, title string, fields map[string]string) {
+	if e.events != nil {
+		e.events(kind, title, fields)
+	}
+}
+
+// SetFeeCollect 热更新自动归集设置。
+func (e *Engine) SetFeeCollect(enabled bool, minAmount string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cfg.FeeCollectEnabled, e.cfg.FeeCollectMin = enabled, minAmount
 }
 
 // SetParams 热更新打款参数（R4：新 round 用新值，已入账的不追溯）。
@@ -144,6 +176,11 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 	// 守恒对账：破则冻结打款（bitcoin09 超发事故的事前防线）
 	delta, err := e.ledger.Reconcile(ctx, e.cfg.Coin)
 	if err == nil && delta != "" && !isZeroAmount(delta) {
+		if !e.frozen {
+			// 只在翻转时通知一次（持续状态不刷屏）
+			e.emit("reconcile_frozen", "⚠ 守恒对账不平，打款已冻结",
+				map[string]string{"delta": delta})
+		}
 		e.frozen = true
 		log.Printf("[payout %s] ⚠ 守恒对账不平 delta=%s，冻结打款", e.cfg.Coin, delta)
 	}
@@ -151,7 +188,11 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 	if !e.enabled || e.frozen {
 		return nil
 	}
-	return e.payout(ctx)
+	if err := e.payout(ctx); err != nil {
+		return err
+	}
+	e.autoFeeCollect(ctx)
+	return nil
 }
 
 // classify 推进待确认块状态：确认数达标 + 主链 hash 逐字节比对 → confirm/orphan。
@@ -169,6 +210,8 @@ func (e *Engine) classify(ctx context.Context) error {
 			// 节点已不认识该块 = 孤块
 			_ = e.ledger.OrphanBlock(ctx, b)
 			log.Printf("[payout %s] 块 %d %s → ORPHANED (不在主链)", e.cfg.Coin, b.Height, short(b.Hash))
+			e.emit("block_orphaned", "块被主链甩掉（不在主链）", map[string]string{
+				"height": fmt.Sprint(b.Height), "ours": b.Hash})
 			continue
 		}
 		if conf < e.cfg.Maturity {
@@ -183,6 +226,8 @@ func (e *Engine) classify(ctx context.Context) error {
 			_ = e.ledger.OrphanBlock(ctx, b)
 			log.Printf("[payout %s] 块 %d 主链 hash 不符 → ORPHANED (我们=%s 主链=%s)",
 				e.cfg.Coin, b.Height, short(b.Hash), short(mainHash))
+			e.emit("block_orphaned", "块被主链甩掉（hash 不符）", map[string]string{
+				"height": fmt.Sprint(b.Height), "ours": b.Hash, "mainchain": mainHash})
 			continue
 		}
 		if err := e.ledger.ConfirmBlock(ctx, b, e.cfg.FeePercent); err != nil {
@@ -190,6 +235,8 @@ func (e *Engine) classify(ctx context.Context) error {
 			continue
 		}
 		log.Printf("[payout %s] 块 %d %s → CONFIRMED，PPLNS 分账", e.cfg.Coin, b.Height, short(b.Hash))
+		e.emit("block_confirmed", "块已确认，PPLNS 分账", map[string]string{
+			"height": fmt.Sprint(b.Height), "hash": b.Hash, "reward": b.Reward})
 	}
 	return nil
 }
@@ -223,6 +270,8 @@ func (e *Engine) payout(ctx context.Context) error {
 		if err != nil {
 			// 未广播，安全退回余额
 			_ = e.ledger.RefundPayout(ctx, e.cfg.Coin, payable, batch.ID)
+			e.emit("payout_failed", "打款准备失败（已退回余额）", map[string]string{
+				"batch": fmt.Sprint(batch.ID), "error": err.Error()})
 			return fmt.Errorf("准备打款失败(已退回): %w", err)
 		}
 		batch.PlannedTxID, batch.RawTx, batch.Status = txid, rawtx, core.PaymentSent
@@ -231,12 +280,16 @@ func (e *Engine) payout(ctx context.Context) error {
 			// 广播失败：交易已签名落库，交给恢复流程按 plannedtxid 判定，绝不在此重发
 			log.Printf("[payout %s] 广播失败 batch=%d txid=%s: %v（留待恢复扫描）",
 				e.cfg.Coin, batch.ID, short(txid), err)
+			e.emit("payout_failed", "打款广播失败（已落库，待恢复流程重播）", map[string]string{
+				"batch": fmt.Sprint(batch.ID), "txid": txid, "error": err.Error()})
 			return nil
 		}
 		batch.TxID = txid
 		_ = e.store.Save(batch)
 		log.Printf("[payout %s] 打款 batch=%d 已广播 txid=%s (%d 地址)",
 			e.cfg.Coin, batch.ID, short(txid), len(payable))
+		e.emit("payout_sent", "打款已广播", map[string]string{
+			"batch": fmt.Sprint(batch.ID), "txid": txid, "addresses": fmt.Sprint(len(payable))})
 		return nil
 	}
 
@@ -248,12 +301,67 @@ func (e *Engine) payout(ctx context.Context) error {
 		// sendmany 可能已广播（超时），绝不自动退回也绝不自动重发 → unknown 交人工
 		log.Printf("[payout %s] sendmany 失败 batch=%d: %v（人工核对，绝不自动重发）",
 			e.cfg.Coin, batch.ID, err)
+		e.emit("payout_failed", "sendmany 失败（unknown 状态，须人工核对）", map[string]string{
+			"batch": fmt.Sprint(batch.ID), "error": err.Error()})
 		return nil
 	}
 	batch.TxID, batch.Status = txid, core.PaymentSent
 	_ = e.store.Save(batch)
 	log.Printf("[payout %s] 打款 batch=%d txid=%s", e.cfg.Coin, batch.ID, short(txid))
+	e.emit("payout_sent", "打款已广播", map[string]string{
+		"batch": fmt.Sprint(batch.ID), "txid": txid, "addresses": fmt.Sprint(len(payable))})
 	return nil
+}
+
+// autoFeeCollect 手续费自动归集（须持 e.mu，打款周期尾部调）：
+// 未归集费 = Ledger 计提总费 − Σ 已归集批次（含在途，保守防重复归集），
+// 达到 FeeCollectMin 才动手。失败只记日志，下轮再试。
+func (e *Engine) autoFeeCollect(ctx context.Context) {
+	if !e.cfg.FeeCollectEnabled || e.cfg.FeeAddress == "" {
+		return
+	}
+	stats, err := e.ledger.Snapshot(ctx, e.cfg.Coin)
+	if err != nil {
+		return
+	}
+	totalSat, err := parseAmountSat(stats.TotalFees, e.cfg.Decimals)
+	if err != nil || totalSat <= 0 {
+		return
+	}
+	var collectedSat int64
+	for _, b := range e.store.All() {
+		if b.Kind != "fee_collect" || b.Status == core.PaymentFailed {
+			continue
+		}
+		for _, amt := range b.Outputs {
+			if v, err := parseAmountSat(amt, e.cfg.Decimals); err == nil {
+				collectedSat += v // created/sent/confirming 都算（保守：宁少归不重复）
+			}
+		}
+	}
+	unc := totalSat - collectedSat
+	if unc <= 0 {
+		return
+	}
+	minSat := int64(0)
+	if e.cfg.FeeCollectMin != "" {
+		if v, err := parseAmountSat(e.cfg.FeeCollectMin, e.cfg.Decimals); err == nil {
+			minSat = v
+		}
+	}
+	if unc < minSat {
+		return
+	}
+	amount := formatAmountSat(unc, e.cfg.Decimals)
+	txid, err := e.sendBatchLocked(ctx, "fee_collect", map[string]string{e.cfg.FeeAddress: amount})
+	if err != nil {
+		log.Printf("[payout %s] 自动归集失败（下轮再试）: %v", e.cfg.Coin, err)
+		return
+	}
+	log.Printf("[payout %s] 手续费自动归集 %s → %s txid=%s",
+		e.cfg.Coin, amount, short(e.cfg.FeeAddress), short(txid))
+	e.emit("fee_collected", "手续费已自动归集", map[string]string{
+		"amount": amount, "txid": txid})
 }
 
 // Recover 崩溃恢复扫描（docs/05 场景A + 六步清单第 2~3 步）：
@@ -364,4 +472,65 @@ func isZeroAmount(s string) bool {
 		}
 	}
 	return true
+}
+
+// parseAmountSat 十进制字符串 → 最小单位整数（金额铁律：不过浮点）。
+func parseAmountSat(s string, decimals int) (int64, error) {
+	unit := int64(1)
+	for i := 0; i < decimals; i++ {
+		unit *= 10
+	}
+	var whole, frac int64
+	fracDigits := 0
+	neg := false
+	i := 0
+	if len(s) > 0 && s[0] == '-' {
+		neg = true
+		i = 1
+	}
+	seenDot := false
+	for ; i < len(s); i++ {
+		c := s[i]
+		if c == '.' {
+			if seenDot {
+				return 0, fmt.Errorf("非法金额 %q", s)
+			}
+			seenDot = true
+			continue
+		}
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("非法金额 %q", s)
+		}
+		if seenDot {
+			if fracDigits < decimals {
+				frac = frac*10 + int64(c-'0')
+				fracDigits++
+			}
+		} else {
+			whole = whole*10 + int64(c-'0')
+		}
+	}
+	for fracDigits < decimals {
+		frac *= 10
+		fracDigits++
+	}
+	v := whole*unit + frac
+	if neg {
+		v = -v
+	}
+	return v, nil
+}
+
+// formatAmountSat 最小单位整数 → 十进制字符串。
+func formatAmountSat(v int64, decimals int) string {
+	unit := int64(1)
+	for i := 0; i < decimals; i++ {
+		unit *= 10
+	}
+	neg := ""
+	if v < 0 {
+		neg = "-"
+		v = -v
+	}
+	return fmt.Sprintf("%s%d.%0*d", neg, v/unit, decimals, v%unit)
 }

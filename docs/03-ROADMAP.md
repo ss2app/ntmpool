@@ -48,8 +48,10 @@ M1 收尾：
 - [x] **ban 管理 `internal/banlist`**：IP/CIDR、TTL 过期、Strikes 退避计数、JSON 持久化；stratum accept 最外圈拒连（全池共享一份）。自动 ban（invalidPercent 阈值）留 M3 连接治理一起做。
 - [x] **矿工设置 `internal/minersettings`**（R5）：密码字段 `d=`（固定难度，连接级，vardiff.SetFixed 夹 Min/Max）/`mp=`/`pl=` 解析；首个带密码连接绑定设置密码（HMAC+盐文件跨重启稳定），之后改设置需同密码；起付额下限=池默认、上限可配；打款引擎走 PayableBalances perAddr 覆盖；管理后台可查/可 bypass 重置。
 - [x] 手续费转移：FeeSweep（费地址→冷address）+ FeeCollect（池钱包→费地址归集），共用「意图落库→广播前落库」批次流程，冻结时拒绝。双地址分离校验 M0 起已有。
-- [ ] 通知：Telegram/webhook（爆块/打款/孤块/节点失联/对账不平）——M2 唯一未做项，下轮
-- [ ] 手续费自动归集定时器（现为管理后台手动触发；自动化等通知一起）
+- [x] **通知 `internal/notify`**（2026-07-06 收官）：Hub 异步有界队列（Publish 非阻塞，队列满丢弃计数——通知是旁路，绝不拖累挖矿/打款）+ webhook（通用 JSON POST）+ Telegram bot 双 sink（单 sink 失败互不影响）。事件：block_found/confirmed/orphaned、payout_sent/failed、reconcile_frozen（翻转才发一次）、node_down/up（连续 5 次失败翻转，恢复翻转，不刷屏）、fee_collected。去重责任在事件源（状态翻转），孤块连发这类刷屏恰恰必须看到、不节流。
+- [x] **手续费自动归集**（同日）：打款周期尾部（持每币锁天然与打款串行）算未归集额 = Ledger 计提总费 − Σ fee_collect 批次（含在途，保守防重复），达 `feeCollect.minAmount` 自动池钱包→费地址；热参数可改；防重复归集有测试。
+
+**M2 = 全部 DONE（2026-07-06）**。
 
 ## M3 — 多币 + 多方言
 

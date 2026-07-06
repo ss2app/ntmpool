@@ -1,6 +1,7 @@
 package payout
 
 import (
+	"strings"
 	"context"
 	"errors"
 	"testing"
@@ -253,6 +254,111 @@ func TestFreezeAndFeeOps(t *testing.T) {
 	if e.Frozen() {
 		t.Fatal("Unfreeze 未生效")
 	}
+}
+
+// 手续费自动归集：确认块产生费 → RunOnce 尾部自动归集未归集额；再跑不重复。
+func TestAutoFeeCollect(t *testing.T) {
+	ctx := context.Background()
+	e, l, node, w := setup(t)
+	e.cfg.FeePercent = 10
+	e.cfg.FeeAddress = "feeAddr"
+	e.SetFeeCollect(true, "1.0") // 未归集 ≥ 1 才动
+
+	var events []string
+	e.SetEvents(func(kind, _ string, _ map[string]string) { events = append(events, kind) })
+
+	_ = l.RecordShare(ctx, core.Share{Coin: "t", Address: "A"}, 1)
+	b := core.FoundBlock{Coin: "t", Height: 100, Hash: "h", Finder: "A",
+		Reward: "50.00000000", NetDiff: 1, Status: core.BlockPending}
+	_ = l.RecordBlock(ctx, b, "raw")
+	node.conf["h"] = 200
+	node.mainHash[100] = "h"
+
+	if err := e.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// 费 = 50×10% = 5 ≥ 1 → 应有一笔 fee_collect 批次，金额 5
+	var fc *Batch
+	for _, batch := range e.store.All() {
+		if batch.Kind == "fee_collect" {
+			if fc != nil {
+				t.Fatal("不应有多笔归集")
+			}
+			fc = batch
+		}
+	}
+	if fc == nil || fc.Outputs["feeAddr"] != "5.00000000" {
+		t.Fatalf("归集批次错: %+v", fc)
+	}
+	// 再跑一轮：未归集=0，不得重复
+	if err := e.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, batch := range e.store.All() {
+		if batch.Kind == "fee_collect" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("重复归集: %d 笔", n)
+	}
+	// 事件链完整：block_confirmed + payout_sent + fee_collected
+	joined := strings.Join(events, ",")
+	for _, want := range []string{"block_confirmed", "payout_sent", "fee_collected"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("缺事件 %s: %v", want, events)
+		}
+	}
+	_ = w
+}
+
+// 冻结翻转只通知一次；孤块事件上报。
+func TestEventOnFreezeAndOrphan(t *testing.T) {
+	ctx := context.Background()
+	e, l, node, _ := setup(t)
+	var events []string
+	e.SetEvents(func(kind, _ string, _ map[string]string) { events = append(events, kind) })
+
+	// 孤块事件
+	_ = l.RecordShare(ctx, core.Share{Coin: "t", Address: "A"}, 1)
+	b := core.FoundBlock{Coin: "t", Height: 100, Hash: "ours",
+		Reward: "50.00000000", NetDiff: 1, Status: core.BlockPending}
+	_ = l.RecordBlock(ctx, b, "raw")
+	node.conf["ours"] = 200
+	node.mainHash[100] = "other"
+	_ = e.RunOnce(ctx)
+	if strings.Join(events, ",") != "block_orphaned" {
+		t.Fatalf("应只有孤块事件: %v", events)
+	}
+
+	// 守恒不平（Ledger 报非零 delta）→ 冻结翻转事件只发一次
+	broken := &brokenLedger{MemLedger: accounting.NewMemLedger(8, 2)}
+	e2 := NewEngine(Config{Coin: "t", Decimals: 8, MinPayout: 1, Maturity: 100},
+		broken, node, newFakeWallet(), NewMemBatchStore())
+	var events2 []string
+	e2.SetEvents(func(kind, _ string, _ map[string]string) { events2 = append(events2, kind) })
+	_ = e2.RunOnce(ctx)
+	_ = e2.RunOnce(ctx) // 第二轮仍不平，但不该再发事件
+	frozenCount := 0
+	for _, k := range events2 {
+		if k == "reconcile_frozen" {
+			frozenCount++
+		}
+	}
+	if frozenCount != 1 {
+		t.Fatalf("冻结事件应只发一次: %v", events2)
+	}
+	if !e2.Frozen() {
+		t.Fatal("应处于冻结")
+	}
+}
+
+// brokenLedger 守恒对账永远不平（测试冻结路径）。
+type brokenLedger struct{ *accounting.MemLedger }
+
+func (b *brokenLedger) Reconcile(context.Context, string) (string, error) {
+	return "0.00000001", nil
 }
 
 // 节点不认识块（conf<0）→ 孤块。

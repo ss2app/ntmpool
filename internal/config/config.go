@@ -43,6 +43,13 @@ type ConsolidationConfig struct {
 	MinConf      int  `json:"minConfirmations"` // 只合并已成熟碎片
 }
 
+// FeeCollectConfig 手续费自动归集（R9）：未归集费达 minAmount 时打款周期尾部
+// 自动池钱包→FeeAddress（与打款共用每币锁串行）。
+type FeeCollectConfig struct {
+	Enabled   bool   `json:"enabled"`
+	MinAmount string `json:"minAmount"` // 十进制字符串；空 = 有多少归多少
+}
+
 type PayoutConfig struct {
 	Enabled       bool    `json:"enabled"`       // 铁律：第一天就有的总开关
 	Scheme        string  `json:"scheme"`        // "pplns"（solo 由端口 mode 决定）
@@ -53,6 +60,7 @@ type PayoutConfig struct {
 	IntervalSec   int     `json:"intervalSeconds"`
 	OrphanDebts   bool    `json:"orphanDebts"` // 预打款垫付孤块后是否追缴（R4）
 
+	FeeCollect    FeeCollectConfig    `json:"feeCollect"`
 	Consolidation ConsolidationConfig `json:"consolidation"`
 }
 
@@ -79,6 +87,13 @@ type CoinConfig struct {
 	NewConnsEnabled bool `json:"newConnectionsEnabled"`
 }
 
+// NotifyConfig 运营通知出口（docs/03 M2）。全部可选；一个不配 = 不通知。
+type NotifyConfig struct {
+	WebhookURL       string `json:"webhookUrl"`       // 通用 JSON POST
+	TelegramBotToken string `json:"telegramBotToken"` // 建议 ${NTMPOOL_TG_TOKEN}
+	TelegramChatID   string `json:"telegramChatId"`
+}
+
 type Config struct {
 	InstanceID string       `json:"instanceId"` // 多服务器实例标识（pool1/pool2…）
 	PostgresDSN string      `json:"postgresDsn"`
@@ -89,6 +104,7 @@ type Config struct {
 	DataDir    string       `json:"dataDir"`         // 状态文件目录（bans/miner_settings/config.state/config_audit）；空="."
 	LogDir     string       `json:"logDir"`
 	LogQuotaMB int          `json:"logQuotaMB"` // 全局日志磁盘配额（zoka 6.2GB 日志事故的教训）
+	Notify     NotifyConfig `json:"notify"`
 	Coins      []CoinConfig `json:"coins"`
 }
 

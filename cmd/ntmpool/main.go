@@ -24,6 +24,7 @@ import (
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/hasher"
 	"github.com/scashcc/ntmpool/internal/minersettings"
+	"github.com/scashcc/ntmpool/internal/notify"
 )
 
 var version = "0.2.0-m2"
@@ -86,7 +87,21 @@ func main() {
 	if err != nil {
 		log.Fatalf("[boot] 矿工设置加载失败: %v", err)
 	}
-	deps := coininstance.Deps{Payouts: *payouts, Ban: bans, Settings: settings}
+	// 运营通知（webhook/Telegram；一个不配 = 不通知，Publish 为空操作）
+	var sinks []notify.Sink
+	if cfg.Notify.WebhookURL != "" {
+		sinks = append(sinks, notify.NewWebhookSink(cfg.Notify.WebhookURL))
+	}
+	if cfg.Notify.TelegramBotToken != "" && cfg.Notify.TelegramChatID != "" {
+		sinks = append(sinks, notify.NewTelegramSink(cfg.Notify.TelegramBotToken, cfg.Notify.TelegramChatID))
+	}
+	hub := notify.NewHub(sinks)
+	defer hub.Close()
+	if len(sinks) > 0 {
+		log.Printf("[boot] 通知已启用: %d 个出口", len(sinks))
+	}
+
+	deps := coininstance.Deps{Payouts: *payouts, Ban: bans, Settings: settings, Notify: hub}
 
 	// 币实例注册表（API 读快照；热添加币后自动可见）
 	var instMu sync.Mutex

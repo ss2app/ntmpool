@@ -8,6 +8,11 @@
   "dataDir": "data",
   "logDir": "logs",
   "logQuotaMB": 2048,
+  "notify": {
+    "webhookUrl": "",
+    "telegramBotToken": "${NTMPOOL_TG_TOKEN}",
+    "telegramChatId": ""
+  },
   "coins": [
     {
       "id": "demo",
@@ -39,7 +44,8 @@
         "minPayout": "0.01",
         "confirmations": 100,
         "intervalSeconds": 600,
-        "orphanDebts": true
+        "orphanDebts": true,
+        "feeCollect": { "enabled": false, "minAmount": "1.0" }
       },
       "miningEnabled": true,
       "newConnectionsEnabled": true

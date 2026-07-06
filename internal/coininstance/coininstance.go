@@ -6,6 +6,7 @@ package coininstance
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -14,11 +15,12 @@ import (
 	"github.com/scashcc/ntmpool/internal/adapter/bitcoinrpc"
 	"github.com/scashcc/ntmpool/internal/banlist"
 	"github.com/scashcc/ntmpool/internal/config"
-	"github.com/scashcc/ntmpool/internal/minersettings"
 	"github.com/scashcc/ntmpool/internal/core"
 	"github.com/scashcc/ntmpool/internal/hasher"
 	"github.com/scashcc/ntmpool/internal/hashrate"
 	"github.com/scashcc/ntmpool/internal/jobmanager"
+	"github.com/scashcc/ntmpool/internal/minersettings"
+	"github.com/scashcc/ntmpool/internal/notify"
 	"github.com/scashcc/ntmpool/internal/payout"
 	"github.com/scashcc/ntmpool/internal/stratum"
 )
@@ -30,6 +32,7 @@ type Deps struct {
 	Payouts  bool                 // 打款总开关（-payouts 命令行）
 	Ban      *banlist.List        // 全池共享 ban 名单
 	Settings *minersettings.Store // 矿工设置（mp=/密码绑定）
+	Notify   *notify.Hub          // 运营通知（爆块/打款/孤块/节点失联/对账冻结）
 }
 
 // Instance 一个运行中的币。
@@ -53,6 +56,21 @@ type Instance struct {
 	lastHeight uint64
 	netHashPS  float64   // getnetworkhashps 缓存（30s 刷新；0=尚未取到）
 	netHashAt  time.Time
+	nodeFails  int  // 节点连续失败计数（失联检测）
+	nodeDown   bool // 当前是否处于失联状态（翻转时才发通知，不刷屏）
+}
+
+// nodeDownThreshold 连续多少次 Status 失败判定节点失联（2s 轮询 ≈ 10s）。
+const nodeDownThreshold = 5
+
+// notifyEvent 事件上报（Hub 未配置 = 空操作；Publish 非阻塞）。
+func (inst *Instance) notifyEvent(kind, title string, fields map[string]string) {
+	if inst.deps.Notify == nil {
+		return
+	}
+	inst.deps.Notify.Publish(notify.Event{
+		Kind: kind, Coin: inst.cfg.ID, Title: title, Fields: fields, At: time.Now(),
+	})
 }
 
 // Start 拼装并启动该币（bitcoin-rpc + stratum1 方言，M1 竖切）。
@@ -80,9 +98,13 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 		Coin: cfg.ID, Decimals: decimals,
 		FeePercent: cfg.Payout.FeePercent, MinPayout: parseFloat(cfg.Payout.MinPayout),
 		Maturity: cfg.Payout.Confirmations,
+		FeeAddress:        cfg.FeeAddress,
+		FeeCollectEnabled: cfg.Payout.FeeCollect.Enabled,
+		FeeCollectMin:     cfg.Payout.FeeCollect.MinAmount,
 	}
 	inst.engine = payout.NewEngine(pcfg, inst.ledger, node, node, inst.batches)
 	inst.engine.SetEnabled(deps.Payouts && cfg.Payout.Enabled)
+	inst.engine.SetEvents(inst.notifyEvent)
 	if deps.Settings != nil {
 		coinID := cfg.ID
 		inst.engine.SetMinPayoutOverrides(func() map[string]float64 {
@@ -113,6 +135,10 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 		inst.dialect.BroadcastJob,
 		func(ctx context.Context, b core.FoundBlock, rawHex string) error {
 			log.Printf("[%s] ★爆块 height=%d hash=%s finder=%s", cfg.ID, b.Height, b.Hash[:12], b.Finder)
+			inst.notifyEvent("block_found", "★爆块", map[string]string{
+				"height": fmt.Sprint(b.Height), "hash": b.Hash,
+				"finder": short(b.Finder), "reward": b.Reward,
+			})
 			return inst.ledger.RecordBlock(ctx, b, rawHex)
 		},
 		func(ctx context.Context, s core.Share) {
@@ -190,11 +216,32 @@ func (inst *Instance) startLoops(ctx context.Context) {
 }
 
 // refreshOnce 拉模板；高度变化 = 新块，clean 广播；否则静默刷新（新 mempool/时间戳）。
-// 顺带每 30s 刷一次 getnetworkhashps 缓存（API 读缓存，不因请求打 RPC）。
+// 顺带每 30s 刷一次 getnetworkhashps 缓存（API 读缓存，不因请求打 RPC）+
+// 节点失联检测（连续失败 nodeDownThreshold 次翻转 down，恢复翻转 up；翻转才通知）。
 func (inst *Instance) refreshOnce(ctx context.Context) {
 	st, err := inst.node.Status(ctx)
 	if err != nil {
+		inst.mu.Lock()
+		inst.nodeFails++
+		flip := inst.nodeFails == nodeDownThreshold && !inst.nodeDown
+		if flip {
+			inst.nodeDown = true
+		}
+		inst.mu.Unlock()
+		if flip {
+			log.Printf("[%s] ⚠ 节点失联（连续 %d 次失败）: %v", inst.cfg.ID, nodeDownThreshold, err)
+			inst.notifyEvent("node_down", "⚠ 节点失联", map[string]string{"error": err.Error()})
+		}
 		return
+	}
+	inst.mu.Lock()
+	inst.nodeFails = 0
+	recovered := inst.nodeDown
+	inst.nodeDown = false
+	inst.mu.Unlock()
+	if recovered {
+		log.Printf("[%s] 节点恢复 height=%d", inst.cfg.ID, st.Height)
+		inst.notifyEvent("node_up", "节点恢复", map[string]string{"height": fmt.Sprint(st.Height)})
 	}
 	inst.mu.Lock()
 	clean := st.Height != inst.lastHeight
@@ -281,20 +328,22 @@ func (inst *Instance) FeeCollect(ctx context.Context, amount string) (string, er
 	return inst.engine.FeeCollect(ctx, inst.Cfg().FeeAddress, amount)
 }
 
-// ApplyPayout 热更新打款参数（R4）：费率/起付额/确认数/开关，立即生效不追溯。
+// ApplyPayout 热更新打款参数（R4）：费率/起付额/确认数/开关/归集，立即生效不追溯。
 func (inst *Instance) ApplyPayout(p config.PayoutConfig) {
 	inst.engine.SetParams(p.FeePercent, parseFloat(p.MinPayout), p.Confirmations)
 	inst.engine.SetEnabled(inst.deps.Payouts && p.Enabled)
+	inst.engine.SetFeeCollect(p.FeeCollect.Enabled, p.FeeCollect.MinAmount)
 	inst.mu.Lock()
 	cur := &inst.cfg.Payout
 	cur.FeePercent, cur.MinPayout, cur.Confirmations, cur.Enabled =
 		p.FeePercent, p.MinPayout, p.Confirmations, p.Enabled
+	cur.FeeCollect = p.FeeCollect
 	if p.IntervalSec > 0 {
 		cur.IntervalSec = p.IntervalSec // 下一轮 ticker 周期不变（M2 简化）；重启后生效
 	}
 	inst.mu.Unlock()
-	log.Printf("[%s] 打款参数热更新: fee=%v%% min=%s conf=%d enabled=%v",
-		inst.cfg.ID, p.FeePercent, p.MinPayout, p.Confirmations, p.Enabled)
+	log.Printf("[%s] 打款参数热更新: fee=%v%% min=%s conf=%d enabled=%v feeCollect=%v",
+		inst.cfg.ID, p.FeePercent, p.MinPayout, p.Confirmations, p.Enabled, p.FeeCollect.Enabled)
 }
 
 // AddPort 热添加端口并立即监听。
