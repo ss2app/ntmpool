@@ -16,19 +16,5 @@
 // 整备 tx 同样意图落库（payment_batches kind='consolidate'）并追踪确认。
 package payout
 
-import (
-	"context"
-)
-
-// Engine 每币一个实例。M1/M2 落地，先定接口。
-type Engine interface {
-	// RunOnce 执行一轮打款周期：分类块 → 入账 → 组批 → 发送 → 追踪确认。
-	RunOnce(ctx context.Context) error
-
-	// SetEnabled 热开关（管理后台）。false = accrue-only，只记账不打款。
-	SetEnabled(enabled bool)
-
-	// FeeSweep 一键转移手续费地址余额到指定冷地址：
-	// 暂停本币打款队列 → 等在途 tx 确认 → 转移 → 恢复。状态机化，可中断可恢复。
-	FeeSweep(ctx context.Context, coldAddress string) (txid string, err error)
-}
+// 具体实现见 engine.go（*Engine）、memstore.go（内存 BatchStore）。
+// 打款状态机、每币锁、崩溃恢复、fee sweep 的设计说明见本文件顶部注释与 docs/05。

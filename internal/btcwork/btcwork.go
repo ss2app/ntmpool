@@ -55,6 +55,17 @@ func DiffToTarget(diff float64) *big.Int {
 	return out
 }
 
+// TargetToDiff 网络目标 → 难度（Diff1 / target）。
+func TargetToDiff(target *big.Int) float64 {
+	if target == nil || target.Sign() == 0 {
+		return 0
+	}
+	f := new(big.Float).SetPrec(256).SetInt(Diff1Target)
+	f.Quo(f, new(big.Float).SetPrec(256).SetInt(target))
+	out, _ := f.Float64()
+	return out
+}
+
 // HashValue hash（内部序，sha256d 输出）→ 数值（比较用大端语义 = 反转后 SetBytes）。
 func HashValue(hash []byte) *big.Int {
 	return new(big.Int).SetBytes(Reverse(hash))

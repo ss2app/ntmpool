@@ -20,6 +20,8 @@ type Job struct {
 	Bits          uint32
 	NTime         uint32
 	NetworkTarget *big.Int // GBT target（命中即爆块）
+	NetDiff       float64  // 网络难度（PPLNS 窗口用）
+	RewardSat     int64    // coinbase 总额（聪），爆块入账用
 	CleanJobs     bool
 }
 

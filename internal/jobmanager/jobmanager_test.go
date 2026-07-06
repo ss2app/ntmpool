@@ -69,7 +69,7 @@ func TestBuildJobAndSubmitSelfConsistent(t *testing.T) {
 	h, _ := hasher.Get("sha256d")
 	reg := stratum.NewJobRegistry()
 	node := &stubNode{gbt: raw}
-	jm := New("test", node, h, reg, 4)
+	jm := New("test", node, h, reg, 4, 8)
 	// 假 P2PKH 脚本
 	jm.poolScript, _ = hex.DecodeString("76a914000102030405060708090a0b0c0d0e0f101112131488ac")
 
@@ -132,7 +132,7 @@ func TestBuildJobAndSubmitSelfConsistent(t *testing.T) {
 func TestSubmitStale(t *testing.T) {
 	h, _ := hasher.Get("sha256d")
 	reg := stratum.NewJobRegistry()
-	jm := New("test", &stubNode{}, h, reg, 4)
+	jm := New("test", &stubNode{}, h, reg, 4, 8)
 	res := jm.HandleSubmit(context.Background(), stratum.Submission{JobID: "nope", ExtraNonce2: []byte{0, 0, 0, 0}})
 	if res.Outcome != core.OutcomeStale {
 		t.Fatalf("未知 job 应 stale, got %v", res.Outcome)

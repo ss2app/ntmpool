@@ -38,6 +38,7 @@ type JobManager struct {
 	reg       *stratum.JobRegistry
 	poolTag   []byte
 	en2Size   int
+	decimals  int
 
 	poolScript []byte // 矿池地址 scriptPubKey（启动时取一次）
 
@@ -53,15 +54,28 @@ type JobManager struct {
 
 var _ stratum.ShareHandler = (*JobManager)(nil)
 
-func New(coinID string, node nodeIface, hsh hasher.Hasher, reg *stratum.JobRegistry, en2Size int) *JobManager {
-	return &JobManager{
-		coinID:  coinID,
-		node:    node,
-		hsh:     hsh,
-		reg:     reg,
-		poolTag: []byte("/NTMPool/"),
-		en2Size: en2Size,
+func New(coinID string, node nodeIface, hsh hasher.Hasher, reg *stratum.JobRegistry, en2Size, decimals int) *JobManager {
+	if decimals <= 0 {
+		decimals = 8
 	}
+	return &JobManager{
+		coinID:   coinID,
+		node:     node,
+		hsh:      hsh,
+		reg:      reg,
+		poolTag:  []byte("/NTMPool/"),
+		en2Size:  en2Size,
+		decimals: decimals,
+	}
+}
+
+// satToStr 聪 → 十进制币字符串（整数运算不过浮点）。
+func satToStr(sat int64, decimals int) string {
+	u := int64(1)
+	for i := 0; i < decimals; i++ {
+		u *= 10
+	}
+	return fmt.Sprintf("%d.%0*d", sat/u, decimals, sat%u)
 }
 
 // SetCallbacks 注入广播与会计回调。
@@ -166,6 +180,8 @@ func (m *JobManager) buildJob(g *gbtTemplate, forceClean bool) (*stratum.Job, er
 		Bits:          bits,
 		NTime:         uint32(ntime),
 		NetworkTarget: target,
+		NetDiff:       btcwork.TargetToDiff(target),
+		RewardSat:     g.CoinbaseValue,
 		CleanJobs:     forceClean,
 	}, nil
 }
@@ -232,6 +248,7 @@ func (m *JobManager) handleBlock(ctx context.Context, job *stratum.Job, sub stra
 	fb := core.FoundBlock{
 		Coin: m.coinID, Height: job.Height, Hash: blockHashBE,
 		Finder: sub.Address, Worker: sub.Worker,
+		Reward: satToStr(job.RewardSat, m.decimals), NetDiff: job.NetDiff,
 		Status: core.BlockPending, FoundAt: time.Now(), Solo: sub.Solo,
 	}
 	// 先记后交（docs/05 场景B）：BlockSink 负责先写 status=submitting 再由此提交。
