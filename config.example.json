@@ -5,6 +5,7 @@
   "adminApiListen": "127.0.0.1:4900",
   "adminToken": "${NTMPOOL_ADMIN_TOKEN}",
   "maskSecret": "${NTMPOOL_MASK_SECRET}",
+  "dataDir": "data",
   "logDir": "logs",
   "logQuotaMB": 2048,
   "coins": [

@@ -17,3 +17,10 @@ func parseFloat(s string) float64 {
 	}
 	return v
 }
+
+func short(s string) string {
+	if len(s) <= 12 {
+		return s
+	}
+	return s[:6] + "…" + s[len(s)-4:]
+}

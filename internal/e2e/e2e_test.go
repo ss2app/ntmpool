@@ -16,14 +16,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/scashcc/ntmpool/internal/admin"
 	"github.com/scashcc/ntmpool/internal/api"
 	"github.com/scashcc/ntmpool/internal/btcwork"
 	"github.com/scashcc/ntmpool/internal/coininstance"
 	"github.com/scashcc/ntmpool/internal/config"
 )
 
-// 编译期断言：真 CoinInstance 满足公共 API 的只读视图接口。
-var _ api.Pool = (*coininstance.Instance)(nil)
+// 编译期断言：真 CoinInstance 满足公共 API 只读视图 + 管理面操作视图两套接口。
+var (
+	_ api.Pool          = (*coininstance.Instance)(nil)
+	_ admin.CoinControl = (*coininstance.Instance)(nil)
+)
 
 const stratumPort = 13911
 
@@ -56,7 +60,7 @@ func TestFullPipeline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	inst, err := coininstance.Start(ctx, testConfig(node.URL()), true)
+	inst, err := coininstance.Start(ctx, testConfig(node.URL()), coininstance.Deps{Payouts: true})
 	if err != nil {
 		t.Fatalf("启动币实例失败: %v", err)
 	}
@@ -138,7 +142,7 @@ func TestOrphanPipeline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	inst, err := coininstance.Start(ctx, testConfig(node.URL()), true)
+	inst, err := coininstance.Start(ctx, testConfig(node.URL()), coininstance.Deps{Payouts: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,6 +174,90 @@ func TestOrphanPipeline(t *testing.T) {
 		t.Fatal("孤块不应打款")
 	}
 	t.Logf("✓ 孤块路径：%d 个块被主链 hash 逐字节比对判为 ORPHANED，未误打款", snap.Orphaned)
+}
+
+// M2 端口热管理：真监听器热加/热停/热删，存量端口不受影响。
+func TestHotPortManagement(t *testing.T) {
+	poolScript := "76a914000102030405060708090a0b0c0d0e0f101112131488ac"
+	node := newFakeNode(poolScript)
+	defer node.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	inst, err := coininstance.Start(ctx, testConfig(node.URL()), coininstance.Deps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inst.Stop()
+
+	dial := func(port int) bool {
+		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
+	}
+	if !dial(stratumPort) {
+		t.Fatal("初始端口应可连")
+	}
+
+	// 热加端口
+	newPort := stratumPort + 1
+	if err := inst.AddPort(config.PortConfig{
+		Port: newPort, Mode: "solo", Dialect: "stratum1", Enabled: true,
+		Vardiff: config.VardiffConfig{Enabled: true, StartDiff: 1, MinDiff: 1, MaxDiff: 10, TargetSeconds: 5},
+	}); err != nil {
+		t.Fatalf("热加端口: %v", err)
+	}
+	if !dial(newPort) {
+		t.Fatal("热加端口应可连")
+	}
+	// 重复加拒绝
+	if err := inst.AddPort(config.PortConfig{Port: newPort}); err == nil {
+		t.Fatal("重复端口应报错")
+	}
+	// 热停（保留配置）
+	if err := inst.SetPortEnabled(newPort, false); err != nil {
+		t.Fatal(err)
+	}
+	if dial(newPort) {
+		t.Fatal("热停后不应可连")
+	}
+	if !dial(stratumPort) {
+		t.Fatal("其他端口不应受影响")
+	}
+	// 再启
+	if err := inst.SetPortEnabled(newPort, true); err != nil {
+		t.Fatal(err)
+	}
+	if !dial(newPort) {
+		t.Fatal("再启后应可连")
+	}
+	// 热删
+	if err := inst.RemovePort(newPort); err != nil {
+		t.Fatal(err)
+	}
+	if dial(newPort) {
+		t.Fatal("热删后不应可连")
+	}
+	if got := len(inst.Cfg().Ports); got != 1 {
+		t.Fatalf("删除后配置端口数=%d", got)
+	}
+
+	// 新连接开关：关后新 dial 立即被断（accept 后即 close，dial 本身可能成功→读到 EOF）
+	inst.SetNewConns(false)
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", stratumPort), time.Second)
+	if err == nil {
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 1)
+		if _, rerr := c.Read(buf); rerr == nil {
+			t.Fatal("newConns=false 后连接应被立即断开")
+		}
+		_ = c.Close()
+	}
+	inst.SetNewConns(true)
+	t.Log("✓ M2 端口热管理：热加/热停/再启/热删/新连接开关 全部生效，存量端口无扰")
 }
 
 // mineUntilBlock 连 stratum 挖矿直到池爆块（regtest 极易目标下秒级完成）。

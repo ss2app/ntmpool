@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/scashcc/ntmpool/internal/config"
 )
@@ -30,6 +31,11 @@ type Listener struct {
 	wg     sync.WaitGroup
 }
 
+// BanChecker 连接准入检查（banlist.List 满足此签名；全池共享一份）。
+type BanChecker interface {
+	Banned(ip string) (bool, string)
+}
+
 // Manager 端口热管理器：管理后台增/删/改端口时调用，不影响其他端口的存量连接。
 // 每币一个 Manager，持有该币可用的方言（方言是 per-coin 的，含该币 ShareHandler）。
 type Manager struct {
@@ -37,11 +43,28 @@ type Manager struct {
 	coinID    string
 	dialects  map[string]Dialect
 	listeners map[int]*Listener
+	ban       BanChecker  // 可选
+	acceptNew atomic.Bool // 币开关 newConnectionsEnabled（热参数）：false 只拒新连，存量不断
 }
 
 func NewManager(coinID string, dialects map[string]Dialect) *Manager {
-	return &Manager{coinID: coinID, dialects: dialects, listeners: map[int]*Listener{}}
+	m := &Manager{coinID: coinID, dialects: dialects, listeners: map[int]*Listener{}}
+	m.acceptNew.Store(true)
+	return m
 }
+
+// SetBanChecker 注入 ban 名单（启动时一次）。
+func (m *Manager) SetBanChecker(b BanChecker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ban = b
+}
+
+// SetAcceptNew 热开关：是否接受新连接（存量连接不受影响）。
+func (m *Manager) SetAcceptNew(v bool) { m.acceptNew.Store(v) }
+
+// AcceptNew 当前是否接受新连接。
+func (m *Manager) AcceptNew() bool { return m.acceptNew.Load() }
 
 // StartPort 热启动一个端口。
 func (m *Manager) StartPort(parent context.Context, pc config.PortConfig) error {
@@ -70,7 +93,21 @@ func (m *Manager) StartPort(parent context.Context, pc config.PortConfig) error 
 			if err != nil {
 				return // 监听器已关闭
 			}
-			// TODO(M1): 每 IP 并发上限 / 连接速率 / ban 名单 / PROXY protocol 解包 / TLS
+			// 准入最外圈：币开关 + ban 名单（命中直接断，零协议交互）
+			if !m.acceptNew.Load() {
+				_ = conn.Close()
+				continue
+			}
+			m.mu.Lock()
+			ban := m.ban
+			m.mu.Unlock()
+			if ban != nil {
+				if banned, _ := ban.Banned(remoteHost(conn)); banned {
+					_ = conn.Close()
+					continue
+				}
+			}
+			// TODO(M3): 每 IP 并发上限 / 连接速率 / PROXY protocol 解包 / TLS
 			l.wg.Add(1)
 			go func() {
 				defer l.wg.Done()

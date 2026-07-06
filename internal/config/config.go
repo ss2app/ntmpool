@@ -86,6 +86,7 @@ type Config struct {
 	AdminAPI   string       `json:"adminApiListen"`  // 独立端口，建议只绑内网/专线
 	AdminToken string       `json:"adminToken"`      // 建议 ${NTMPOOL_ADMIN_TOKEN}
 	MaskSecret string       `json:"maskSecret"`      // API 地址脱敏 HMAC 密钥（R14.6）；空=每次启动随机
+	DataDir    string       `json:"dataDir"`         // 状态文件目录（bans/miner_settings/config.state/config_audit）；空="."
 	LogDir     string       `json:"logDir"`
 	LogQuotaMB int          `json:"logQuotaMB"` // 全局日志磁盘配额（zoka 6.2GB 日志事故的教训）
 	Coins      []CoinConfig `json:"coins"`

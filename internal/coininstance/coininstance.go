@@ -12,7 +12,9 @@ import (
 
 	"github.com/scashcc/ntmpool/internal/accounting"
 	"github.com/scashcc/ntmpool/internal/adapter/bitcoinrpc"
+	"github.com/scashcc/ntmpool/internal/banlist"
 	"github.com/scashcc/ntmpool/internal/config"
+	"github.com/scashcc/ntmpool/internal/minersettings"
 	"github.com/scashcc/ntmpool/internal/core"
 	"github.com/scashcc/ntmpool/internal/hasher"
 	"github.com/scashcc/ntmpool/internal/hashrate"
@@ -22,6 +24,13 @@ import (
 )
 
 const extraNonce2Size = 4
+
+// Deps 跨币共享的依赖（全部可为 nil = 不启用）。
+type Deps struct {
+	Payouts  bool                 // 打款总开关（-payouts 命令行）
+	Ban      *banlist.List        // 全池共享 ban 名单
+	Settings *minersettings.Store // 矿工设置（mp=/密码绑定）
+}
 
 // Instance 一个运行中的币。
 type Instance struct {
@@ -34,18 +43,20 @@ type Instance struct {
 	engine  *payout.Engine
 	tracker *hashrate.Tracker
 	batches payout.BatchStore
+	deps    Deps
 
+	ctx    context.Context // 实例生命周期（热加端口用）
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	mu         sync.Mutex
+	mu         sync.Mutex // 保护 cfg 热改 + 网络缓存
 	lastHeight uint64
 	netHashPS  float64   // getnetworkhashps 缓存（30s 刷新；0=尚未取到）
 	netHashAt  time.Time
 }
 
 // Start 拼装并启动该币（bitcoin-rpc + stratum1 方言，M1 竖切）。
-func Start(parent context.Context, cfg config.CoinConfig, payoutsEnabled bool) (*Instance, error) {
+func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance, error) {
 	if len(cfg.Nodes) == 0 {
 		return nil, errf("[%s] 未配置节点", cfg.ID)
 	}
@@ -58,7 +69,7 @@ func Start(parent context.Context, cfg config.CoinConfig, payoutsEnabled bool) (
 	}
 
 	ctx, cancel := context.WithCancel(parent)
-	inst := &Instance{cfg: cfg, node: node, cancel: cancel}
+	inst := &Instance{cfg: cfg, node: node, deps: deps, ctx: ctx, cancel: cancel}
 
 	// 会计 + 打款 + 算力采样（算力窗口与 PPLNS 窗口分开，pitfall C6）
 	decimals := 8
@@ -71,7 +82,13 @@ func Start(parent context.Context, cfg config.CoinConfig, payoutsEnabled bool) (
 		Maturity: cfg.Payout.Confirmations,
 	}
 	inst.engine = payout.NewEngine(pcfg, inst.ledger, node, node, inst.batches)
-	inst.engine.SetEnabled(payoutsEnabled && cfg.Payout.Enabled)
+	inst.engine.SetEnabled(deps.Payouts && cfg.Payout.Enabled)
+	if deps.Settings != nil {
+		coinID := cfg.ID
+		inst.engine.SetMinPayoutOverrides(func() map[string]float64 {
+			return deps.Settings.MinPayouts(coinID)
+		})
+	}
 
 	// JobManager + 方言
 	reg := stratum.NewJobRegistry()
@@ -81,6 +98,17 @@ func Start(parent context.Context, cfg config.CoinConfig, payoutsEnabled bool) (
 		return nil, errf("[%s] 初始化矿池地址脚本失败: %v", cfg.ID, err)
 	}
 	inst.dialect = stratum.NewV1Dialect(cfg.ID, inst.jm)
+	if deps.Settings != nil {
+		coinID, defMin := cfg.ID, parseFloat(cfg.Payout.MinPayout)
+		inst.dialect.SetAuthHook(func(addr, worker string, p minersettings.PasswordParams) {
+			note, err := deps.Settings.ApplyPassword(coinID, addr, p, defMin)
+			if err != nil {
+				log.Printf("[%s] 矿工 %s.%s 密码设置被拒: %v", coinID, short(addr), worker, err)
+			} else if note != "" {
+				log.Printf("[%s] 矿工 %s.%s 设置: %s", coinID, short(addr), worker, note)
+			}
+		})
+	}
 	inst.jm.SetCallbacks(
 		inst.dialect.BroadcastJob,
 		func(ctx context.Context, b core.FoundBlock, rawHex string) error {
@@ -95,6 +123,10 @@ func Start(parent context.Context, cfg config.CoinConfig, payoutsEnabled bool) (
 
 	// 端口（每币可多端口，热管理）
 	inst.ports = stratum.NewManager(cfg.ID, map[string]stratum.Dialect{"stratum1": inst.dialect})
+	if deps.Ban != nil {
+		inst.ports.SetBanChecker(deps.Ban)
+	}
+	inst.ports.SetAcceptNew(cfg.NewConnsEnabled)
 	for _, p := range cfg.Ports {
 		if !p.Enabled {
 			continue
@@ -190,8 +222,15 @@ func (inst *Instance) Stop() {
 
 // ---- 公共 API 读接口（internal/api.Pool 的实现）----
 
-// Cfg 该币配置快照。
-func (inst *Instance) Cfg() config.CoinConfig { return inst.cfg }
+// Cfg 该币配置快照（热改期间也一致：深拷贝 Ports 切片）。
+func (inst *Instance) Cfg() config.CoinConfig {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	c := inst.cfg
+	c.Ports = append([]config.PortConfig(nil), inst.cfg.Ports...)
+	c.Nodes = append([]config.NodeEndpoint(nil), inst.cfg.Nodes...)
+	return c
+}
 
 // Ledger 暴露会计快照（API 用）。
 func (inst *Instance) Ledger() accounting.Ledger { return inst.ledger }
@@ -223,3 +262,126 @@ func (inst *Instance) Network() core.NetworkSnapshot {
 
 // RunPayoutNow 立即跑一轮打款（测试/管理后台用）。
 func (inst *Instance) RunPayoutNow(ctx context.Context) error { return inst.engine.RunOnce(ctx) }
+
+// ---- M2 热管理（管理后台调；全部立即生效 + 更新 cfg 快照）----
+
+// PayoutFrozen 打款是否因守恒对账不平被冻结。
+func (inst *Instance) PayoutFrozen() bool { return inst.engine.Frozen() }
+
+// UnfreezePayout 人工解冻（对账修复后）。
+func (inst *Instance) UnfreezePayout() { inst.engine.Unfreeze() }
+
+// FeeSweep 手续费地址 → 冷地址（from 固定为本币 FeeAddress，双地址铁律）。
+func (inst *Instance) FeeSweep(ctx context.Context, coldAddress, amount string) (string, error) {
+	return inst.engine.FeeSweep(ctx, inst.Cfg().FeeAddress, coldAddress, amount)
+}
+
+// FeeCollect 池钱包 → 手续费地址归集（to 固定为本币 FeeAddress）。
+func (inst *Instance) FeeCollect(ctx context.Context, amount string) (string, error) {
+	return inst.engine.FeeCollect(ctx, inst.Cfg().FeeAddress, amount)
+}
+
+// ApplyPayout 热更新打款参数（R4）：费率/起付额/确认数/开关，立即生效不追溯。
+func (inst *Instance) ApplyPayout(p config.PayoutConfig) {
+	inst.engine.SetParams(p.FeePercent, parseFloat(p.MinPayout), p.Confirmations)
+	inst.engine.SetEnabled(inst.deps.Payouts && p.Enabled)
+	inst.mu.Lock()
+	cur := &inst.cfg.Payout
+	cur.FeePercent, cur.MinPayout, cur.Confirmations, cur.Enabled =
+		p.FeePercent, p.MinPayout, p.Confirmations, p.Enabled
+	if p.IntervalSec > 0 {
+		cur.IntervalSec = p.IntervalSec // 下一轮 ticker 周期不变（M2 简化）；重启后生效
+	}
+	inst.mu.Unlock()
+	log.Printf("[%s] 打款参数热更新: fee=%v%% min=%s conf=%d enabled=%v",
+		inst.cfg.ID, p.FeePercent, p.MinPayout, p.Confirmations, p.Enabled)
+}
+
+// AddPort 热添加端口并立即监听。
+func (inst *Instance) AddPort(pc config.PortConfig) error {
+	inst.mu.Lock()
+	for _, p := range inst.cfg.Ports {
+		if p.Port == pc.Port {
+			inst.mu.Unlock()
+			return errf("[%s] 端口 %d 已存在", inst.cfg.ID, pc.Port)
+		}
+	}
+	inst.mu.Unlock()
+	if pc.Enabled {
+		if err := inst.ports.StartPort(inst.ctx, pc); err != nil {
+			return err
+		}
+	}
+	inst.mu.Lock()
+	inst.cfg.Ports = append(inst.cfg.Ports, pc)
+	inst.mu.Unlock()
+	log.Printf("[%s] 热添加端口 %d (%s/%s) enabled=%v", inst.cfg.ID, pc.Port, pc.Mode, pc.Dialect, pc.Enabled)
+	return nil
+}
+
+// RemovePort 热删除端口：停止 accept + 断开该端口全部存量连接。
+func (inst *Instance) RemovePort(port int) error {
+	inst.mu.Lock()
+	idx := -1
+	for i, p := range inst.cfg.Ports {
+		if p.Port == port {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		inst.mu.Unlock()
+		return errf("[%s] 端口 %d 不存在", inst.cfg.ID, port)
+	}
+	enabled := inst.cfg.Ports[idx].Enabled
+	inst.cfg.Ports = append(inst.cfg.Ports[:idx], inst.cfg.Ports[idx+1:]...)
+	inst.mu.Unlock()
+	if enabled {
+		if err := inst.ports.StopPort(port); err != nil {
+			return err
+		}
+	}
+	log.Printf("[%s] 热删除端口 %d", inst.cfg.ID, port)
+	return nil
+}
+
+// SetPortEnabled 热启停端口（保留配置，只动监听器）。
+func (inst *Instance) SetPortEnabled(port int, enabled bool) error {
+	inst.mu.Lock()
+	var pc *config.PortConfig
+	for i := range inst.cfg.Ports {
+		if inst.cfg.Ports[i].Port == port {
+			pc = &inst.cfg.Ports[i]
+			break
+		}
+	}
+	if pc == nil {
+		inst.mu.Unlock()
+		return errf("[%s] 端口 %d 不存在", inst.cfg.ID, port)
+	}
+	was := pc.Enabled
+	pc.Enabled = enabled
+	snapshot := *pc
+	inst.mu.Unlock()
+	if was == enabled {
+		return nil
+	}
+	if enabled {
+		return inst.ports.StartPort(inst.ctx, snapshot)
+	}
+	return inst.ports.StopPort(port)
+}
+
+// SetNewConns 热开关：是否接受新连接（存量不断；R7 币开关的软下线用法）。
+func (inst *Instance) SetNewConns(v bool) {
+	inst.ports.SetAcceptNew(v)
+	inst.mu.Lock()
+	inst.cfg.NewConnsEnabled = v
+	inst.mu.Unlock()
+	log.Printf("[%s] 新连接开关 = %v", inst.cfg.ID, v)
+}
+
+// RunReconcile 手工触发守恒对账，返回 delta（"0.00000000" = 平）。
+func (inst *Instance) RunReconcile(ctx context.Context) (string, error) {
+	return inst.ledger.Reconcile(ctx, inst.cfg.ID)
+}

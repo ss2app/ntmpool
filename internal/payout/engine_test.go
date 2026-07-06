@@ -176,6 +176,85 @@ func TestSameHeightTwinBlocks(t *testing.T) {
 	}
 }
 
+// M2 热参数：SetParams 立即生效（费率/起付额/确认数）；mp= 地址级覆盖只调高。
+func TestHotParamsAndMinPayoutOverride(t *testing.T) {
+	ctx := context.Background()
+	e, l, node, w := setup(t)
+	// A、B 各 1 份权重；覆盖 B 起付额到 100（B 不该被打款）
+	e.SetMinPayoutOverrides(func() map[string]float64 { return map[string]float64{"B": 100} })
+	e.SetParams(10, 1.0, 50) // 费 0→10%，成熟 100→50
+
+	_ = l.RecordShare(ctx, core.Share{Coin: "t", Address: "A"}, 1)
+	_ = l.RecordShare(ctx, core.Share{Coin: "t", Address: "B"}, 1)
+	b := core.FoundBlock{Coin: "t", Height: 100, Hash: "h", Finder: "A",
+		Reward: "50.00000000", NetDiff: 1, Status: core.BlockPending}
+	_ = l.RecordBlock(ctx, b, "raw")
+	node.conf["h"] = 60 // ≥ 新 maturity 50（旧 100 不满足 → 证明热改生效）
+	node.mainHash[100] = "h"
+
+	if err := e.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := l.Snapshot(ctx, "t")
+	if snap.Confirmed != 1 {
+		t.Fatalf("确认数热改未生效: %+v", snap)
+	}
+	if snap.TotalFees != "5.00000000" {
+		t.Fatalf("费率热改未生效 fees=%s", snap.TotalFees)
+	}
+	// 只有 A 被打款（22.5=45/2）；B 被 mp 覆盖挡住，余额保留
+	if len(w.broadcasted) != 1 {
+		t.Fatalf("应只广播 1 笔: %d", len(w.broadcasted))
+	}
+	if snap.Balances["B"] != "22.50000000" {
+		t.Fatalf("B 应被 mp=100 挡住: %+v", snap.Balances)
+	}
+	if snap.Balances["A"] != "0.00000000" {
+		t.Fatalf("A 应已打款: %+v", snap.Balances)
+	}
+}
+
+// 冻结后 FeeSweep/FeeCollect 拒绝；Unfreeze 解冻。
+func TestFreezeAndFeeOps(t *testing.T) {
+	ctx := context.Background()
+	e, _, _, w := setup(t)
+	if e.Frozen() {
+		t.Fatal("初始不应冻结")
+	}
+	// FeeCollect 走通用批次：kind=fee_collect + 广播前落库
+	txid, err := e.FeeCollect(ctx, "feeAddr", "1.50000000")
+	if err != nil || txid == "" {
+		t.Fatalf("FeeCollect: %v", err)
+	}
+	found := false
+	for _, b := range e.store.All() {
+		if b.Kind == "fee_collect" && b.TxID == txid && b.Outputs["feeAddr"] == "1.50000000" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("fee_collect 批次未落库")
+	}
+	if len(w.broadcasted) != 1 {
+		t.Fatalf("应广播 1 笔: %d", len(w.broadcasted))
+	}
+
+	// 手动置冻结 → 费操作全拒
+	e.mu.Lock()
+	e.frozen = true
+	e.mu.Unlock()
+	if _, err := e.FeeCollect(ctx, "feeAddr", "1"); err == nil {
+		t.Fatal("冻结中 FeeCollect 应拒")
+	}
+	if _, err := e.FeeSweep(ctx, "feeAddr", "cold", "1"); err == nil {
+		t.Fatal("冻结中 FeeSweep 应拒")
+	}
+	e.Unfreeze()
+	if e.Frozen() {
+		t.Fatal("Unfreeze 未生效")
+	}
+}
+
 // 节点不认识块（conf<0）→ 孤块。
 func TestOrphanByNotFound(t *testing.T) {
 	ctx := context.Background()

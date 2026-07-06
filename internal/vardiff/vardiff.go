@@ -53,6 +53,7 @@ type State struct {
 	cfg          Config
 	cur          float64
 	prev         float64   // 上一档难度（一步 grace 用）
+	fixed        bool      // 矿工 -p d= 固定难度：不再 retarget
 	lastRetarget time.Time // 上次 retarget 时刻
 	lastShare    time.Time
 	emaInterval  float64 // 秒
@@ -75,6 +76,21 @@ func (s *State) Current() float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.cur
+}
+
+// SetFixed 固定难度（矿工 `-p d=` 参数）：立即生效且不再 retarget。
+// 夹在端口 Min/Max 内（防设出协议可用范围）。返回实际生效值。
+func (s *State) SetFixed(d float64) float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d < s.cfg.MinDiff {
+		d = s.cfg.MinDiff
+	}
+	if s.cfg.MaxDiff > 0 && d > s.cfg.MaxDiff {
+		d = s.cfg.MaxDiff
+	}
+	s.prev, s.cur, s.fixed = d, d, true
+	return d
 }
 
 // Judge 判定一条 share 的难度归属（不含 badpow —— 共识校验在调用方先做）。
@@ -120,6 +136,9 @@ func (s *State) MaybeRetarget(now time.Time) (float64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.fixed {
+		return s.cur, false
+	}
 	if now.Sub(s.lastRetarget) < s.cfg.RetargetEvery {
 		return s.cur, false
 	}

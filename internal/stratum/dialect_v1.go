@@ -25,6 +25,7 @@ import (
 	"github.com/scashcc/ntmpool/internal/btcwork"
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/core"
+	"github.com/scashcc/ntmpool/internal/minersettings"
 	"github.com/scashcc/ntmpool/internal/vardiff"
 )
 
@@ -75,10 +76,19 @@ type V1Dialect struct {
 	handler ShareHandler
 	connSeq atomic.Uint64
 	conns   sync.Map // *v1Conn → struct{}，用于新块广播
+
+	// onAuth 授权钩子（可选）：密码参数交上层持久化（矿工设置 mp= 等）。
+	// 只做记录/设置，不影响授权结果。
+	onAuth func(addr, worker string, p minersettings.PasswordParams)
 }
 
 func NewV1Dialect(coinID string, h ShareHandler) *V1Dialect {
 	return &V1Dialect{coinID: coinID, handler: h}
+}
+
+// SetAuthHook 注入授权钩子（启动时一次）。
+func (d *V1Dialect) SetAuthHook(h func(addr, worker string, p minersettings.PasswordParams)) {
+	d.onAuth = h
 }
 
 // BroadcastJob 新块到达时推最新 job 给所有在连矿工（clean_jobs=true 作废旧工作）。
@@ -264,10 +274,25 @@ func (c *v1Conn) onAuthorize(msg *rpcMsg) error {
 	} else {
 		c.address, c.worker = user, "default"
 	}
-	// TODO(M2): 解析 params[1] 密码参数 d=/mp=；校验地址合法性由 ShareHandler/adapter 出
+	// 密码参数（R5/docs/02 §3）：d= 固定难度连接级立即生效；mp=/密码绑定交上层持久化。
+	fixedDiff := false
+	if len(params) >= 2 && params[1] != "" {
+		pp := minersettings.ParsePassword(params[1])
+		if pp.FixedDiff > 0 {
+			c.vd.SetFixed(pp.FixedDiff) // 夹在端口 Min/Max 内
+			fixedDiff = true
+		}
+		if c.d.onAuth != nil {
+			c.d.onAuth(c.address, c.worker, pp)
+		}
+	}
 	c.authorized = true
 	if err := c.reply(msg.ID, true, nil); err != nil {
 		return err
+	}
+	// 固定难度：订阅时下发的难度已过期 → 补发一次
+	if fixedDiff {
+		c.sendDifficulty()
 	}
 	// 授权后补推一次 job（有些锄头 subscribe/authorize 顺序不同）
 	return c.sendCurrentJob(true)

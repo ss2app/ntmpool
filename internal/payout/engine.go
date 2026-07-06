@@ -61,6 +61,9 @@ type Engine struct {
 	mu       sync.Mutex // 每币打款锁
 	enabled  bool
 	frozen   bool // 守恒对账破坏时冻结
+
+	// minOverrides 地址级起付额覆盖（矿工 mp= 设置，minersettings 注入；可为 nil）
+	minOverrides func() map[string]float64
 }
 
 func NewEngine(cfg Config, l accounting.Ledger, node NodeClassifier, w adapter.WalletAdapter, store BatchStore) *Engine {
@@ -75,6 +78,58 @@ func (e *Engine) SetEnabled(v bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.enabled = v
+}
+
+// Enabled 当前打款开关状态（管理后台查询）。
+func (e *Engine) Enabled() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.enabled
+}
+
+// SetMinPayoutOverrides 注入地址级起付额来源（启动时一次）。
+func (e *Engine) SetMinPayoutOverrides(f func() map[string]float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.minOverrides = f
+}
+
+// SetParams 热更新打款参数（R4：新 round 用新值，已入账的不追溯）。
+// 只允许改费率/起付额/确认数——币种/精度是身份，不可热改。
+func (e *Engine) SetParams(feePercent, minPayout float64, maturity int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if feePercent >= 0 && feePercent <= 100 {
+		e.cfg.FeePercent = feePercent
+	}
+	if minPayout > 0 {
+		e.cfg.MinPayout = minPayout
+	}
+	if maturity > 0 {
+		e.cfg.Maturity = maturity
+	}
+}
+
+// Params 当前生效参数快照（管理后台/审计用）。
+func (e *Engine) Params() Config {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cfg
+}
+
+// Frozen 是否因守恒对账不平被冻结。
+func (e *Engine) Frozen() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.frozen
+}
+
+// Unfreeze 人工解冻（管理后台，对账修复后调用）。下一轮对账仍不平会再次冻结。
+func (e *Engine) Unfreeze() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.frozen = false
+	log.Printf("[payout %s] 人工解冻打款（下一轮对账不平将再次冻结）", e.cfg.Coin)
 }
 
 // RunOnce 一轮：分类块 → 入账 → 守恒对账 → 打款。持锁串行。
@@ -141,7 +196,11 @@ func (e *Engine) classify(ctx context.Context) error {
 
 // payout 一轮打款：组批 → 先扣余额 → 拆步签名落库 → 广播 → 追踪。
 func (e *Engine) payout(ctx context.Context) error {
-	payable, err := e.ledger.PayableBalances(ctx, e.cfg.Coin, e.cfg.MinPayout, nil)
+	var perAddr map[string]float64
+	if e.minOverrides != nil {
+		perAddr = e.minOverrides() // 矿工 mp= 地址级起付额（只能调高，Ledger 侧取 max）
+	}
+	payable, err := e.ledger.PayableBalances(ctx, e.cfg.Coin, e.cfg.MinPayout, perAddr)
 	if err != nil || len(payable) == 0 {
 		return err
 	}
@@ -244,10 +303,26 @@ func (e *Engine) FeeSweep(ctx context.Context, fromFeeAddress, coldAddress, amou
 	if e.frozen {
 		return "", fmt.Errorf("[%s] 打款冻结中，拒绝 fee sweep", e.cfg.Coin)
 	}
-	outputs := map[string]string{coldAddress: amount}
-	batch := &Batch{ID: e.store.NextBatchID(), Kind: "fee_sweep", Outputs: outputs, Status: core.PaymentCreated, CreatedAt: time.Now()}
-	_ = e.store.Save(batch)
 	// 手续费地址的钱是池外收益（不在 ledger balances 里），不走 DeductForPayout。
+	return e.sendBatchLocked(ctx, "fee_sweep", map[string]string{coldAddress: amount})
+}
+
+// FeeCollect 手续费归集（R9）：从池钱包转 amount 到手续费地址（kind=fee_collect）。
+// 池钱包里矿工余额与费混在一起（coinbase 全进池地址）——转出额度必须由调用方
+// 对照 Ledger 的 TotalFees 与历史归集量把关（管理后台展示未归集额并校验）。
+func (e *Engine) FeeCollect(ctx context.Context, feeAddress, amount string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.frozen {
+		return "", fmt.Errorf("[%s] 打款冻结中，拒绝手续费归集", e.cfg.Coin)
+	}
+	return e.sendBatchLocked(ctx, "fee_collect", map[string]string{feeAddress: amount})
+}
+
+// sendBatchLocked 通用「意图落库→拆步签名→广播前落库→广播」批次发送（须持 e.mu）。
+func (e *Engine) sendBatchLocked(ctx context.Context, kind string, outputs map[string]string) (string, error) {
+	batch := &Batch{ID: e.store.NextBatchID(), Kind: kind, Outputs: outputs, Status: core.PaymentCreated, CreatedAt: time.Now()}
+	_ = e.store.Save(batch)
 	if e.rawtx != nil {
 		txid, rawtx, err := e.rawtx.PrepareSendMany(ctx, outputs)
 		if err != nil {
@@ -256,7 +331,7 @@ func (e *Engine) FeeSweep(ctx context.Context, fromFeeAddress, coldAddress, amou
 			return "", err
 		}
 		batch.PlannedTxID, batch.RawTx, batch.Status = txid, rawtx, core.PaymentSent
-		_ = e.store.Save(batch)
+		_ = e.store.Save(batch) // 广播前落库！
 		if err := e.rawtx.Broadcast(ctx, rawtx); err != nil {
 			return "", err
 		}

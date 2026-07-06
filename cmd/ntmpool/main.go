@@ -1,27 +1,32 @@
 // ntmpool — 通用多币种矿池核心（scashcc/ntmpool，闭源）。
 //
-// M0 骨架：配置加载 + 算法金锚自检门禁 + 公共/管理 API 占位 + 优雅退出。
-// M1 起接入：stratum 方言、节点适配器、会计、打款（见 docs/03-ROADMAP.md）。
+// M0 骨架 → M1 单币竖切（stratum/会计/打款/公共 API）→ M2 热管理 + 管理后台。
+// 见 docs/03-ROADMAP.md。
 package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 
+	"github.com/scashcc/ntmpool/internal/admin"
 	"github.com/scashcc/ntmpool/internal/api"
+	"github.com/scashcc/ntmpool/internal/banlist"
 	"github.com/scashcc/ntmpool/internal/coininstance"
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/hasher"
+	"github.com/scashcc/ntmpool/internal/minersettings"
 )
 
-var version = "0.1.0-m0"
+var version = "0.2.0-m2"
 
 func main() {
 	cfgPath := flag.String("config", "config.json", "配置文件路径")
@@ -33,6 +38,23 @@ func main() {
 		log.Fatalf("[boot] 配置加载失败: %v", err)
 	}
 	cfg := store.Snapshot()
+
+	// 状态目录（bans/miner_settings/config.state/config_audit）
+	dataDir := cfg.DataDir
+	if dataDir == "" {
+		dataDir = "."
+	}
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		log.Fatalf("[boot] 建状态目录失败: %v", err)
+	}
+	statePath := filepath.Join(dataDir, "config.state.json")
+
+	// 重启以最后热状态为准（docs/02 §7）：管理后台的热变更覆盖启动配置
+	if applied, err := config.LoadAndApplyState(statePath, cfg); err != nil {
+		log.Fatalf("[boot] %v", err)
+	} else if applied {
+		log.Printf("[boot] 已应用热状态 %s（重启以最后热状态为准）", statePath)
+	}
 
 	// 铁律：所有启用算法先过金锚自检，不过不启动。
 	algos := map[string]bool{}
@@ -54,6 +76,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// 跨币共享部件：ban 名单 + 矿工设置
+	bans, err := banlist.New(filepath.Join(dataDir, "bans.json"))
+	if err != nil {
+		log.Fatalf("[boot] ban 名单加载失败: %v", err)
+	}
+	settings, err := minersettings.New(filepath.Join(dataDir, "miner_settings.json"),
+		loadOrCreateSalt(filepath.Join(dataDir, "settings.salt")))
+	if err != nil {
+		log.Fatalf("[boot] 矿工设置加载失败: %v", err)
+	}
+	deps := coininstance.Deps{Payouts: *payouts, Ban: bans, Settings: settings}
+
 	// 币实例注册表（API 读快照；热添加币后自动可见）
 	var instMu sync.Mutex
 	instByID := map[string]*coininstance.Instance{}
@@ -61,6 +95,15 @@ func main() {
 		instMu.Lock()
 		defer instMu.Unlock()
 		out := make(map[string]api.Pool, len(instByID))
+		for id, inst := range instByID {
+			out[id] = inst
+		}
+		return out
+	}
+	controlSnapshot := func() map[string]admin.CoinControl {
+		instMu.Lock()
+		defer instMu.Unlock()
+		out := make(map[string]admin.CoinControl, len(instByID))
 		for id, inst := range instByID {
 			out[id] = inst
 		}
@@ -84,33 +127,27 @@ func main() {
 		}
 	}()
 
-	// 管理后台 API（独立端口 + token；一切热操作入口，M2 填充）
-	adm := http.NewServeMux()
-	adm.HandleFunc("/admin/v1/ping", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.AdminToken == "" || r.Header.Get("Authorization") != "Bearer "+cfg.AdminToken {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		fmt.Fprintln(w, "pong")
-	})
+	// 管理后台 API（独立端口 + Bearer token；一切热操作入口，internal/admin）
+	admSrv := admin.New(version, cfg.InstanceID, cfg.AdminToken, controlSnapshot,
+		bans, settings, statePath, filepath.Join(dataDir, "config_audit.jsonl"))
 	go func() {
 		if cfg.AdminAPI == "" {
 			return
 		}
 		log.Printf("[api] admin API on %s", cfg.AdminAPI)
-		if err := http.ListenAndServe(cfg.AdminAPI, adm); err != nil {
+		if err := http.ListenAndServe(cfg.AdminAPI, admSrv.Handler()); err != nil {
 			log.Printf("[api] admin API 退出: %v", err)
 		}
 	}()
 
-	// 每币拉起独立实例（bitcoin-rpc + stratum1，M1 竖切）
+	// 每币拉起独立实例（bitcoin-rpc + stratum1）
 	var instances []*coininstance.Instance
 	for _, coin := range cfg.Coins {
 		if !coin.MiningEnabled {
 			log.Printf("[boot] 跳过 %s（mining 未启用）", coin.ID)
 			continue
 		}
-		inst, err := coininstance.Start(ctx, coin, *payouts)
+		inst, err := coininstance.Start(ctx, coin, deps)
 		if err != nil {
 			log.Printf("[boot] 启动币 %s 失败: %v", coin.ID, err)
 			continue
@@ -130,4 +167,20 @@ func main() {
 	for _, inst := range instances {
 		inst.Stop()
 	}
+}
+
+// loadOrCreateSalt 矿工设置密码 hash 的盐：首次启动随机生成并落盘，之后复用
+// （必须跨重启稳定，否则矿工的设置密码全部失效）。
+func loadOrCreateSalt(path string) []byte {
+	if b, err := os.ReadFile(path); err == nil && len(b) >= 16 {
+		return b
+	}
+	salt := make([]byte, 32)
+	if _, err := rand.Read(salt); err != nil {
+		log.Fatalf("[boot] 生成盐失败: %v", err)
+	}
+	if err := os.WriteFile(path, salt, 0600); err != nil {
+		log.Fatalf("[boot] 写盐文件失败: %v", err)
+	}
+	return salt
 }

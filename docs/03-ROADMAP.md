@@ -43,11 +43,13 @@ M1 收尾：
 
 ## M2 — 热管理 + 管理后台 API
 
-- 热参数：手续费/确认数/起付额/端口增删启停（监听器热启停）
-- 管理后台 API（token 鉴权）：全部热操作 + ban 管理 + 对账 + 手续费转移（fee sweep 状态机）
-- 双地址强制分离 + 手续费自动归集
-- 矿工设置：`-p mp=21` 密码绑定 + miner_settings
-- 通知：Telegram/webhook（爆块/打款/孤块/节点失联/对账不平）
+- [x] **热参数**（2026-07-06）：费率/确认数/起付额（`payout.Engine.SetParams`，新 round 生效不追溯）；端口增删启停（`stratum.Manager` 真监听器热启停，e2e 实测存量端口无扰）；币开关 newConnectionsEnabled（只拒新连存量不断）。
+- [x] **管理后台 API `internal/admin`**：独立端口 + Bearer token（constant-time；无 token = 整面拒绝服务）。端点：status、coins/{id}（节点密码 redacted）、payout PATCH（部分更新）、payout/run、reconcile、unfreeze（守恒冻结人工解冻）、feesweep、feecollect、ports 增删启停、newconns、bans 增删查、miners/{addr}/settings 查/重置。**每次变更写 config_audit.jsonl + 落盘 config.state.json（只存热参数子集，密钥绝不落盘）；重启 overlay 热状态（以最后热状态为准）**。
+- [x] **ban 管理 `internal/banlist`**：IP/CIDR、TTL 过期、Strikes 退避计数、JSON 持久化；stratum accept 最外圈拒连（全池共享一份）。自动 ban（invalidPercent 阈值）留 M3 连接治理一起做。
+- [x] **矿工设置 `internal/minersettings`**（R5）：密码字段 `d=`（固定难度，连接级，vardiff.SetFixed 夹 Min/Max）/`mp=`/`pl=` 解析；首个带密码连接绑定设置密码（HMAC+盐文件跨重启稳定），之后改设置需同密码；起付额下限=池默认、上限可配；打款引擎走 PayableBalances perAddr 覆盖；管理后台可查/可 bypass 重置。
+- [x] 手续费转移：FeeSweep（费地址→冷address）+ FeeCollect（池钱包→费地址归集），共用「意图落库→广播前落库」批次流程，冻结时拒绝。双地址分离校验 M0 起已有。
+- [ ] 通知：Telegram/webhook（爆块/打款/孤块/节点失联/对账不平）——M2 唯一未做项，下轮
+- [ ] 手续费自动归集定时器（现为管理后台手动触发；自动化等通知一起）
 
 ## M3 — 多币 + 多方言
 
