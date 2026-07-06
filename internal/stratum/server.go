@@ -22,10 +22,6 @@ type Dialect interface {
 	Serve(ctx context.Context, conn net.Conn, port config.PortConfig) error
 }
 
-var dialects = map[string]Dialect{}
-
-func RegisterDialect(d Dialect) { dialects[d.Name()] = d }
-
 // Listener 一个热管理的 stratum 端口。
 type Listener struct {
 	cfg    config.PortConfig
@@ -35,14 +31,16 @@ type Listener struct {
 }
 
 // Manager 端口热管理器：管理后台增/删/改端口时调用，不影响其他端口的存量连接。
+// 每币一个 Manager，持有该币可用的方言（方言是 per-coin 的，含该币 ShareHandler）。
 type Manager struct {
 	mu        sync.Mutex
 	coinID    string
+	dialects  map[string]Dialect
 	listeners map[int]*Listener
 }
 
-func NewManager(coinID string) *Manager {
-	return &Manager{coinID: coinID, listeners: map[int]*Listener{}}
+func NewManager(coinID string, dialects map[string]Dialect) *Manager {
+	return &Manager{coinID: coinID, dialects: dialects, listeners: map[int]*Listener{}}
 }
 
 // StartPort 热启动一个端口。
@@ -52,7 +50,7 @@ func (m *Manager) StartPort(parent context.Context, pc config.PortConfig) error 
 	if _, ok := m.listeners[pc.Port]; ok {
 		return fmt.Errorf("[%s] 端口 %d 已在监听", m.coinID, pc.Port)
 	}
-	d, ok := dialects[pc.Dialect]
+	d, ok := m.dialects[pc.Dialect]
 	if !ok {
 		return fmt.Errorf("[%s] 未知方言 %q", m.coinID, pc.Dialect)
 	}
