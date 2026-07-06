@@ -53,12 +53,14 @@ M1 收尾：
 
 **M2 = 全部 DONE（2026-07-06）**。
 
-## M3 — 多币 + 多方言
+## M3 — 多币 + 多方言（下一期）
 
-- CryptoNote 方言（XMRig 系登录/job/submit）+ cryptonote-rpc 适配器 → 用 taron 冷归档代码/dragonx 验证
-- custom-http 适配器（zoka 先例）+ NTM 自有方言（自写链）
-- RandomX hasher FFI（复用 dragonx/zoka 的 stock librandomx 经验，`-DARCH=default`）
-- 多币单实例共存（每币独立开关/独立日志/独立地址对）
+- CryptoNote 方言（XMRig 系 login/job/submit）——协议细节已调研齐，见 **docs/04 §2**（login params/algo 协商/seed_hash 64hex/worker 识别顺序 rigid>pass>+worker/keepalived）。验证客户端：XMRig 官方（标准参考实现）+ NTMminer rx 系。
+- RandomX hasher FFI：Go cgo 链 stock librandomx（`-DARCH=default` 重编，C 链 C++ 要 `-lstdc++`——工厂坑见 `_knowledge/pitfalls/randomx-vendor-into-c-miner.md`）；金锚自检 = rx/0 官方 test vector + 与 NTMminer `rx_dragonx.c` 跨实现逐字节对拍。
+- custom-http 适配器（zoka 先例：节点 REST /mining/template+submit；CRB miningcore 魔改先例）+ cryptonote-rpc 适配器（门罗系 daemon+wallet 分离）。
+- 验证素材：**dragonx**（rx/dragonx，103.80 有 live 节点+miningcore 池可对拍口径）、**zoka**（rx/0 标准，live）、taron 冷归档 `coins/taron`（rx/tar miningcore CN family 配置参考；币已放弃只作代码参考）。
+- 多币单实例共存（每币独立开关/独立日志/独立地址对）——架构已支持（CoinInstance 独立生命周期），补多币 e2e。
+- 顺带：协议层自动 ban（invalidPercent 阈值+指数退避，banlist.Strikes 已备好）+ PROXY protocol 解包（藏转发器后拿真实 IP，R12）。
 
 ## M4 — 横向扩展 + 前端 API 定稿
 
