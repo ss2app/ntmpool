@@ -1,0 +1,46 @@
+{
+  "instanceId": "pool1",
+  "postgresDsn": "postgres://ntmpool:${NTMPOOL_PG_PASS}@127.0.0.1:5432/ntmpool",
+  "publicApiListen": ":4000",
+  "adminApiListen": "127.0.0.1:4900",
+  "adminToken": "${NTMPOOL_ADMIN_TOKEN}",
+  "logDir": "logs",
+  "logQuotaMB": 2048,
+  "coins": [
+    {
+      "id": "demo",
+      "symbol": "DEMO",
+      "adapter": "bitcoin-rpc",
+      "algo": "sha256d",
+      "nodes": [
+        { "url": "http://127.0.0.1:18443", "user": "rpc", "pass": "${DEMO_RPC_PASS}", "zmq": "tcp://127.0.0.1:28332" }
+      ],
+      "poolAddress": "POOL_ADDRESS_HERE",
+      "feeAddress": "FEE_ADDRESS_HERE",
+      "ports": [
+        {
+          "port": 3401, "mode": "pplns", "dialect": "stratum1", "enabled": true,
+          "proxyProtocol": "required", "maxConns": 5000,
+          "vardiff": { "enabled": true, "startDiff": 16, "minDiff": 1, "maxDiff": 1000000, "targetSeconds": 12 }
+        },
+        {
+          "port": 3402, "mode": "solo", "dialect": "stratum1", "enabled": true,
+          "proxyProtocol": "required", "maxConns": 1000,
+          "vardiff": { "enabled": true, "startDiff": 64, "minDiff": 1, "maxDiff": 10000000, "targetSeconds": 12 }
+        }
+      ],
+      "payout": {
+        "enabled": false,
+        "scheme": "pplns",
+        "pplnsFactor": 2.0,
+        "feePercent": 10.0,
+        "minPayout": "0.01",
+        "confirmations": 100,
+        "intervalSeconds": 600,
+        "orphanDebts": true
+      },
+      "miningEnabled": true,
+      "newConnectionsEnabled": true
+    }
+  ]
+}

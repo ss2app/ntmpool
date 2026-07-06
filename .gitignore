@@ -1,0 +1,19 @@
+# 密钥/钱包绝不进 git（铁律）
+*.pem
+*.key
+*.seed
+*.env
+config.local.json
+config.state.json
+githubtoken.txt
+
+# 构建产物与日志
+/ntmpool
+/ntmpool.exe
+/dist/
+*.log
+/logs/
+
+# 本地杂物
+*.tmp
+.DS_Store
