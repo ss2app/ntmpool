@@ -75,9 +75,11 @@ type NodeEndpoint struct {
 type CoinConfig struct {
 	ID          string         `json:"id"`     // 池内唯一，如 "btx"
 	Symbol      string         `json:"symbol"` // 展示用
-	Adapter     string         `json:"adapter"`
+	Adapter     string         `json:"adapter"` // "bitcoin-rpc" | "cryptonote-rpc" | "custom-http"
 	Algo        string         `json:"algo"`
-	Nodes       []NodeEndpoint `json:"nodes"` // 多节点 failover + 并发提交
+	Decimals    int            `json:"decimals"` // 币最小单位小数位；0 = 按适配器默认（btc 系 8，门罗系 12）
+	Nodes       []NodeEndpoint `json:"nodes"`  // 多节点 failover + 并发提交
+	Wallet      NodeEndpoint   `json:"wallet"` // 钱包独立进程的链（cryptonote-rpc 必填）
 	PoolAddress string         `json:"poolAddress"`
 	FeeAddress  string         `json:"feeAddress"` // 铁律：必须 ≠ PoolAddress，启动校验
 	Ports       []PortConfig   `json:"ports"`

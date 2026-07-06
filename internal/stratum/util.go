@@ -1,12 +1,21 @@
 package stratum
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
 )
+
+// newLineScanner 行扫描器（抗超大行洪水，各方言共用）。
+func newLineScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 4096), 64*1024)
+	return sc
+}
 
 // parseHexU32 解析 8 hex 字符（大端）为 uint32。stratum 的 ntime/nonce/version_bits 均此格式。
 func parseHexU32(s string) (uint32, error) {

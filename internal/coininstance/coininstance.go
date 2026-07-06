@@ -12,13 +12,11 @@ import (
 	"time"
 
 	"github.com/scashcc/ntmpool/internal/accounting"
-	"github.com/scashcc/ntmpool/internal/adapter/bitcoinrpc"
+	"github.com/scashcc/ntmpool/internal/adapter"
 	"github.com/scashcc/ntmpool/internal/banlist"
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/core"
-	"github.com/scashcc/ntmpool/internal/hasher"
 	"github.com/scashcc/ntmpool/internal/hashrate"
-	"github.com/scashcc/ntmpool/internal/jobmanager"
 	"github.com/scashcc/ntmpool/internal/minersettings"
 	"github.com/scashcc/ntmpool/internal/notify"
 	"github.com/scashcc/ntmpool/internal/payout"
@@ -35,12 +33,39 @@ type Deps struct {
 	Notify   *notify.Hub          // 运营通知（爆块/打款/孤块/节点失联/对账冻结）
 }
 
+// statusSource 节点健康检查面（失联检测/高度轮询）。
+type statusSource interface {
+	Status(ctx context.Context) (adapter.ChainStatus, error)
+}
+
+// jobPipe 各链家族作业管理器的公共面（jobmanager=GBT 系 / cnjob=blob 系）。
+type jobPipe interface {
+	Refresh(ctx context.Context, clean bool) error
+	Snapshot() (height uint64, netDiff float64, ok bool)
+}
+
+// authHookable 支持矿工设置钩子的方言（V1/CN 都实现）。
+type authHookable interface {
+	SetAuthHook(func(addr, worker string, p minersettings.PasswordParams))
+}
+
+// familyParts 一个链家族（bitcoin GBT / blob CN 系）拼装出的全部部件。
+// 家族构建器见 family_bitcoin.go / family_blob.go —— M3 选型化的核心：
+// coininstance 只认这些面，节点形态/方言/算法在构建器里按 cfg.Adapter 绑定。
+type familyParts struct {
+	status     statusSource
+	hashps     adapter.HashPSSource // nil = 链无全网算力真值口径（API 省略，绝不反推）
+	classifier payout.NodeClassifier
+	wallet     adapter.WalletAdapter
+	jobs       jobPipe
+	dialects   map[string]stratum.Dialect
+	connCount  func() int
+}
+
 // Instance 一个运行中的币。
 type Instance struct {
 	cfg     config.CoinConfig
-	node    *bitcoinrpc.Client
-	jm      *jobmanager.JobManager
-	dialect *stratum.V1Dialect
+	parts   *familyParts
 	ports   *stratum.Manager
 	ledger  accounting.Ledger
 	engine  *payout.Engine
@@ -73,27 +98,34 @@ func (inst *Instance) notifyEvent(kind, title string, fields map[string]string) 
 	})
 }
 
-// Start 拼装并启动该币（bitcoin-rpc + stratum1 方言，M1 竖切）。
+// Start 拼装并启动该币：按 cfg.Adapter 选链家族（M3 选型化），
+// 家族构建器绑定 节点适配器 × 算法 × 作业管理器 × 方言，其余部件全家族共用。
 func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance, error) {
 	if len(cfg.Nodes) == 0 {
 		return nil, errf("[%s] 未配置节点", cfg.ID)
 	}
-	n := cfg.Nodes[0]
-	node := bitcoinrpc.New(cfg.ID, n.URL, n.User, n.Pass)
-
-	hsh, err := hasher.Get(cfg.Algo)
-	if err != nil {
-		return nil, err
-	}
 
 	ctx, cancel := context.WithCancel(parent)
-	inst := &Instance{cfg: cfg, node: node, deps: deps, ctx: ctx, cancel: cancel}
+	inst := &Instance{cfg: cfg, deps: deps, ctx: ctx, cancel: cancel}
 
-	// 会计 + 打款 + 算力采样（算力窗口与 PPLNS 窗口分开，pitfall C6）
-	decimals := 8
+	// 会计 + 算力采样（算力窗口与 PPLNS 窗口分开，pitfall C6）
+	decimals := cfg.Decimals
+	if decimals <= 0 {
+		decimals = 8
+	}
 	inst.ledger = accounting.NewMemLedger(decimals, cfg.Payout.PplnsFactor)
 	inst.tracker = hashrate.New(hashrate.Config{})
 	inst.batches = payout.NewMemBatchStore()
+
+	// 链家族选型：节点适配器 × 方言 × 作业管理器
+	parts, err := buildFamily(ctx, cfg, decimals, inst)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	inst.parts = parts
+
+	// 打款引擎（家族无关：只吃 NodeClassifier + WalletAdapter）
 	pcfg := payout.Config{
 		Coin: cfg.ID, Decimals: decimals,
 		FeePercent: cfg.Payout.FeePercent, MinPayout: parseFloat(cfg.Payout.MinPayout),
@@ -102,7 +134,7 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 		FeeCollectEnabled: cfg.Payout.FeeCollect.Enabled,
 		FeeCollectMin:     cfg.Payout.FeeCollect.MinAmount,
 	}
-	inst.engine = payout.NewEngine(pcfg, inst.ledger, node, node, inst.batches)
+	inst.engine = payout.NewEngine(pcfg, inst.ledger, parts.classifier, parts.wallet, inst.batches)
 	inst.engine.SetEnabled(deps.Payouts && cfg.Payout.Enabled)
 	inst.engine.SetEvents(inst.notifyEvent)
 	if deps.Settings != nil {
@@ -112,43 +144,26 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 		})
 	}
 
-	// JobManager + 方言
-	reg := stratum.NewJobRegistry()
-	inst.jm = jobmanager.New(cfg.ID, node, hsh, reg, extraNonce2Size, decimals)
-	if err := inst.jm.Init(ctx, cfg.PoolAddress); err != nil {
-		cancel()
-		return nil, errf("[%s] 初始化矿池地址脚本失败: %v", cfg.ID, err)
-	}
-	inst.dialect = stratum.NewV1Dialect(cfg.ID, inst.jm)
+	// 矿工设置钩子（V1/CN 方言同款）
 	if deps.Settings != nil {
 		coinID, defMin := cfg.ID, parseFloat(cfg.Payout.MinPayout)
-		inst.dialect.SetAuthHook(func(addr, worker string, p minersettings.PasswordParams) {
+		hook := func(addr, worker string, p minersettings.PasswordParams) {
 			note, err := deps.Settings.ApplyPassword(coinID, addr, p, defMin)
 			if err != nil {
 				log.Printf("[%s] 矿工 %s.%s 密码设置被拒: %v", coinID, short(addr), worker, err)
 			} else if note != "" {
 				log.Printf("[%s] 矿工 %s.%s 设置: %s", coinID, short(addr), worker, note)
 			}
-		})
+		}
+		for _, d := range parts.dialects {
+			if ah, ok := d.(authHookable); ok {
+				ah.SetAuthHook(hook)
+			}
+		}
 	}
-	inst.jm.SetCallbacks(
-		inst.dialect.BroadcastJob,
-		func(ctx context.Context, b core.FoundBlock, rawHex string) error {
-			log.Printf("[%s] ★爆块 height=%d hash=%s finder=%s", cfg.ID, b.Height, b.Hash[:12], b.Finder)
-			inst.notifyEvent("block_found", "★爆块", map[string]string{
-				"height": fmt.Sprint(b.Height), "hash": b.Hash,
-				"finder": short(b.Finder), "reward": b.Reward,
-			})
-			return inst.ledger.RecordBlock(ctx, b, rawHex)
-		},
-		func(ctx context.Context, s core.Share) {
-			_ = inst.ledger.RecordShare(ctx, s, s.Difficulty)
-			inst.tracker.Record(s.Address, s.Worker, s.Difficulty, s.At)
-		},
-	)
 
 	// 端口（每币可多端口，热管理）
-	inst.ports = stratum.NewManager(cfg.ID, map[string]stratum.Dialect{"stratum1": inst.dialect})
+	inst.ports = stratum.NewManager(cfg.ID, parts.dialects)
 	if deps.Ban != nil {
 		inst.ports.SetBanChecker(deps.Ban)
 	}
@@ -165,7 +180,7 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	}
 
 	// 首次拉模板
-	if err := inst.jm.Refresh(ctx, true); err != nil {
+	if err := inst.parts.jobs.Refresh(ctx, true); err != nil {
 		log.Printf("[%s] 首次模板刷新失败（将在循环中重试）: %v", cfg.ID, err)
 	}
 
@@ -219,7 +234,7 @@ func (inst *Instance) startLoops(ctx context.Context) {
 // 顺带每 30s 刷一次 getnetworkhashps 缓存（API 读缓存，不因请求打 RPC）+
 // 节点失联检测（连续失败 nodeDownThreshold 次翻转 down，恢复翻转 up；翻转才通知）。
 func (inst *Instance) refreshOnce(ctx context.Context) {
-	st, err := inst.node.Status(ctx)
+	st, err := inst.parts.status.Status(ctx)
 	if err != nil {
 		inst.mu.Lock()
 		inst.nodeFails++
@@ -246,16 +261,16 @@ func (inst *Instance) refreshOnce(ctx context.Context) {
 	inst.mu.Lock()
 	clean := st.Height != inst.lastHeight
 	inst.lastHeight = st.Height
-	needHashPS := time.Since(inst.netHashAt) > 30*time.Second
+	needHashPS := inst.parts.hashps != nil && time.Since(inst.netHashAt) > 30*time.Second
 	inst.mu.Unlock()
 	if needHashPS {
-		if hps, err := inst.node.NetworkHashPS(ctx); err == nil {
+		if hps, err := inst.parts.hashps.NetworkHashPS(ctx); err == nil {
 			inst.mu.Lock()
 			inst.netHashPS, inst.netHashAt = hps, time.Now()
 			inst.mu.Unlock()
 		}
 	}
-	if err := inst.jm.Refresh(ctx, clean); err != nil {
+	if err := inst.parts.jobs.Refresh(ctx, clean); err != nil {
 		log.Printf("[%s] 模板刷新失败: %v", inst.cfg.ID, err)
 	}
 }
@@ -289,14 +304,14 @@ func (inst *Instance) Hashrate() *hashrate.Tracker { return inst.tracker }
 func (inst *Instance) Batches() payout.BatchStore { return inst.batches }
 
 // ConnectedMiners 当前 stratum 在连数。
-func (inst *Instance) ConnectedMiners() int { return inst.dialect.ConnCount() }
+func (inst *Instance) ConnectedMiners() int { return inst.parts.connCount() }
 
-// Network 链上状态缓存快照（高度/难度来自当前 job，HashPS 来自 getnetworkhashps 缓存）。
+// Network 链上状态缓存快照（高度/难度来自当前 job，HashPS 来自真值口径缓存）。
 func (inst *Instance) Network() core.NetworkSnapshot {
 	ns := core.NetworkSnapshot{}
-	if job, ok := inst.jm.Registry().Current(); ok {
-		ns.Height = job.Height
-		ns.Difficulty = job.NetDiff
+	if h, d, ok := inst.parts.jobs.Snapshot(); ok {
+		ns.Height = h
+		ns.Difficulty = d
 	}
 	inst.mu.Lock()
 	if ns.Height == 0 {

@@ -103,6 +103,15 @@ func (m *JobManager) Init(ctx context.Context, poolAddress string) error {
 func (m *JobManager) Registry() *stratum.JobRegistry { return m.reg }
 func (m *JobManager) ExtraNonce2Size() int            { return m.en2Size }
 
+// Snapshot 当前 job 的链上视图（coininstance 作业管线公共面）。
+func (m *JobManager) Snapshot() (height uint64, netDiff float64, ok bool) {
+	j, found := m.reg.Current()
+	if !found {
+		return 0, 0, false
+	}
+	return j.Height, j.NetDiff, true
+}
+
 // Refresh 拉模板 → 构造 job → 登记 → 广播。tip 变化或定时兜底时调用。
 // forceClean=true（新块）时 job 的 clean_jobs 置真。
 func (m *JobManager) Refresh(ctx context.Context, forceClean bool) error {

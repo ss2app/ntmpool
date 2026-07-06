@@ -46,14 +46,11 @@ func Get(name string) (Hasher, error) {
 }
 
 // SelfTestAll 对指定算法跑金锚自检；启动门禁，任何一个失败都返回错误。
+// 名字可来自普通或带 key（RandomX 家族）两个注册表。
 func SelfTestAll(names []string) error {
 	for _, n := range names {
-		h, err := Get(n)
-		if err != nil {
+		if err := selfTestByName(n); err != nil {
 			return err
-		}
-		if err := h.SelfTest(); err != nil {
-			return fmt.Errorf("hasher %s 金锚自检失败（拒绝启动）: %w", n, err)
 		}
 	}
 	return nil

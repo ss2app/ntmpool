@@ -1,0 +1,458 @@
+// CryptoNote 方言（XMRig 系 login/job/submit）。docs/04 §2 的实现。
+//
+// 兼容清单（调研坐实）：
+//   - login params：login（地址[.难度][+worker]）/pass/agent/rigid/algo 数组（能力协商）
+//   - 响应 result={id, job, status:"OK", extensions:[...]}；job 必须带 algo；
+//     RandomX 家族 seed_hash 必须恰好 64 hex
+//   - worker 识别顺序：rigid > pass（剔除 "x"/空；worker:email 取 : 前）> login 的 +worker 后缀
+//   - 固定难度：login 后缀 .N 或 +N；密码参数 d= 同样生效（与 V1 一致）
+//   - keepalived → {"status":"KEEPALIVED"}（XMRig 60s 一发）
+//   - 错误 message 用事实标准集合（Unauthenticated/Invalid job id/Duplicate share/
+//     Low difficulty share/…），锄头端有匹配逻辑，不要自创
+//   - nicehash 分片模式：池钉 nonce 高字节，矿工只滚低 3 字节（login extensions 声明）
+//
+// 链差异（blob 布局/target 编码/hash 字节序/组块提交）全部下沉到 CNShareHandler
+// （internal/cnjob 实现）；本文件只做 wire 协议。
+package stratum
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/scashcc/ntmpool/internal/config"
+	"github.com/scashcc/ntmpool/internal/core"
+	"github.com/scashcc/ntmpool/internal/minersettings"
+	"github.com/scashcc/ntmpool/internal/vardiff"
+)
+
+// CNWireJob 下发矿工的 job 全部字段（handler 物化好，dialect 原样上线）。
+type CNWireJob struct {
+	JobID    string `json:"job_id"`
+	Blob     string `json:"blob"`
+	Target   string `json:"target"`
+	Algo     string `json:"algo"`
+	Height   uint64 `json:"height"`
+	SeedHash string `json:"seed_hash,omitempty"`
+}
+
+// CNSubmission 一条已解析的 CN submit。
+type CNSubmission struct {
+	ConnID    uint32
+	Address   string
+	Worker    string
+	UserAgent string
+	RemoteIP  string
+	JobID     string
+	NonceHex  string
+	ResultHex string // 矿工声称的 hash（badpow tripwire 的比对对象）
+	// Judge 难度归属判定（vardiff 一步 grace 在 dialect 侧的连接状态里）：
+	// 输入 share 实际难度，返回 (计权难度, 是否达标)。
+	Judge func(shareDiff float64) (creditDiff float64, ok bool)
+	Solo  bool
+}
+
+// CNShareHandler 是 CN 方言与作业管线的解耦点（internal/cnjob 实现）。
+type CNShareHandler interface {
+	// Algo 本币算法名（login 能力协商 + job.algo）。
+	Algo() string
+	// LoginExtensions login 响应的 extensions（algo/keepalive [+nicehash 分片模式]）。
+	LoginExtensions() []string
+	// ConnJob 为一条连接物化当前 job（写连接 tag、清零搜索区、按难度编 target）。
+	// ok=false 表示模板未就绪。
+	ConnJob(connID uint32, difficulty float64) (CNWireJob, bool)
+	// HandleSubmit 校验一条提交（池端重算 + badpow tripwire + 命中检测 + 组块提交 + 记账）。
+	HandleSubmit(ctx context.Context, sub CNSubmission) SubmitResult
+}
+
+// CNDialect 实现 stratum.Dialect。每个币一个实例。
+type CNDialect struct {
+	coinID  string
+	handler CNShareHandler
+	connSeq atomic.Uint64
+	conns   sync.Map // *cnConn → struct{}
+
+	onAuth func(addr, worker string, p minersettings.PasswordParams)
+}
+
+func NewCNDialect(coinID string, h CNShareHandler) *CNDialect {
+	return &CNDialect{coinID: coinID, handler: h}
+}
+
+// SetAuthHook 注入授权钩子（矿工设置 mp= 等持久化；启动时一次）。
+func (d *CNDialect) SetAuthHook(h func(addr, worker string, p minersettings.PasswordParams)) {
+	d.onAuth = h
+}
+
+func (d *CNDialect) Name() string { return "cryptonote" }
+
+// ConnCount 当前在连矿工连接数。
+func (d *CNDialect) ConnCount() int {
+	n := 0
+	d.conns.Range(func(_, _ any) bool { n++; return true })
+	return n
+}
+
+// BroadcastJob 新块到达时推最新 job 给所有已登录矿工。
+func (d *CNDialect) BroadcastJob() {
+	d.conns.Range(func(k, _ any) bool {
+		c := k.(*cnConn)
+		go func() { _ = c.pushJob() }()
+		return true
+	})
+}
+
+// cnConn 每连接状态。
+type cnConn struct {
+	d      *CNDialect
+	raw    net.Conn
+	wmu    sync.Mutex
+	port   config.PortConfig
+	connID uint32
+	sessID string
+	vd     *vardiff.State
+
+	mu        sync.Mutex // 保护登录态字段
+	address   string
+	worker    string
+	userAgent string
+	remoteIP  string
+	loggedIn  bool
+
+	seen sync.Map // jobid:nonce → 去重
+}
+
+func (d *CNDialect) Serve(ctx context.Context, conn net.Conn, port config.PortConfig) error {
+	seq := d.connSeq.Add(1)
+	vcfg := vardiff.Config{
+		StartDiff:      port.Vardiff.StartDiff,
+		MinDiff:        port.Vardiff.MinDiff,
+		MaxDiff:        port.Vardiff.MaxDiff,
+		TargetInterval: time.Duration(port.Vardiff.TargetSeconds * float64(time.Second)),
+		RetargetEvery:  time.Duration(port.Vardiff.RetargetMinSec * float64(time.Second)),
+	}
+	c := &cnConn{
+		d:        d,
+		raw:      conn,
+		port:     port,
+		connID:   uint32(seq), // 连接 tag（nonce 高位/分片字节的来源）
+		sessID:   strconv.FormatUint(seq, 16),
+		vd:       vardiff.New(vcfg, time.Now()),
+		remoteIP: remoteHost(conn),
+	}
+	d.conns.Store(c, struct{}{})
+	defer d.conns.Delete(c)
+
+	lines := make(chan string, 16)
+	go func() {
+		defer close(lines)
+		sc := newLineScanner(conn)
+		for sc.Scan() {
+			select {
+			case lines <- sc.Text():
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	idle := time.NewTimer(4 * time.Minute) // XMRig keepalived 60s 一发，4 分钟没动静=半死
+	defer idle.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-idle.C:
+			return fmt.Errorf("[%s] CN 连接空闲超时 %s", d.coinID, c.remoteIP)
+		case line, ok := <-lines:
+			if !ok {
+				return nil
+			}
+			idle.Reset(4 * time.Minute)
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var msg cnReq
+			if err := json.Unmarshal([]byte(line), &msg); err != nil {
+				continue // 非法 JSON 忽略（不断连）
+			}
+			if err := c.dispatch(ctx, &msg); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// cnReq CN 行 JSON 请求。
+type cnReq struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+type cnLoginParams struct {
+	Login string   `json:"login"`
+	Pass  string   `json:"pass"`
+	Agent string   `json:"agent"`
+	RigID string   `json:"rigid"`
+	Algo  []string `json:"algo"`
+}
+
+type cnSubmitParams struct {
+	ID     string `json:"id"` // 会话 id（login 响应发下去的）
+	JobID  string `json:"job_id"`
+	Nonce  string `json:"nonce"`
+	Result string `json:"result"`
+}
+
+func (c *cnConn) dispatch(ctx context.Context, msg *cnReq) error {
+	switch msg.Method {
+	case "login":
+		return c.onLogin(msg)
+	case "submit":
+		return c.onSubmit(ctx, msg)
+	case "keepalived":
+		return c.reply(msg.ID, map[string]any{"status": "KEEPALIVED"}, nil)
+	case "getjob":
+		if !c.authed() {
+			return c.replyErr(msg.ID, "Unauthenticated")
+		}
+		if job, ok := c.d.handler.ConnJob(c.connID, c.vd.Current()); ok {
+			return c.reply(msg.ID, job, nil)
+		}
+		return c.replyErr(msg.ID, "No job available")
+	default:
+		if len(msg.ID) > 0 {
+			return c.replyErr(msg.ID, "Unsupported method")
+		}
+		return nil
+	}
+}
+
+func (c *cnConn) onLogin(msg *cnReq) error {
+	var p cnLoginParams
+	if err := json.Unmarshal(msg.Params, &p); err != nil || p.Login == "" {
+		return c.replyErr(msg.ID, "Unauthenticated")
+	}
+	// algo 能力协商：矿工给了列表但不含本币算法 → 明确拒绝
+	// （不拒的话矿工拿到不认识的 job.algo 会自行断线换池，报错更快定位）。
+	ours := c.d.handler.Algo()
+	if len(p.Algo) > 0 {
+		found := false
+		for _, a := range p.Algo {
+			if strings.EqualFold(a, ours) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return c.replyErr(msg.ID, fmt.Sprintf("Unsupported algorithm %q (pool runs %s)", p.Algo[0], ours))
+		}
+	}
+
+	address, worker, fixedDiff := parseCNLogin(p.Login, p.Pass, p.RigID)
+
+	c.mu.Lock()
+	c.address, c.worker, c.userAgent, c.loggedIn = address, worker, p.Agent, true
+	c.mu.Unlock()
+
+	// 密码参数（d=/mp=，与 V1 同款语义）；login 后缀难度优先级低于显式 d=
+	if fixedDiff > 0 {
+		c.vd.SetFixed(fixedDiff)
+	}
+	if p.Pass != "" {
+		pp := minersettings.ParsePassword(p.Pass)
+		if pp.FixedDiff > 0 {
+			c.vd.SetFixed(pp.FixedDiff)
+		}
+		if c.d.onAuth != nil {
+			c.d.onAuth(address, worker, pp)
+		}
+	}
+
+	job, ok := c.d.handler.ConnJob(c.connID, c.vd.Current())
+	if !ok {
+		return c.replyErr(msg.ID, "No job available (pool starting)")
+	}
+	result := map[string]any{
+		"id":         c.sessID,
+		"job":        job,
+		"status":     "OK",
+		"extensions": c.d.handler.LoginExtensions(),
+	}
+	return c.reply(msg.ID, result, nil)
+}
+
+func (c *cnConn) onSubmit(ctx context.Context, msg *cnReq) error {
+	if !c.authed() {
+		return c.replyErr(msg.ID, "Unauthenticated")
+	}
+	var p cnSubmitParams
+	if err := json.Unmarshal(msg.Params, &p); err != nil || p.JobID == "" || p.Nonce == "" {
+		return c.replyErr(msg.ID, "Malformed submit")
+	}
+	if p.ID != "" && p.ID != c.sessID {
+		return c.replyErr(msg.ID, "Unauthenticated")
+	}
+	dedup := p.JobID + ":" + strings.ToLower(p.Nonce)
+	if _, dup := c.seen.LoadOrStore(dedup, struct{}{}); dup {
+		return c.replyErr(msg.ID, "Duplicate share")
+	}
+
+	c.mu.Lock()
+	addr, worker, ua := c.address, c.worker, c.userAgent
+	c.mu.Unlock()
+
+	sub := CNSubmission{
+		ConnID:    c.connID,
+		Address:   addr,
+		Worker:    worker,
+		UserAgent: ua,
+		RemoteIP:  c.remoteIP,
+		JobID:     p.JobID,
+		NonceHex:  p.Nonce,
+		ResultHex: p.Result,
+		Judge:     func(d float64) (float64, bool) { return c.vd.Judge(d, time.Now()) },
+		Solo:      c.port.Mode == "solo",
+	}
+	res := c.d.handler.HandleSubmit(ctx, sub)
+
+	switch res.Outcome {
+	case core.OutcomeAccepted, core.OutcomeBlock:
+		c.vd.OnAccepted(time.Now())
+		if err := c.reply(msg.ID, map[string]any{"status": "OK"}, nil); err != nil {
+			return err
+		}
+		c.maybeRetarget()
+		return nil
+	case core.OutcomeStale:
+		return c.replyErr(msg.ID, "Invalid job id")
+	case core.OutcomeLowDiff:
+		return c.replyErr(msg.ID, "Low difficulty share")
+	case core.OutcomeDup:
+		return c.replyErr(msg.ID, "Duplicate share")
+	case core.OutcomeBadPow:
+		// 共识 tripwire：矿工声称 hash 与池端重算不符
+		return c.replyErr(msg.ID, "Bad hash (recompute mismatch)")
+	default:
+		return c.replyErr(msg.ID, "Malformed submit")
+	}
+}
+
+// maybeRetarget vardiff 调档后推带新 target 的 job（CN 没有 set_difficulty，难度随 job 走）。
+func (c *cnConn) maybeRetarget() {
+	if !c.port.Vardiff.Enabled {
+		return
+	}
+	if _, changed := c.vd.MaybeRetarget(time.Now()); changed {
+		_ = c.pushJob()
+	}
+}
+
+// pushJob 推送当前 job（登录后、新块广播、vardiff 调档时）。
+func (c *cnConn) pushJob() error {
+	if !c.authed() {
+		return nil
+	}
+	job, ok := c.d.handler.ConnJob(c.connID, c.vd.Current())
+	if !ok {
+		return nil
+	}
+	return c.writeJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "job",
+		"params":  job,
+	})
+}
+
+func (c *cnConn) authed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.loggedIn
+}
+
+// ---- 响应/底层 I/O ----
+
+func (c *cnConn) reply(id json.RawMessage, result any, errObj any) error {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
+	return c.writeJSON(map[string]any{
+		"id": id, "jsonrpc": "2.0", "result": result, "error": errObj,
+	})
+}
+
+func (c *cnConn) replyErr(id json.RawMessage, message string) error {
+	return c.reply(id, nil, map[string]any{"code": -1, "message": message})
+}
+
+func (c *cnConn) writeJSON(v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	_ = c.raw.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	_, err = c.raw.Write(append(b, '\n'))
+	return err
+}
+
+// parseCNLogin 解析 login 字符串 + worker 识别顺序（docs/04 §2）。
+// login = 地址[.难度][+worker]；worker：rigid > pass > +worker 后缀。
+func parseCNLogin(login, pass, rigid string) (address, worker string, fixedDiff float64) {
+	address = login
+	// +worker 或 +难度 后缀
+	if i := strings.IndexByte(address, '+'); i >= 0 {
+		suffix := address[i+1:]
+		address = address[:i]
+		if d, err := strconv.ParseFloat(suffix, 64); err == nil && d > 0 {
+			fixedDiff = d
+		} else if suffix != "" {
+			worker = suffix
+		}
+	}
+	// .难度 后缀（仅数字才剥离——地址本体不含 '.'，但要容错别把 worker 当难度）
+	if i := strings.LastIndexByte(address, '.'); i >= 0 {
+		suffix := address[i+1:]
+		if d, err := strconv.ParseFloat(suffix, 64); err == nil && d > 0 {
+			fixedDiff = d
+			address = address[:i]
+		} else if suffix != "" && worker == "" {
+			worker = suffix
+			address = address[:i]
+		}
+	}
+	// rigid 一等公民 > pass > +worker
+	if rigid != "" {
+		worker = rigid
+	} else if w := workerFromPass(pass); w != "" {
+		worker = w
+	}
+	if worker == "" {
+		worker = "default"
+	}
+	return address, worker, fixedDiff
+}
+
+// workerFromPass 从 pass 提取 worker（剔除 "x"/空/参数串；worker:email 取 : 前）。
+func workerFromPass(pass string) string {
+	if pass == "" || pass == "x" {
+		return ""
+	}
+	// 含 k=v 参数（d=8192,mp=21 之类）的密码不是 worker 名
+	if strings.ContainsAny(pass, "=") {
+		return ""
+	}
+	if i := strings.IndexByte(pass, ':'); i >= 0 {
+		pass = pass[:i]
+	}
+	return pass
+}
