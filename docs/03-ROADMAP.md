@@ -30,10 +30,11 @@
 - [x] **纯 Go 端到端测试**（假 bitcoind + 真 CoinInstance + 真 stratum 矿工 btcwork 挖矿）：全链路[锄头→share→爆块→submitblock→确认→PPLNS→拆步打款] + 孤块路径[主链 hash 逐字节比对判 ORPHANED 不误打款] 双双通过，进 CI
 - [x] testminer CLI（可复用的 stratum 测试锄头）
 
+- [x] **真 bitcoind regtest 字节级验收**（2026-07-06，服务器 103.80.18.140 起 Bitcoin Core 28.0 官方二进制 regtest，验完即删）：**真 bitcoind 通过 submitblock 收下我们组的块（高度 101→102），块 102 hash 与池日志逐字节一致，coinbase 含 `/NTMPool/` 池标记，真钱包广播真打款 txid（47.5=50−5%费）**——最终铁证到手，M1 核心竖切 DONE。
+
 M1 收尾（下个会话）：
-- [ ] 真 bitcoind regtest 字节级验收（服务器起一次性容器）——唯一还没做的是「真节点接受我们组的块字节」；纯 Go e2e 用假节点验了逻辑，btcwork 自洽测试验了字节，但真 bitcoind 的 submitblock 接受是最终铁证
-- [ ] miningcore 形状 API 填充（/blocks /payments /miners/{addr}，含地址脱敏）
-- 验收币候选：任一标准比特币系 regtest（stock bitcoind 最标准）
+- [ ] miningcore 形状 API 填充（/api/pools/{id}、/blocks、/payments、/miners/{addr}，含地址脱敏 HMAC）
+- [ ] 可选：真 ZMQ 新块通知（替代轮询）
 
 ## M2 — 热管理 + 管理后台 API
 
