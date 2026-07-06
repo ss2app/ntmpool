@@ -23,12 +23,17 @@
 - [x] `internal/jobmanager` 粘合核心：GBT 解析 → 组 job → 池端重算校验 share → 命中组块提交；**全链路自洽测试（组块 header 哈希 == 池重算逐字节）**
 - [x] `internal/hasher` sha256d + 金锚门禁
 
-剩余（下个会话）：
-- [ ] 会计：Postgres 实现（rounds/PPLNS/孤块比对/debts + 守恒对账器）—— 引入 pgx 依赖，天然的会话边界
-- [ ] 打款引擎：RawTxWallet 拆步流程 + 恢复扫描六步清单 + payouts 开关
-- [ ] CoinInstance 在 main.go 里把 notifier/jobmanager/stratum/会计/打款拉起
-- [ ] regtest 端到端验收（起 bitcoind -regtest 容器，cpuminer/NTMminer 真挖）
-- 验收币候选：btx（有现成 regtest 节点+GBT）或任一标准比特币分叉
+已完成（续）：
+- [x] 会计：内存 Ledger（PPLNS 按份额分账 + 守恒对账 + 孤块 debts 追缴 + 起付额 + 事务性扣款，整数聪不过浮点）—— Postgres 实现推迟到 M4 多实例（内存版单实例够用且 e2e 已验证全链路）
+- [x] 打款引擎：孤块分类器（确认数 + 主链 hash 逐字节比对）+ RawTxWallet 拆步打款（广播前落库）+ 崩溃恢复重播 + 守恒冻结 + FeeSweep + payouts 开关
+- [x] CoinInstance 拼装 + main.go 拉起各币 + 优雅关停
+- [x] **纯 Go 端到端测试**（假 bitcoind + 真 CoinInstance + 真 stratum 矿工 btcwork 挖矿）：全链路[锄头→share→爆块→submitblock→确认→PPLNS→拆步打款] + 孤块路径[主链 hash 逐字节比对判 ORPHANED 不误打款] 双双通过，进 CI
+- [x] testminer CLI（可复用的 stratum 测试锄头）
+
+M1 收尾（下个会话）：
+- [ ] 真 bitcoind regtest 字节级验收（服务器起一次性容器）——唯一还没做的是「真节点接受我们组的块字节」；纯 Go e2e 用假节点验了逻辑，btcwork 自洽测试验了字节，但真 bitcoind 的 submitblock 接受是最终铁证
+- [ ] miningcore 形状 API 填充（/blocks /payments /miners/{addr}，含地址脱敏）
+- 验收币候选：任一标准比特币系 regtest（stock bitcoind 最标准）
 
 ## M2 — 热管理 + 管理后台 API
 
