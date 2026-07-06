@@ -74,10 +74,21 @@ type V1Dialect struct {
 	coinID  string
 	handler ShareHandler
 	connSeq atomic.Uint64
+	conns   sync.Map // *v1Conn → struct{}，用于新块广播
 }
 
 func NewV1Dialect(coinID string, h ShareHandler) *V1Dialect {
 	return &V1Dialect{coinID: coinID, handler: h}
+}
+
+// BroadcastJob 新块到达时推最新 job 给所有在连矿工（clean_jobs=true 作废旧工作）。
+// 由 JobManager 的 broadcast 回调驱动。写各连接是并发安全的（writeJSON 有锁）。
+func (d *V1Dialect) BroadcastJob() {
+	d.conns.Range(func(k, _ any) bool {
+		c := k.(*v1Conn)
+		go func() { _ = c.sendCurrentJob(true) }()
+		return true
+	})
 }
 
 func (d *V1Dialect) Name() string { return "stratum1" }
@@ -137,6 +148,9 @@ func (d *V1Dialect) Serve(ctx context.Context, conn net.Conn, port config.PortCo
 		vd:          vardiff.New(vcfg, time.Now()),
 		remoteIP:    remoteHost(conn),
 	}
+
+	d.conns.Store(c, struct{}{})
+	defer d.conns.Delete(c)
 
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 0, 4096), 64*1024) // 抗超大行（协议层洪水防护）

@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/scashcc/ntmpool/internal/coininstance"
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/hasher"
 )
@@ -101,7 +102,28 @@ func main() {
 		}
 	}()
 
-	// TODO(M1): 每币拉起 CoinInstance{adapter, notifier, jobmgr, stratum.Manager, ledger, payout}
+	// 每币拉起独立实例（bitcoin-rpc + stratum1，M1 竖切）
+	var instances []*coininstance.Instance
+	for _, coin := range cfg.Coins {
+		if !coin.MiningEnabled {
+			log.Printf("[boot] 跳过 %s（mining 未启用）", coin.ID)
+			continue
+		}
+		inst, err := coininstance.Start(ctx, coin, *payouts)
+		if err != nil {
+			log.Printf("[boot] 启动币 %s 失败: %v", coin.ID, err)
+			continue
+		}
+		instances = append(instances, inst)
+		log.Printf("[boot] 币 %s 已启动", coin.ID)
+	}
+	if len(instances) == 0 {
+		log.Printf("[boot] 无可用币实例")
+	}
+
 	<-ctx.Done()
-	log.Printf("[boot] 收到退出信号，优雅关停")
+	log.Printf("[boot] 收到退出信号，优雅关停 %d 个币", len(instances))
+	for _, inst := range instances {
+		inst.Stop()
+	}
 }
