@@ -81,3 +81,19 @@ type Notifier interface {
 	// Run 阻塞运行，把 tip 变化写入 ch；ctx 取消时退出。实现自带重连。
 	Run(ctx context.Context, ch chan<- core.TipEvent) error
 }
+
+// RawTxWallet 可选扩展（bitcoin 系支持）：拆步打款，txid 在广播前就确定，
+// 崩溃恢复零歧义（docs/05 场景 A）。打款引擎优先走此接口；
+// 不支持的链退回 SendMany + unknown 状态人工恢复。
+type RawTxWallet interface {
+	// PrepareSendMany 构造并签名批量交易但【不广播】。SegWit 后签名即定 txid。
+	// 调用方先把 (txid, rawtx) 落库再调 Broadcast。
+	PrepareSendMany(ctx context.Context, outputs map[string]string) (txid string, rawtx string, err error)
+
+	// Broadcast 广播已签名交易。必须幂等：节点报 already-in-mempool /
+	// already-known / txn-already-known 一律视为成功（恢复重播同一笔 rawtx 不可能双花）。
+	Broadcast(ctx context.Context, rawtx string) error
+
+	// TxExists 查该 txid 是否已在 mempool 或链上（崩溃恢复：判定「广播出去没有」）。
+	TxExists(ctx context.Context, txid string) (bool, error)
+}

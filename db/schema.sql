@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS blocks (
     poolid       TEXT        NOT NULL,
     blockheight  BIGINT      NOT NULL,
     networkdifficulty DOUBLE PRECISION NOT NULL,
-    status       TEXT        NOT NULL,       -- pending | confirmed | orphaned
+    status       TEXT        NOT NULL,       -- submitting | pending | confirmed | orphaned | submit-failed
+                                             -- submitting=「先记后交」意图记录：崩溃恢复扫描它与链上比对（docs/05 场景B）
     type         TEXT        NOT NULL DEFAULT 'block', -- block|uncle（唯一键含 type，防 miningcore #1600 撞约束崩打款）
     confirmationprogress DOUBLE PRECISION NOT NULL DEFAULT 0, -- 0~1，前端可显示成熟进度
     effort       DOUBLE PRECISION NULL,
@@ -93,8 +94,12 @@ CREATE TABLE IF NOT EXISTS payment_batches (
     id           BIGSERIAL PRIMARY KEY,
     poolid       TEXT        NOT NULL,
     kind         TEXT        NOT NULL DEFAULT 'payout', -- payout | fee_collect | fee_sweep
-    txid         TEXT        NULL,
+    -- 状态机：created(已扣余额) → prepared(已签名未广播,txid已确定) → sent → confirming → confirmed
+    --         / failed(人工介入) / unknown(不支持rawtx的链崩溃窗口,冻结打款+人工比对, docs/05 场景A)
     status       TEXT        NOT NULL DEFAULT 'created',
+    plannedtxid  TEXT        NULL,           -- 签名即定的 txid（广播前落库 —— 崩溃恢复零歧义的关键）
+    rawtx        TEXT        NULL,           -- 已签名原始交易：恢复时可原样重播（同 txid 天然幂等防双花）
+    txid         TEXT        NULL,           -- 实际广播确认的 txid（正常 == plannedtxid）
     total        NUMERIC(28,8) NOT NULL,
     created      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated      TIMESTAMPTZ NOT NULL DEFAULT now()
