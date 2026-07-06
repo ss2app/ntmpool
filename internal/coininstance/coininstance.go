@@ -15,6 +15,7 @@ import (
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/core"
 	"github.com/scashcc/ntmpool/internal/hasher"
+	"github.com/scashcc/ntmpool/internal/hashrate"
 	"github.com/scashcc/ntmpool/internal/jobmanager"
 	"github.com/scashcc/ntmpool/internal/payout"
 	"github.com/scashcc/ntmpool/internal/stratum"
@@ -31,12 +32,16 @@ type Instance struct {
 	ports   *stratum.Manager
 	ledger  accounting.Ledger
 	engine  *payout.Engine
+	tracker *hashrate.Tracker
+	batches payout.BatchStore
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
 	mu         sync.Mutex
 	lastHeight uint64
+	netHashPS  float64   // getnetworkhashps 缓存（30s 刷新；0=尚未取到）
+	netHashAt  time.Time
 }
 
 // Start 拼装并启动该币（bitcoin-rpc + stratum1 方言，M1 竖切）。
@@ -55,15 +60,17 @@ func Start(parent context.Context, cfg config.CoinConfig, payoutsEnabled bool) (
 	ctx, cancel := context.WithCancel(parent)
 	inst := &Instance{cfg: cfg, node: node, cancel: cancel}
 
-	// 会计 + 打款
+	// 会计 + 打款 + 算力采样（算力窗口与 PPLNS 窗口分开，pitfall C6）
 	decimals := 8
 	inst.ledger = accounting.NewMemLedger(decimals, cfg.Payout.PplnsFactor)
+	inst.tracker = hashrate.New(hashrate.Config{})
+	inst.batches = payout.NewMemBatchStore()
 	pcfg := payout.Config{
 		Coin: cfg.ID, Decimals: decimals,
 		FeePercent: cfg.Payout.FeePercent, MinPayout: parseFloat(cfg.Payout.MinPayout),
 		Maturity: cfg.Payout.Confirmations,
 	}
-	inst.engine = payout.NewEngine(pcfg, inst.ledger, node, node, payout.NewMemBatchStore())
+	inst.engine = payout.NewEngine(pcfg, inst.ledger, node, node, inst.batches)
 	inst.engine.SetEnabled(payoutsEnabled && cfg.Payout.Enabled)
 
 	// JobManager + 方言
@@ -82,6 +89,7 @@ func Start(parent context.Context, cfg config.CoinConfig, payoutsEnabled bool) (
 		},
 		func(ctx context.Context, s core.Share) {
 			_ = inst.ledger.RecordShare(ctx, s, s.Difficulty)
+			inst.tracker.Record(s.Address, s.Worker, s.Difficulty, s.At)
 		},
 	)
 
@@ -150,6 +158,7 @@ func (inst *Instance) startLoops(ctx context.Context) {
 }
 
 // refreshOnce 拉模板；高度变化 = 新块，clean 广播；否则静默刷新（新 mempool/时间戳）。
+// 顺带每 30s 刷一次 getnetworkhashps 缓存（API 读缓存，不因请求打 RPC）。
 func (inst *Instance) refreshOnce(ctx context.Context) {
 	st, err := inst.node.Status(ctx)
 	if err != nil {
@@ -158,7 +167,15 @@ func (inst *Instance) refreshOnce(ctx context.Context) {
 	inst.mu.Lock()
 	clean := st.Height != inst.lastHeight
 	inst.lastHeight = st.Height
+	needHashPS := time.Since(inst.netHashAt) > 30*time.Second
 	inst.mu.Unlock()
+	if needHashPS {
+		if hps, err := inst.node.NetworkHashPS(ctx); err == nil {
+			inst.mu.Lock()
+			inst.netHashPS, inst.netHashAt = hps, time.Now()
+			inst.mu.Unlock()
+		}
+	}
 	if err := inst.jm.Refresh(ctx, clean); err != nil {
 		log.Printf("[%s] 模板刷新失败: %v", inst.cfg.ID, err)
 	}
@@ -171,8 +188,38 @@ func (inst *Instance) Stop() {
 	inst.wg.Wait()
 }
 
+// ---- 公共 API 读接口（internal/api.Pool 的实现）----
+
+// Cfg 该币配置快照。
+func (inst *Instance) Cfg() config.CoinConfig { return inst.cfg }
+
 // Ledger 暴露会计快照（API 用）。
 func (inst *Instance) Ledger() accounting.Ledger { return inst.ledger }
+
+// Hashrate 算力采样器。
+func (inst *Instance) Hashrate() *hashrate.Tracker { return inst.tracker }
+
+// Batches 打款批次存储（API /payments 只读）。
+func (inst *Instance) Batches() payout.BatchStore { return inst.batches }
+
+// ConnectedMiners 当前 stratum 在连数。
+func (inst *Instance) ConnectedMiners() int { return inst.dialect.ConnCount() }
+
+// Network 链上状态缓存快照（高度/难度来自当前 job，HashPS 来自 getnetworkhashps 缓存）。
+func (inst *Instance) Network() core.NetworkSnapshot {
+	ns := core.NetworkSnapshot{}
+	if job, ok := inst.jm.Registry().Current(); ok {
+		ns.Height = job.Height
+		ns.Difficulty = job.NetDiff
+	}
+	inst.mu.Lock()
+	if ns.Height == 0 {
+		ns.Height = inst.lastHeight
+	}
+	ns.HashPS, ns.UpdatedAt = inst.netHashPS, inst.netHashAt
+	inst.mu.Unlock()
+	return ns
+}
 
 // RunPayoutNow 立即跑一轮打款（测试/管理后台用）。
 func (inst *Instance) RunPayoutNow(ctx context.Context) error { return inst.engine.RunOnce(ctx) }

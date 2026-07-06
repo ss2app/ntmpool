@@ -93,6 +93,13 @@ func (d *V1Dialect) BroadcastJob() {
 
 func (d *V1Dialect) Name() string { return "stratum1" }
 
+// ConnCount 当前在连矿工连接数（公共 API connectedMiners）。
+func (d *V1Dialect) ConnCount() int {
+	n := 0
+	d.conns.Range(func(_, _ any) bool { n++; return true })
+	return n
+}
+
 // rpcMsg 是 stratum 行 JSON（请求与响应共用宽松形状）。
 type rpcMsg struct {
 	ID     json.RawMessage `json:"id"`

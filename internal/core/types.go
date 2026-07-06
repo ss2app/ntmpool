@@ -92,6 +92,15 @@ const (
 	PaymentFailed     PaymentStatus = "failed"
 )
 
+// NetworkSnapshot 供公共 API 读的链上状态缓存（coininstance 周期刷新，API 零 RPC）。
+// 全部为节点真值：高度/难度来自当前 job（GBT），HashPS 来自 getnetworkhashps（pitfall C7）。
+type NetworkSnapshot struct {
+	Height     uint64
+	Difficulty float64
+	HashPS     float64 // 0 = 尚未取到（API 侧省略该字段，不造 0 值）
+	UpdatedAt  time.Time
+}
+
 // TipEvent 是节点侧「链头变化」事件，来自任一通知通道（ZMQ/轮询/进程内回调/QUIC push）。
 // 多通道并存时取最先到者，按 (Height,Hash) 去重。
 type TipEvent struct {

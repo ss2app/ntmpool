@@ -10,17 +10,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/scashcc/ntmpool/internal/api"
 	"github.com/scashcc/ntmpool/internal/btcwork"
 	"github.com/scashcc/ntmpool/internal/coininstance"
 	"github.com/scashcc/ntmpool/internal/config"
 )
 
+// 编译期断言：真 CoinInstance 满足公共 API 的只读视图接口。
+var _ api.Pool = (*coininstance.Instance)(nil)
+
 const stratumPort = 13911
+
+// minerAddress e2e 矿工地址（authorize 用 minerAddress.rig1）。
+const minerAddress = "minerAddr"
 
 func testConfig(nodeURL string) config.CoinConfig {
 	return config.CoinConfig{
@@ -81,6 +89,45 @@ func TestFullPipeline(t *testing.T) {
 	}
 	t.Logf("✓ 块确认 %d 个，PPLNS 已分账，打款已广播（拆步 txid 广播前落库）", snap.Confirmed)
 	t.Logf("✓ 全链路端到端通过：锄头→share→爆块→submitblock→确认→PPLNS→拆步打款")
+
+	// 公共 API 冒烟：真 Instance 直接喂给 api.Server，验证 miningcore 形状 + 脱敏
+	srv := api.New(func() map[string]api.Pool { return map[string]api.Pool{"demo": inst} }, []byte("e2e"))
+	h := srv.Handler()
+	for _, path := range []string{"/api/pools", "/api/pools/demo/blocks", "/api/pools/demo/payments", "/api/pools/demo/miners"} {
+		req := httptest.NewRequest("GET", path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("API %s code=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+		if path != "/api/pools" && strings.Contains(rec.Body.String(), minerAddress) {
+			t.Fatalf("API %s 泄漏完整矿工地址", path)
+		}
+	}
+	var pools struct {
+		Pools []struct {
+			TotalConfirmedBlocks int             `json:"totalConfirmedBlocks"`
+			TotalPaid            json.RawMessage `json:"totalPaid"`
+		} `json:"pools"`
+	}
+	req := httptest.NewRequest("GET", "/api/pools", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if err := json.Unmarshal(rec.Body.Bytes(), &pools); err != nil || len(pools.Pools) != 1 {
+		t.Fatalf("API /api/pools 解析失败: %v %s", err, rec.Body.String())
+	}
+	if pools.Pools[0].TotalConfirmedBlocks < 1 {
+		t.Fatalf("API 应反映已确认块: %+v", pools.Pools[0])
+	}
+	// 矿工完整地址自查（不脱敏自己的数据）
+	req = httptest.NewRequest("GET", "/api/pools/demo/miners/"+minerAddress, nil)
+	req.RemoteAddr = "127.0.0.1:9"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("矿工自查 code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	t.Logf("✓ 公共 API（miningcore 形状+脱敏+自查）对真实例冒烟通过")
 }
 
 // 孤块路径：块提交后，主链在该高度换成别的 hash → 应判孤块，不打款。
@@ -151,7 +198,7 @@ func mineUntilBlock(t *testing.T, addr string) {
 		_ = w.Flush()
 	}
 	send(1, "mining.subscribe", []any{"e2eminer/1.0"})
-	send(2, "mining.authorize", []any{"minerAddr.rig1", "x"})
+	send(2, "mining.authorize", []any{minerAddress + ".rig1", "x"})
 
 	var en1 []byte
 	en2Size := 4

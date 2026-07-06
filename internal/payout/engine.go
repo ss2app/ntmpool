@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/scashcc/ntmpool/internal/accounting"
 	"github.com/scashcc/ntmpool/internal/adapter"
@@ -24,6 +25,7 @@ type BatchStore interface {
 	Save(b *Batch) error
 	Load(id int64) (*Batch, bool)
 	Unfinished() []*Batch // created/prepared/sent 但未 confirmed/failed
+	All() []*Batch        // 全部批次（新→旧），公共 API /payments 用
 }
 
 // Batch 一笔打款批次的完整状态（对应 payment_batches 表）。
@@ -35,6 +37,7 @@ type Batch struct {
 	PlannedTxID string
 	RawTx       string
 	TxID        string
+	CreatedAt   time.Time
 }
 
 // Config 打款引擎配置（热参数子集在这里取快照）。
@@ -143,10 +146,11 @@ func (e *Engine) payout(ctx context.Context) error {
 		return err
 	}
 	batch := &Batch{
-		ID:      e.store.NextBatchID(),
-		Kind:    "payout",
-		Outputs: payable,
-		Status:  core.PaymentCreated,
+		ID:        e.store.NextBatchID(),
+		Kind:      "payout",
+		Outputs:   payable,
+		Status:    core.PaymentCreated,
+		CreatedAt: time.Now(),
 	}
 	// ① 先扣余额（防双花第一步）
 	if err := e.ledger.DeductForPayout(ctx, e.cfg.Coin, payable, batch.ID); err != nil {
@@ -241,7 +245,7 @@ func (e *Engine) FeeSweep(ctx context.Context, fromFeeAddress, coldAddress, amou
 		return "", fmt.Errorf("[%s] 打款冻结中，拒绝 fee sweep", e.cfg.Coin)
 	}
 	outputs := map[string]string{coldAddress: amount}
-	batch := &Batch{ID: e.store.NextBatchID(), Kind: "fee_sweep", Outputs: outputs, Status: core.PaymentCreated}
+	batch := &Batch{ID: e.store.NextBatchID(), Kind: "fee_sweep", Outputs: outputs, Status: core.PaymentCreated, CreatedAt: time.Now()}
 	_ = e.store.Save(batch)
 	// 手续费地址的钱是池外收益（不在 ledger balances 里），不走 DeductForPayout。
 	if e.rawtx != nil {

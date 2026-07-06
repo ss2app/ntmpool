@@ -214,8 +214,16 @@ func (m *JobManager) HandleSubmit(ctx context.Context, sub stratum.Submission) s
 
 	shareDiff := btcwork.ShareDiff(hashRaw)
 
-	// 5) 命中全网目标 → 爆块
+	// 5) 命中全网目标 → 爆块。爆块 share 同样是一条合格 share：
+	// 计入 PPLNS 窗口与算力统计（miningcore 同款语义），否则爆块矿工反而少记一份权重。
 	if btcwork.HashMeetsTarget(hashRaw, job.NetworkTarget) {
+		if m.onShare != nil {
+			m.onShare(ctx, core.Share{
+				Coin: m.coinID, Address: sub.Address, Worker: sub.Worker,
+				UserAgent: sub.UserAgent, RemoteIP: sub.RemoteIP,
+				Difficulty: sub.RequiredDiff, Solo: sub.Solo, At: time.Now(),
+			})
+		}
 		m.handleBlock(ctx, job, sub, header, hashRaw)
 		return stratum.SubmitResult{Outcome: core.OutcomeBlock, CreditDiff: sub.RequiredDiff}
 	}

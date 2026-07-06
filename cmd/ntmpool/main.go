@@ -6,15 +6,16 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
+	"github.com/scashcc/ntmpool/internal/api"
 	"github.com/scashcc/ntmpool/internal/coininstance"
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/hasher"
@@ -53,26 +54,26 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 公共 API（miningcore 形状，M1 填充；地址脱敏见 docs/01 R14.6）
+	// 币实例注册表（API 读快照；热添加币后自动可见）
+	var instMu sync.Mutex
+	instByID := map[string]*coininstance.Instance{}
+	poolsSnapshot := func() map[string]api.Pool {
+		instMu.Lock()
+		defer instMu.Unlock()
+		out := make(map[string]api.Pool, len(instByID))
+		for id, inst := range instByID {
+			out[id] = inst
+		}
+		return out
+	}
+
+	// 公共 API（miningcore 形状 + 地址脱敏，internal/api）
+	apiSrv := api.New(poolsSnapshot, []byte(cfg.MaskSecret))
 	pub := http.NewServeMux()
 	pub.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
-	pub.HandleFunc("/api/pools", func(w http.ResponseWriter, _ *http.Request) {
-		type poolInfo struct {
-			ID     string `json:"id"`
-			Coin   string `json:"coin"`
-			Algo   string `json:"algorithm"`
-		}
-		out := struct {
-			Pools []poolInfo `json:"pools"`
-		}{}
-		for _, c := range store.Snapshot().Coins {
-			out.Pools = append(out.Pools, poolInfo{ID: c.ID, Coin: c.Symbol, Algo: c.Algo})
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(out)
-	})
+	pub.Handle("/api/", apiSrv.Handler())
 	go func() {
 		if cfg.PublicAPI == "" {
 			return
@@ -115,6 +116,9 @@ func main() {
 			continue
 		}
 		instances = append(instances, inst)
+		instMu.Lock()
+		instByID[coin.ID] = inst
+		instMu.Unlock()
 		log.Printf("[boot] 币 %s 已启动", coin.ID)
 	}
 	if len(instances) == 0 {

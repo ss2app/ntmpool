@@ -32,8 +32,13 @@
 
 - [x] **真 bitcoind regtest 字节级验收**（2026-07-06，服务器 103.80.18.140 起 Bitcoin Core 28.0 官方二进制 regtest，验完即删）：**真 bitcoind 通过 submitblock 收下我们组的块（高度 101→102），块 102 hash 与池日志逐字节一致，coinbase 含 `/NTMPool/` 池标记，真钱包广播真打款 txid（47.5=50−5%费）**——最终铁证到手，M1 核心竖切 DONE。
 
-M1 收尾（下个会话）：
-- [ ] miningcore 形状 API 填充（/api/pools/{id}、/blocks、/payments、/miners/{addr}，含地址脱敏 HMAC）
+M1 收尾：
+- [x] **miningcore 形状公共 API**（2026-07-06）：`internal/api` + `internal/hashrate`。
+  - 端点：`/api/pools`、`/api/pools/{id}`、`/blocks`、`/payments`、`/miners`、`/miners/{addr}`（完整地址自查）、`/performance`（24h 曲线）。形状对齐 miningcore（前端零改），超越点以追加字段体现：打款状态机 status 对外透明、孤块追缴 debt 透明。
+  - 隐私（R14.6）：列表一律脱敏「前6…后4 + HMAC-SHA256 匿名 ID」（`maskSecret` 配置，空则随机）；矿工完整地址自查密链，per-IP 60/min 限速防枚举。
+  - 算力采样器 `internal/hashrate`：滚动 10min 精确窗口（即时算力）+ 10min 桶×24h（曲线），与 PPLNS 窗口彻底分开（pitfall C6）；全网算力走 `getnetworkhashps` 真值 30s 缓存（pitfall C7），API 层零 RPC；金额十进制字符串直通 JSON number 不过 float（金额铁律）。
+  - 顺手修正：爆块 share 此前不计入 PPLNS 窗口/算力 → 已补（miningcore 同款语义）；新增同高度双爆块测试（一 confirm 一 orphan、绝不双份入账、守恒 delta=0、重跑幂等）。
+  - 测试：api httptest 全端点形状/脱敏/分页/限速 + hashrate 数学 + e2e 里对真 CoinInstance API 冒烟（编译期断言 Instance 实现 api.Pool）。
 - [ ] 可选：真 ZMQ 新块通知（替代轮询）
 
 ## M2 — 热管理 + 管理后台 API

@@ -129,6 +129,53 @@ func TestOrphanByHashMismatch(t *testing.T) {
 	}
 }
 
+// 同高度双爆块（池内两个矿工都命中同一 height、不同 hash）：
+// 只有与主链 hash 逐字节一致的那块 confirm 分账一次，另一块必判孤块；
+// 奖励绝不双份入账（守恒对账 delta=0），孤块矿工的 share 留在窗口参与后续分账。
+func TestSameHeightTwinBlocks(t *testing.T) {
+	ctx := context.Background()
+	e, l, node, _ := setup(t)
+	e.SetEnabled(false) // 只验会计入账，不让打款清空余额
+	_ = l.RecordShare(ctx, core.Share{Coin: "t", Address: "A"}, 1)
+	_ = l.RecordShare(ctx, core.Share{Coin: "t", Address: "B"}, 1)
+	bA := core.FoundBlock{Coin: "t", Height: 100, Hash: "hashA", Finder: "A",
+		Reward: "50.00000000", NetDiff: 1, Status: core.BlockPending}
+	bB := core.FoundBlock{Coin: "t", Height: 100, Hash: "hashB", Finder: "B",
+		Reward: "50.00000000", NetDiff: 1, Status: core.BlockPending}
+	_ = l.RecordBlock(ctx, bA, "rawA")
+	_ = l.RecordBlock(ctx, bB, "rawB")
+
+	// 主链收下了 A；B 成侧链（真实节点 getblockheader 对侧链块返回 -1）
+	node.conf["hashA"] = 100
+	node.conf["hashB"] = -1
+	node.mainHash[100] = "hashA"
+
+	if err := e.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := l.Snapshot(ctx, "t")
+	if snap.Confirmed != 1 || snap.Orphaned != 1 {
+		t.Fatalf("应 1 confirm + 1 orphan: %+v", snap)
+	}
+	// 只入账一次：50 按 A/B 各 1 权重对半分（B 的 share 未作废，照样参与）
+	if snap.Balances["A"] != "25.00000000" || snap.Balances["B"] != "25.00000000" {
+		t.Fatalf("应只分账一份 50: %+v", snap.Balances)
+	}
+	// 守恒：Σ确认奖励 = Σ已付+Σ余额+Σ费+Σ债，双入账会立刻破账
+	if delta, _ := l.Reconcile(ctx, "t"); delta != "0.00000000" {
+		t.Fatalf("守恒破坏 delta=%s", delta)
+	}
+	// 幂等：再跑一轮不得重复入账
+	node.conf["hashB"] = -1
+	if err := e.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	snap2, _ := l.Snapshot(ctx, "t")
+	if snap2.Confirmed != 1 || snap2.Orphaned != 1 {
+		t.Fatalf("重跑后重复入账: %+v", snap2)
+	}
+}
+
 // 节点不认识块（conf<0）→ 孤块。
 func TestOrphanByNotFound(t *testing.T) {
 	ctx := context.Background()

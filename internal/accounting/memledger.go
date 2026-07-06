@@ -38,9 +38,10 @@ type MemLedger struct {
 	debts    map[string]int64 // 地址→未抵扣欠款（聪）
 	blocks   []*memBlock
 
-	totalPaid int64
-	totalFees int64
-	paidOut   int64 // 已发出（可能未确认）；对账「在途」用
+	totalPaid  int64
+	totalFees  int64
+	paidOut    int64            // 已发出（可能未确认）；对账「在途」用
+	paidByAddr map[string]int64 // 地址→累计已付（API 矿工自查）
 }
 
 var _ Ledger = (*MemLedger)(nil)
@@ -50,10 +51,11 @@ func NewMemLedger(decimals int, pplnsN float64) *MemLedger {
 		pplnsN = 2.0
 	}
 	return &MemLedger{
-		decimals: decimals,
-		pplnsN:   pplnsN,
-		balances: map[string]int64{},
-		debts:    map[string]int64{},
+		decimals:   decimals,
+		pplnsN:     pplnsN,
+		balances:   map[string]int64{},
+		debts:      map[string]int64{},
+		paidByAddr: map[string]int64{},
 	}
 }
 
@@ -307,6 +309,7 @@ func (l *MemLedger) DeductForPayout(_ context.Context, _ string, outputs map[str
 		l.balances[a] -= amt
 		l.paidOut += amt
 		l.totalPaid += amt
+		l.paidByAddr[a] += amt
 	}
 	return nil
 }
@@ -322,6 +325,7 @@ func (l *MemLedger) RefundPayout(_ context.Context, _ string, outputs map[string
 		l.balances[a] += amt
 		l.paidOut -= amt
 		l.totalPaid -= amt
+		l.paidByAddr[a] -= amt
 	}
 	return nil
 }
@@ -374,6 +378,42 @@ func (l *MemLedger) Snapshot(_ context.Context, _ string) (Stats, error) {
 		BlocksFound: len(l.blocks), Confirmed: confirmed, Orphaned: orphaned,
 		DebtsNet: l.toStr(debtNet), WindowShares: len(l.shares),
 	}, nil
+}
+
+// Blocks 分页返回块（新→旧：按记录顺序倒序）与总数。
+func (l *MemLedger) Blocks(_ context.Context, _ string, offset, limit int) ([]core.FoundBlock, int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	total := len(l.blocks)
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	out := make([]core.FoundBlock, 0, limit)
+	// blocks 按发现顺序追加，倒着走 = 新→旧
+	for i := total - 1 - offset; i >= 0 && len(out) < limit; i-- {
+		out = append(out, l.blocks[i].b)
+	}
+	return out, total, nil
+}
+
+// MinerSummary 单矿工摘要。余额/已付/欠款全为 0 且无记录 = ok=false。
+func (l *MemLedger) MinerSummary(_ context.Context, _ string, addr string) (MinerSummary, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	bal, hasBal := l.balances[addr]
+	paid, hasPaid := l.paidByAddr[addr]
+	debt, hasDebt := l.debts[addr]
+	if !hasBal && !hasPaid && !hasDebt {
+		return MinerSummary{}, false, nil
+	}
+	return MinerSummary{
+		Balance:   l.toStr(bal),
+		TotalPaid: l.toStr(paid),
+		Debt:      l.toStr(debt),
+	}, true, nil
 }
 
 // ---- 内部工具 ----

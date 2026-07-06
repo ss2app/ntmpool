@@ -1,6 +1,9 @@
 package payout
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
 
 // MemBatchStore 内存 BatchStore（M1/测试；生产用 Postgres 实现做真恢复）。
 type MemBatchStore struct {
@@ -52,5 +55,16 @@ func (s *MemBatchStore) Unfinished() []*Batch {
 			out = append(out, b)
 		}
 	}
+	return out
+}
+
+func (s *MemBatchStore) All() []*Batch {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*Batch, 0, len(s.batches))
+	for _, b := range s.batches {
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID }) // 新→旧
 	return out
 }

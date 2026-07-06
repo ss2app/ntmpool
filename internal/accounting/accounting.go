@@ -57,6 +57,19 @@ type Ledger interface {
 
 	// Snapshot 供 API/日志读的只读快照。
 	Snapshot(ctx context.Context, coin string) (Stats, error)
+
+	// Blocks 分页返回池找到的块（新→旧）与总数（公共 API /blocks）。
+	Blocks(ctx context.Context, coin string, offset, limit int) ([]core.FoundBlock, int, error)
+
+	// MinerSummary 单矿工会计摘要（公共 API 矿工自查）。地址无任何记录时 ok=false。
+	MinerSummary(ctx context.Context, coin, addr string) (ms MinerSummary, ok bool, err error)
+}
+
+// MinerSummary 单矿工会计摘要（金额十进制字符串，金额铁律：不过浮点）。
+type MinerSummary struct {
+	Balance   string // 待付余额
+	TotalPaid string // 累计已打款（含在途）
+	Debt      string // 孤块追缴余欠（NTMPool 超越点：对矿工透明）
 }
 
 // Stats 池会计快照。

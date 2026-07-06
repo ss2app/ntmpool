@@ -175,6 +175,16 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 	}, nil
 }
 
+// NetworkHashPS 全网算力真值（getnetworkhashps，最近 120 块实际 work÷实际时间）。
+// 铁律（pitfall C7）：全网算力只用此口径，绝不用「难度÷目标出块时间」反推。
+func (c *Client) NetworkHashPS(ctx context.Context) (float64, error) {
+	var hps float64
+	if err := c.call(ctx, "getnetworkhashps", []any{120, -1}, &hps); err != nil {
+		return 0, err
+	}
+	return hps, nil
+}
+
 // SubmitBlock raw = 完整块 hex 字符串。"duplicate" 视为成功（多节点并发提交时常见）。
 func (c *Client) SubmitBlock(ctx context.Context, raw any) error {
 	hexStr, ok := raw.(string)
