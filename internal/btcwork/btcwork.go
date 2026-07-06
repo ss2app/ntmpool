@@ -35,6 +35,17 @@ func sha256d(b []byte) []byte {
 	return h2[:]
 }
 
+// DoubleSHA 导出的 sha256d（testminer/外部复用）。
+func DoubleSHA(b []byte) []byte { return sha256d(b) }
+
+// BigTarget 目标包装，供矿工/校验判「hash ≤ target」。
+type BigTarget struct{ t *big.Int }
+
+func NewBigTarget(t *big.Int) *BigTarget { return &BigTarget{t: t} }
+
+// Meets hash（内部序）是否 ≤ 目标。
+func (b *BigTarget) Meets(hash []byte) bool { return HashMeetsTarget(hash, b.t) }
+
 // Reverse 返回反转副本（BE hex 字节 ↔ 内部序）。
 func Reverse(b []byte) []byte {
 	out := make([]byte, len(b))
