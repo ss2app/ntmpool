@@ -191,6 +191,24 @@ func (c *Client) SubmitBlock(ctx context.Context, raw any) error {
 	return nil
 }
 
+// PayoutScript 取地址的 scriptPubKey（hex）。铁律：不自己解地址格式，问节点要脚本。
+func (c *Client) PayoutScript(ctx context.Context, address string) (string, error) {
+	var info struct {
+		ScriptPubKey string `json:"scriptPubKey"`
+		IsValid      bool   `json:"isvalid"`
+	}
+	if err := c.call(ctx, "getaddressinfo", []any{address}, &info); err != nil {
+		// 老分叉币可能只有 validateaddress
+		if err := c.call(ctx, "validateaddress", []any{address}, &info); err != nil {
+			return "", err
+		}
+	}
+	if info.ScriptPubKey == "" {
+		return "", fmt.Errorf("地址 %s 无 scriptPubKey（可能非本钱包地址或无效）", address)
+	}
+	return info.ScriptPubKey, nil
+}
+
 func (c *Client) BlockHashAt(ctx context.Context, height uint64) (string, error) {
 	var hash string
 	if err := c.call(ctx, "getblockhash", []any{height}, &hash); err != nil {

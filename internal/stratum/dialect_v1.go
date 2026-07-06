@@ -63,6 +63,12 @@ type Submission struct {
 	Solo         bool
 }
 
+// EffectiveVersion 把 version-rolling 的 version_bits 叠加到 job 版本上
+// （矿工滚了 version 位，池端重算 header 必须用同一版本，否则哈希对不上）。
+func (s Submission) EffectiveVersion(jobVersion uint32) uint32 {
+	return jobVersion | s.VersionBits
+}
+
 // V1Dialect 实现 stratum.Dialect。每个币一个实例（持有该币的 ShareHandler）。
 type V1Dialect struct {
 	coinID  string
