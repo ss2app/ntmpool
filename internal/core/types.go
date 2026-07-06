@@ -63,17 +63,21 @@ const (
 
 // FoundBlock 记录池挖到的一个块。
 type FoundBlock struct {
-	Coin      string
-	Height    uint64
-	Hash      string // 我们提交的块 ID —— 孤块比对的基准
-	Finder    string // 爆块矿工地址
-	Worker    string
-	Reward    string // 十进制字符串，币为单位（对齐 miningcore NUMERIC）
-	Effort    float64
-	Status    BlockStatus
-	FoundAt   time.Time
-	Solo      bool
+	Coin       string
+	Height     uint64
+	Hash       string // 我们提交的块 ID —— 孤块比对的基准
+	Finder     string // 爆块矿工地址
+	Worker     string
+	Reward     string  // 十进制字符串，币为单位（对齐 miningcore NUMERIC）
+	NetDiff    float64 // 该块的网络难度（PPLNS 窗口 = pplnsN × NetDiff）
+	Effort     float64
+	Status     BlockStatus
+	FoundAt    time.Time
+	Solo       bool
 }
+
+// NetworkDifficulty 该块的网络难度。
+func (b FoundBlock) NetworkDifficulty() float64 { return b.NetDiff }
 
 // PaymentStatus 是打款状态机。
 // created(先扣余额,txid=NULL) → sent(拿到 txid) → confirming → confirmed / failed。

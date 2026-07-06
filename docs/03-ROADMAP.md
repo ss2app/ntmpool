@@ -15,10 +15,19 @@
 
 目标：**一个 bitcoin-rpc 系币在 regtest 上端到端**：锄头连上 → share 池端重算 → 爆块 submitblock → 确认追踪 → PPLNS 入账 → sendmany 打款 → miningcore 形状 API。
 
-- stratum V1 方言 + vardiff 三件套 + nonce 窗分段 + 看门狗
-- bitcoin-rpc 节点适配器（GBT 轮询 + ZMQ）+ sha256d hasher（先用最普通的币验架构）
-- 会计：rounds/PPLNS/孤块比对/debts + 守恒对账器
-- 打款状态机：先扣后发 + SendMany + tx 确认追踪 + payouts 开关
+已完成（本地 Go 1.26.4 编译+测试，CI 全绿）：
+- [x] `internal/btcwork`：难度/目标换算、coinbase 构造、merkle、header、字节序编码 —— 创世块 + 主网块 #100000 真实金锚验证
+- [x] `internal/stratum` V1 方言：subscribe/authorize/configure/notify/submit + 去重 + vardiff 驱动 + 看门狗 + nonce 窗分段 + 三件套响应；内存管道全握手测试
+- [x] `internal/vardiff` 三件套（一步 grace + 限频 + lowdiff/badpow 拆分）
+- [x] `internal/adapter/bitcoinrpc`：NodeAdapter + WalletAdapter + RawTxWallet + PayoutScript
+- [x] `internal/jobmanager` 粘合核心：GBT 解析 → 组 job → 池端重算校验 share → 命中组块提交；**全链路自洽测试（组块 header 哈希 == 池重算逐字节）**
+- [x] `internal/hasher` sha256d + 金锚门禁
+
+剩余（下个会话）：
+- [ ] 会计：Postgres 实现（rounds/PPLNS/孤块比对/debts + 守恒对账器）—— 引入 pgx 依赖，天然的会话边界
+- [ ] 打款引擎：RawTxWallet 拆步流程 + 恢复扫描六步清单 + payouts 开关
+- [ ] CoinInstance 在 main.go 里把 notifier/jobmanager/stratum/会计/打款拉起
+- [ ] regtest 端到端验收（起 bitcoind -regtest 容器，cpuminer/NTMminer 真挖）
 - 验收币候选：btx（有现成 regtest 节点+GBT）或任一标准比特币分叉
 
 ## M2 — 热管理 + 管理后台 API
