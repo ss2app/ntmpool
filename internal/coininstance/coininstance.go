@@ -119,7 +119,14 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 		decimals = 8
 	}
 	inst.ledger = accounting.NewMemLedger(decimals, cfg.Payout.PplnsFactor)
-	inst.tracker = hashrate.New(hashrate.Config{})
+	// 算力口径按家族：bitcoin 系难度 1 = 2^32 哈希（默认）；
+	// blob/CN 系难度本身就是期望哈希数（multiplier=1）。zoka live 冒烟实测抓出的坑：
+	// 用 2^32 口径会把 1.2 KH/s 显成 964 GH/s（矿池网页只放真实数据铁律）。
+	hrCfg := hashrate.Config{}
+	if cfg.Adapter == "custom-http" || cfg.Adapter == "cryptonote-rpc" {
+		hrCfg.Multiplier = 1
+	}
+	inst.tracker = hashrate.New(hrCfg)
 	inst.batches = payout.NewMemBatchStore()
 
 	// 链家族选型：节点适配器 × 方言 × 作业管理器

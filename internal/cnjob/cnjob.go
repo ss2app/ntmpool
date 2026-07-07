@@ -57,13 +57,19 @@ type Manager struct {
 	onBlock   BlockSink
 	onShare   AcceptedSink
 
-	mu      sync.Mutex
-	jobs    map[string]*cnJob
-	order   []string
-	current string
+	mu        sync.Mutex
+	jobs      map[string]*cnJob
+	order     []string
+	current   string
+	lastFetch time.Time
 }
 
 const keepJobs = 4
+
+// templateRefresh 同高度模板重拉间隔。zoka 类链模板每次拉都带新 timestamp/template_id
+// （blob 必变），不节流的话 2s 轮询 = 每 2s 推新 job 白白打断矿工（live 冒烟实测）。
+// 15s 同时兼作 job 心跳（<60s 铁律，docs/04 §1）。
+const templateRefresh = 15 * time.Second
 
 var _ stratum.CNShareHandler = (*Manager)(nil)
 
@@ -82,9 +88,15 @@ func (m *Manager) SetCallbacks(broadcast func(), onBlock BlockSink, onShare Acce
 }
 
 // Refresh 拉模板 → 登记 job → 广播。blob 系没有 clean_jobs 概念：
-// 矿工收到新 job 即整体换工（forceClean 只决定是否广播，静默刷新时也广播——
-// blob 变了不广播矿工会一直交旧 job）。
-func (m *Manager) Refresh(ctx context.Context, _ bool) error {
+// 矿工收到新 job 即整体换工。force=true（高度变化/首拉）立即拉；
+// force=false 受 templateRefresh 节流（同高度不必每个轮询 tick 都换 job）。
+func (m *Manager) Refresh(ctx context.Context, force bool) error {
+	m.mu.Lock()
+	if !force && !m.lastFetch.IsZero() && time.Since(m.lastFetch) < templateRefresh {
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
 	tpl, err := m.node.GetTemplate(ctx)
 	if err != nil {
 		return err
@@ -98,6 +110,7 @@ func (m *Manager) Refresh(ctx context.Context, _ bool) error {
 	}
 
 	m.mu.Lock()
+	m.lastFetch = time.Now()
 	// blob 没变（同模板轮询）就不发新 job，避免矿工无谓换工
 	if cur, ok := m.jobs[m.current]; ok &&
 		cur.height == tpl.Height &&
