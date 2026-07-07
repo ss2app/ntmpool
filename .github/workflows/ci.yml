@@ -28,8 +28,9 @@ jobs:
   # RandomX cgo（生产 linux 二进制形态）：vendored libRandomX stock 配置（rx/0）。
   # ⚠ 必须 -DRANDOMX_STOCK：vendored configuration.h 默认是 dragonx 常量，
   # 官方向量金锚测试会拦下链错的库。
+  # runner 钉 22.04：cgo 动态链 glibc，旧 runner 编的二进制向新服务器兼容（反向不行）。
   randomx:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -55,3 +56,10 @@ jobs:
         run: go vet -tags randomx ./...
       - name: Test rx/0 金锚 + 全量回归 (tags randomx)
         run: go test -tags randomx ./...
+      - name: Build server binary (linux-x64, tags randomx)
+        run: |
+          go build -tags randomx -ldflags "-s -w" -o out/ntmpool ./cmd/ntmpool
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ntmpool-linux-x64-randomx
+          path: out/ntmpool
