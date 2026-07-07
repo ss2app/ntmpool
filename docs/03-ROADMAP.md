@@ -66,12 +66,27 @@ M1 收尾：
 - [ ] M3 尾巴（后续会话）：**rx/dragonx 前缀库**（第二份 librandomx + zkrx_ 式符号隔离，dragonx 迁移时做）；**XMRig 官方客户端对拍**（走 cnrpc/monero 系路径，等有 offset-39 blob 的币/节点可测——zoka blob 布局 XMRig 本来就挖不了）；customhttp 补固定 reward 适配器选项（zoka 模板无 reward 字段，打款前要）。
 - [ ] 可选：真 ZMQ 新块通知（替代轮询，从 M1 顺延）。
 
-## M4 — 横向扩展 + 前端 API 定稿
+## M4 — 横向扩展 + 前端 API 定稿（主体 DONE，2026-07-07，本地+真 PG16+CI 三绿）
 
-- 多实例共享 Postgres：实例注册表 + 心跳 + stratum 实例无状态化验证
-- API 网关聚合多实例（前端「大全网站」的数据底座）
-- API 隐私脱敏定稿 + 速率限制
-- Prometheus /metrics + Grafana 看板模板
+- [x] **会计/打款落 Postgres**：`PGLedger` 实现 Ledger 全接口（与 MemLedger 语义分毫不差：
+  int64 聪计算、NUMERIC 字符串出入库、ConfirmBlock/OrphanBlock 单事务+行锁幂等、
+  `block_credits` 分账快照做孤块回滚、`balance_changes` 审计流水、Reconcile 守恒 SQL 化）；
+  `PGBatchStore`（payment_batches+payments 双表，Unfinished 崩溃恢复走真持久化）。
+  share 缓冲批写（1s flush，爆块/confirm 前强制同步 flush）。有 `postgresDsn`→PG、无→内存。
+- [x] **双实现 conformance 套件**（NTMPOOL_PG_DSN 门控）：9 组会计断言同时跑 Mem/PG，
+  等价性铁证（M5 迁移前提）。顺手修 MemLedger 带费孤块守恒 bug（confirm(fee>0)→orphan
+  计提费未作废→delta=-fee 误冻结）。
+- [x] **意图先落库定稿**：cnjob「先交后记」改「意图先落库」（PoW hash 占位 submitting →
+  SubmitBlob 拿权威块 id → BlockSink 补 hash 转 pending，闭合提交-落账崩溃窗口）；
+  BlockSink 加 submit 闭包，bitcoin 侧顺带补上此前缺失的 MarkBlockPending。
+- [x] **多实例共享 Postgres**：`InstanceRegistry` 心跳 upsert（text[] 币列表）+ 判活
+  （make_interval）+ 无状态化验证（多实例集成测试：A 记 share、B confirm 分账正确）。
+- [x] **API 聚合多实例**：公共 API `/api/instances` 列在线实例（前端「大全网站」数据底座）。
+- [x] **Prometheus /metrics**：零依赖手写文本格式，shares_total{coin,outcome}（badpow 与
+  lowdiff 分开，zoka 冒烟教训）+ blocks_submitted + payouts。
+- [x] **CI**：postgres:16 service 容器跑全部 PG 集成测试；go 1.25 对齐 pgx。
+- [ ] 尾巴（可选）：API 隐私脱敏本已在 M1 定稿；Grafana 看板模板（有 /metrics 后随时可做）；
+  PPLNS share 窗口内存池通病（重启窗口清空首块分账残缺）已有 shares 表可从库重建，接一下即可。
 
 ## M5 — 生产迁移
 
@@ -81,4 +96,4 @@ M1 收尾：
 
 ## 二期候选（不排期）
 
-PPS 结算、Stratum V2、合并挖矿、PoS 质押池模块、自动兑换、前端大全网站（等 M4 API 定稿后启动）
+PPS 结算、Stratum V2、合并挖矿、PoS 质押池模块、自动兑换、前端大全网站（M4 API 已定稿，可启动）
