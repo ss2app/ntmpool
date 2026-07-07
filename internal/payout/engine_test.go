@@ -16,7 +16,7 @@ type fakeNode struct {
 	mainHash map[uint64]string
 }
 
-func (n *fakeNode) Confirmations(_ context.Context, h string) (int64, error) {
+func (n *fakeNode) Confirmations(_ context.Context, h string, _ uint64) (int64, error) {
 	if v, ok := n.conf[h]; ok {
 		return v, nil
 	}

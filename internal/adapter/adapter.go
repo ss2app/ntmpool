@@ -56,7 +56,9 @@ type NodeAdapter interface {
 	BlockHashAt(ctx context.Context, height uint64) (string, error)
 
 	// Confirmations 查询我们提交的块当前确认数（<0 = 已不在主链）。
-	Confirmations(ctx context.Context, blockHash string) (int64, error)
+	// height 是我们记录的块高度：只有按高度查块 API 的链（zoka 类 REST）靠它定位，
+	// bitcoin/门罗系按 hash 查的忽略即可。
+	Confirmations(ctx context.Context, blockHash string, height uint64) (int64, error)
 }
 
 // WalletAdapter 打款侧。与 NodeAdapter 分离：有的链钱包在节点里，有的独立进程。

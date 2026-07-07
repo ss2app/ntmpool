@@ -228,8 +228,8 @@ func (c *Client) BlockHashAt(ctx context.Context, height uint64) (string, error)
 }
 
 // Confirmations 块不在主链返回 -1（getblockheader 对孤块本身就返回 confirmations=-1；
-// 节点完全不认识该块（-5）同样归一为 -1，调用方按孤块处理）。
-func (c *Client) Confirmations(ctx context.Context, blockHash string) (int64, error) {
+// 节点完全不认识该块（-5）同样归一为 -1，调用方按孤块处理）。height 不需要。
+func (c *Client) Confirmations(ctx context.Context, blockHash string, _ uint64) (int64, error) {
 	var hdr struct {
 		Confirmations int64 `json:"confirmations"`
 	}

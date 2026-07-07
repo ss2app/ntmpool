@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/scashcc/ntmpool/internal/hasher"
@@ -140,22 +141,6 @@ func (f *fakeCNNode) handle(w http.ResponseWriter, r *http.Request) {
 		f.byHash[blockHash] = f.height
 		writeJSON(200, map[string]any{"status": "accepted", "hash": blockHash, "height": f.height})
 
-	case "/chain/block":
-		if hs := r.URL.Query().Get("hash"); hs != "" {
-			if h, ok := f.byHash[hs]; ok {
-				writeJSON(200, map[string]any{"hash": hs, "height": h})
-			} else {
-				writeJSON(404, map[string]any{"error": "not found"})
-			}
-			return
-		}
-		hq, _ := strconv.ParseUint(r.URL.Query().Get("height"), 10, 64)
-		if hash, ok := f.blocks[hq]; ok {
-			writeJSON(200, map[string]any{"hash": hash, "height": hq})
-		} else {
-			writeJSON(404, map[string]any{"error": "not found"})
-		}
-
 	case "/wallet/balance":
 		writeJSON(200, map[string]any{"balance_atoms": uint64(1000000000000)})
 
@@ -174,6 +159,18 @@ func (f *fakeCNNode) handle(w http.ResponseWriter, r *http.Request) {
 		}
 
 	default:
+		// GET /blocks/{height}（zoka 真实路由形状）
+		if h, ok := strings.CutPrefix(r.URL.Path, "/blocks/"); ok {
+			hq, err := strconv.ParseUint(h, 10, 64)
+			if err == nil {
+				if hash, found := f.blocks[hq]; found {
+					writeJSON(200, map[string]any{"hash": hash, "height": hq, "reward_atoms": uint64(5000000000)})
+					return
+				}
+			}
+			writeJSON(404, map[string]any{"error": "not found"})
+			return
+		}
 		writeJSON(404, map[string]any{"error": "no route " + r.URL.Path})
 	}
 }

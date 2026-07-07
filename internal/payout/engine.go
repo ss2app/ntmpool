@@ -13,8 +13,9 @@ import (
 )
 
 // NodeClassifier 是打款引擎对节点的依赖（孤块判定：确认数 + 主链 hash 逐字节比对）。
+// Confirmations 的 height 参数：只有按高度查块 API 的链（zoka 类 REST）靠它定位。
 type NodeClassifier interface {
-	Confirmations(ctx context.Context, blockHash string) (int64, error)
+	Confirmations(ctx context.Context, blockHash string, height uint64) (int64, error)
 	BlockHashAt(ctx context.Context, height uint64) (string, error)
 }
 
@@ -202,7 +203,7 @@ func (e *Engine) classify(ctx context.Context) error {
 		return err
 	}
 	for _, b := range pending {
-		conf, err := e.node.Confirmations(ctx, b.Hash)
+		conf, err := e.node.Confirmations(ctx, b.Hash, b.Height)
 		if err != nil {
 			continue
 		}

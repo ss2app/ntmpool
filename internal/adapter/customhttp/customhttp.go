@@ -1,14 +1,16 @@
 // Package customhttp 自定义 REST 链适配器（zoka/CRB 先例形状）。
 //
-// 节点侧 API（zoka mining patch 的形状，我们自己链自己定）：
+// 节点侧 API（zoka mining patch v1.6.0 的真实路由，diff 逐行核实）：
 //   GET  /chain/height                    → {"height":N}
-//   GET  /mining/template?address=A       → {"height","prev_hash","difficulty_bits",
-//                                            "epoch_seed_hex","blob_prefix_hex","template_id"}
-//   POST /mining/submit {template_id,nonce} → {"status":"accepted","hash":...} | {"status":...,"reason":...}
-//   GET  /chain/block?height=N            → {"hash","height"}
-//   GET  /chain/block?hash=H              → {"hash","height"}（不在主链 → 404）
+//   GET  /mining/template?address=A       → {"chain_id","height","prev_hash","pool_address",
+//                                            "timestamp","difficulty_bits","epoch_seed_hex",
+//                                            "blob_prefix_hex","template_id"}（无 reward 字段）
+//   POST /mining/submit {template_id,nonce(u64)} → {"status":"accepted","height","hash"} |
+//                                            {"status":...,"reason":...}
+//   GET  /blocks/{height}                 → {"hash","height","reward_atoms"}（无按 hash 查的路由，
+//                                            孤块判定 = 按我们记录的高度取主链块比 hash）
 //
-// 钱包侧（打款；zoka 真实打款是 send-from-seed 加密封套，接 zoka 时在此扩展）：
+// 钱包侧（打款；zoka 真实打款是 send-from-seed 加密封套，接 zoka 打款时在此扩展）：
 //   GET  /wallet/balance                  → {"balance_atoms":N}
 //   POST /wallet/sendmany {outputs:{addr:atoms}} → {"txid":...}
 //   GET  /wallet/tx?txid=T                → {"confirmations":N}
@@ -229,29 +231,33 @@ type blockResp struct {
 
 func (c *Client) BlockHashAt(ctx context.Context, height uint64) (string, error) {
 	var b blockResp
-	if err := c.get(ctx, fmt.Sprintf("/chain/block?height=%d", height), &b); err != nil {
+	if err := c.get(ctx, fmt.Sprintf("/blocks/%d", height), &b); err != nil {
 		return "", err
 	}
 	return b.Hash, nil
 }
 
-// Confirmations 按 hash 查块；不在主链（404）→ -1（调用方按孤块处理）。
-func (c *Client) Confirmations(ctx context.Context, blockHash string) (int64, error) {
+// Confirmations 链上无按 hash 查块的路由 → 按我们记录的高度取主链块：
+// hash 逐字节一致 = 在主链，conf = tip − height + 1；不一致/404 = 孤块（-1）。
+func (c *Client) Confirmations(ctx context.Context, blockHash string, height uint64) (int64, error) {
 	var b blockResp
-	if err := c.get(ctx, "/chain/block?hash="+url.QueryEscape(blockHash), &b); err != nil {
+	if err := c.get(ctx, fmt.Sprintf("/blocks/%d", height), &b); err != nil {
 		if err == errNotFound {
-			return -1, nil
+			return -1, nil // 主链还没到这个高度/已被回滚 → 我们的块不在主链
 		}
 		return 0, err
+	}
+	if !strings.EqualFold(b.Hash, blockHash) {
+		return -1, nil // 该高度的主链块不是我们的 → 孤块
 	}
 	st, err := c.Status(ctx)
 	if err != nil {
 		return 0, err
 	}
-	if st.Height < b.Height {
+	if st.Height < height {
 		return 0, nil
 	}
-	return int64(st.Height-b.Height) + 1, nil
+	return int64(st.Height-height) + 1, nil
 }
 
 // ---- WalletAdapter ----

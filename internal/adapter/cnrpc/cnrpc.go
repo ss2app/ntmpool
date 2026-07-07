@@ -228,8 +228,8 @@ func (c *Client) BlockHashAt(ctx context.Context, height uint64) (string, error)
 	return hash, nil
 }
 
-// Confirmations 孤块 → -1；主链块 → depth+1。
-func (c *Client) Confirmations(ctx context.Context, blockHash string) (int64, error) {
+// Confirmations 孤块 → -1；主链块 → depth+1。height 不需要（daemon 按 hash 查）。
+func (c *Client) Confirmations(ctx context.Context, blockHash string, _ uint64) (int64, error) {
 	var hdr struct {
 		BlockHeader struct {
 			Depth        uint64 `json:"depth"`

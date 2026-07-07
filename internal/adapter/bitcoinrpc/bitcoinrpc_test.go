@@ -78,7 +78,7 @@ func TestConfirmationsNotFound(t *testing.T) {
 	c := mockNode(t, func(string) (any, *RPCError) {
 		return nil, &RPCError{Code: -5, Message: "Block not found"}
 	})
-	n, err := c.Confirmations(context.Background(), "0000")
+	n, err := c.Confirmations(context.Background(), "0000", 0)
 	if err != nil || n != -1 {
 		t.Fatalf("got (%d,%v), want (-1,nil)", n, err)
 	}
