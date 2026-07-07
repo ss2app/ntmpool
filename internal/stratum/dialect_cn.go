@@ -362,14 +362,15 @@ func (c *cnConn) rejectSubmit(id json.RawMessage, outcome core.ShareOutcome, mes
 	return err
 }
 
-// maybeRetarget vardiff 调档后推带新 target 的 job（CN 没有 set_difficulty，难度随 job 走）。
+// maybeRetarget vardiff 调档。CN 没有 set_difficulty，难度随 job target 走——
+// 但绝不对同一 blob 立即重推 job：矿工会重置 nonce 起点重找到同样的解 →
+// Duplicate share（zoka live 冒烟实测）。新难度挂起，随下一个真新模板的 job
+// 下发（pendingDifficulty 语义，docs/04 §1；blob 链模板 ≤15s 一换，等得起）。
 func (c *cnConn) maybeRetarget() {
 	if !c.port.Vardiff.Enabled {
 		return
 	}
-	if _, changed := c.vd.MaybeRetarget(time.Now()); changed {
-		_ = c.pushJob()
-	}
+	_, _ = c.vd.MaybeRetarget(time.Now())
 }
 
 // pushJob 推送当前 job（登录后、新块广播、vardiff 调档时）。
