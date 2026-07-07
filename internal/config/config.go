@@ -23,15 +23,15 @@ type VardiffConfig struct {
 
 // PortConfig 一个 stratum 端口。热管理：可运行时增删启停（docs/01 R7）。
 type PortConfig struct {
-	Port     int           `json:"port"`
-	Mode     string        `json:"mode"`    // "pplns" | "solo"
-	Dialect  string        `json:"dialect"` // "stratum1" | "cryptonote" | "ntm"
-	Vardiff  VardiffConfig `json:"vardiff"`
-	TLS      bool          `json:"tls"`
-	Proxy    string        `json:"proxyProtocol"` // "off"|"optional"|"required"（藏转发器后必须 required）
-	Enabled  bool          `json:"enabled"`
-	MaxConns int           `json:"maxConns"`      // 端口在连上限（0 = 不限）
-	MaxConnsPerIP int      `json:"maxConnsPerIp"` // 每真实 IP 在连上限（0 = 不限）
+	Port          int           `json:"port"`
+	Mode          string        `json:"mode"`    // "pplns" | "solo"
+	Dialect       string        `json:"dialect"` // "stratum1" | "cryptonote" | "ntm"
+	Vardiff       VardiffConfig `json:"vardiff"`
+	TLS           bool          `json:"tls"`
+	Proxy         string        `json:"proxyProtocol"` // "off"|"optional"|"required"（藏转发器后必须 required）
+	Enabled       bool          `json:"enabled"`
+	MaxConns      int           `json:"maxConns"`      // 端口在连上限（0 = 不限）
+	MaxConnsPerIP int           `json:"maxConnsPerIp"` // 每真实 IP 在连上限（0 = 不限）
 }
 
 // ConsolidationConfig 钱包整备（note/UTXO 定时合并，docs/02 §6）。
@@ -74,19 +74,19 @@ type NodeEndpoint struct {
 
 // CoinConfig 一个币的完整配置。
 type CoinConfig struct {
-	ID          string         `json:"id"`     // 池内唯一，如 "btx"
-	Symbol      string         `json:"symbol"` // 展示用
+	ID          string         `json:"id"`      // 池内唯一，如 "btx"
+	Symbol      string         `json:"symbol"`  // 展示用
 	Adapter     string         `json:"adapter"` // "bitcoin-rpc" | "cryptonote-rpc" | "custom-http"
 	Algo        string         `json:"algo"`
 	Decimals    int            `json:"decimals"` // 币最小单位小数位；0 = 按适配器默认（btc 系 8，门罗系 12）
-	Nodes       []NodeEndpoint `json:"nodes"`  // 多节点 failover + 并发提交
-	Wallet      NodeEndpoint   `json:"wallet"` // 钱包独立进程的链（cryptonote-rpc 必填）
+	Nodes       []NodeEndpoint `json:"nodes"`    // 多节点 failover + 并发提交
+	Wallet      NodeEndpoint   `json:"wallet"`   // 钱包独立进程的链（cryptonote-rpc 必填）
 	PoolAddress string         `json:"poolAddress"`
 	FeeAddress  string         `json:"feeAddress"` // 铁律：必须 ≠ PoolAddress，启动校验
 	Ports       []PortConfig   `json:"ports"`
 	Payout      PayoutConfig   `json:"payout"`
 	// 每币独立开关（热参数）
-	MiningEnabled  bool `json:"miningEnabled"`
+	MiningEnabled   bool `json:"miningEnabled"`
 	NewConnsEnabled bool `json:"newConnectionsEnabled"`
 }
 
@@ -98,17 +98,17 @@ type NotifyConfig struct {
 }
 
 type Config struct {
-	InstanceID string       `json:"instanceId"` // 多服务器实例标识（pool1/pool2…）
-	PostgresDSN string      `json:"postgresDsn"`
-	PublicAPI  string       `json:"publicApiListen"` // 如 ":4000"
-	AdminAPI   string       `json:"adminApiListen"`  // 独立端口，建议只绑内网/专线
-	AdminToken string       `json:"adminToken"`      // 建议 ${NTMPOOL_ADMIN_TOKEN}
-	MaskSecret string       `json:"maskSecret"`      // API 地址脱敏 HMAC 密钥（R14.6）；空=每次启动随机
-	DataDir    string       `json:"dataDir"`         // 状态文件目录（bans/miner_settings/config.state/config_audit）；空="."
-	LogDir     string       `json:"logDir"`
-	LogQuotaMB int          `json:"logQuotaMB"` // 全局日志磁盘配额（zoka 6.2GB 日志事故的教训）
-	Notify     NotifyConfig `json:"notify"`
-	Coins      []CoinConfig `json:"coins"`
+	InstanceID  string       `json:"instanceId"` // 多服务器实例标识（pool1/pool2…）
+	PostgresDSN string       `json:"postgresDsn"`
+	PublicAPI   string       `json:"publicApiListen"` // 如 ":4000"
+	AdminAPI    string       `json:"adminApiListen"`  // 独立端口，建议只绑内网/专线
+	AdminToken  string       `json:"adminToken"`      // 建议 ${NTMPOOL_ADMIN_TOKEN}
+	MaskSecret  string       `json:"maskSecret"`      // API 地址脱敏 HMAC 密钥（R14.6）；空=每次启动随机
+	DataDir     string       `json:"dataDir"`         // 状态文件目录（bans/miner_settings/config.state/config_audit）；空="."
+	LogDir      string       `json:"logDir"`
+	LogQuotaMB  int          `json:"logQuotaMB"` // 全局日志磁盘配额（zoka 6.2GB 日志事故的教训）
+	Notify      NotifyConfig `json:"notify"`
+	Coins       []CoinConfig `json:"coins"`
 }
 
 // Validate 启动门禁。

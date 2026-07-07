@@ -9,6 +9,7 @@ import (
 	"github.com/scashcc/ntmpool/internal/adapter/customhttp"
 	"github.com/scashcc/ntmpool/internal/cnjob"
 	"github.com/scashcc/ntmpool/internal/config"
+	"github.com/scashcc/ntmpool/internal/core"
 	"github.com/scashcc/ntmpool/internal/hasher"
 	"github.com/scashcc/ntmpool/internal/payout"
 	"github.com/scashcc/ntmpool/internal/stratum"
@@ -53,7 +54,11 @@ func buildBlobFamily(ctx context.Context, cfg config.CoinConfig, decimals int, i
 
 	jm := cnjob.New(cfg.ID, cfg.Algo, node, kh)
 	dialect := stratum.NewCNDialect(cfg.ID, jm)
-	jm.SetCallbacks(dialect.BroadcastJob, inst.blockSink(), inst.shareSink())
+	sink := inst.blockSink()
+	jm.SetCallbacks(dialect.BroadcastJob,
+		func(ctx context.Context, b core.FoundBlock, rawHex string, submit cnjob.SubmitFunc) error {
+			return sink(ctx, b, rawHex, submit)
+		}, inst.shareSink())
 
 	return &familyParts{
 		status:     node,

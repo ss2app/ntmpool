@@ -112,11 +112,11 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 
 func (c *Client) Status(ctx context.Context) (adapter.ChainStatus, error) {
 	var info struct {
-		Height        uint64 `json:"height"`
-		TopBlockHash  string `json:"top_block_hash"`
-		TargetHeight  uint64 `json:"target_height"`
-		Synchronized  bool   `json:"synchronized"`
-		Status        string `json:"status"`
+		Height       uint64 `json:"height"`
+		TopBlockHash string `json:"top_block_hash"`
+		TargetHeight uint64 `json:"target_height"`
+		Synchronized bool   `json:"synchronized"`
+		Status       string `json:"status"`
 	}
 	if err := c.call(ctx, "get_info", map[string]any{}, &info); err != nil {
 		return adapter.ChainStatus{}, err
@@ -155,18 +155,18 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 		return nil, fmt.Errorf("%s: difficulty=0", c.name)
 	}
 	work := &adapter.BlobWork{
-		HashingBlob:   hashing,
-		NonceOffset:   nonceOffset,
-		NonceLen:      nonceLen,
-		SearchLen:     searchLen,
-		SeedHash:      t.SeedHash,
-		Algo:          c.algo,
-		NetworkTarget: cnwork.TargetFromDiff(float64(t.Difficulty)),
-		HashBigEndian: false, // monero 惯例：hash 小端解释
-		TargetCompactLE: true, // XMRig 惯例：8-hex compact 小端
-		Nicehash:      true,
-		HeightHint:    t.Height,
-		SubmitRef:     t.BlocktemplateBlob,
+		HashingBlob:     hashing,
+		NonceOffset:     nonceOffset,
+		NonceLen:        nonceLen,
+		SearchLen:       searchLen,
+		SeedHash:        t.SeedHash,
+		Algo:            c.algo,
+		NetworkTarget:   cnwork.TargetFromDiff(float64(t.Difficulty)),
+		HashBigEndian:   false, // monero 惯例：hash 小端解释
+		TargetCompactLE: true,  // XMRig 惯例：8-hex compact 小端
+		Nicehash:        true,
+		HeightHint:      t.Height,
+		SubmitRef:       t.BlocktemplateBlob,
 	}
 	return &adapter.BlockTemplate{
 		Height:        t.Height,

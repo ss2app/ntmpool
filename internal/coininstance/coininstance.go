@@ -6,6 +6,7 @@ package coininstance
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"sync"
@@ -31,6 +32,8 @@ type Deps struct {
 	Ban      *banlist.List        // 全池共享 ban 名单
 	Settings *minersettings.Store // 矿工设置（mp=/密码绑定）
 	Notify   *notify.Hub          // 运营通知（爆块/打款/孤块/节点失联/对账冻结）
+	DB       *sql.DB              // 共享 Postgres（多实例，M4）；nil = 内存会计（单实例）
+	Instance string               // 本实例 ID（shares.source 溯源；多服务器横向扩展）
 }
 
 // statusSource 节点健康检查面（失联检测/高度轮询）。
@@ -84,7 +87,7 @@ type Instance struct {
 
 	mu         sync.Mutex // 保护 cfg 热改 + 网络缓存
 	lastHeight uint64
-	netHashPS  float64   // getnetworkhashps 缓存（30s 刷新；0=尚未取到）
+	netHashPS  float64 // getnetworkhashps 缓存（30s 刷新；0=尚未取到）
 	netHashAt  time.Time
 	nodeFails  int  // 节点连续失败计数（失联检测）
 	nodeDown   bool // 当前是否处于失联状态（翻转时才发通知，不刷屏）
@@ -118,7 +121,18 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	if decimals <= 0 {
 		decimals = 8
 	}
-	inst.ledger = accounting.NewMemLedger(decimals, cfg.Payout.PplnsFactor)
+	// 会计层：有共享 Postgres（M4 多实例）走 PGLedger/PGBatchStore（重启不丢账、
+	// 崩溃恢复走真持久化）；否则内存版（单实例，M1 竖切够用）。
+	if deps.DB != nil {
+		pg := accounting.NewPGLedger(deps.DB, cfg.ID, decimals, cfg.Payout.PplnsFactor, deps.Instance)
+		pg.StartFlusher(ctx, time.Second) // share 每秒批量落盘（爆块/confirm 前会强制同步 flush）
+		inst.ledger = pg
+		inst.batches = payout.NewPGBatchStore(deps.DB, cfg.ID)
+		log.Printf("[%s] 会计=Postgres（instance=%s）", cfg.ID, deps.Instance)
+	} else {
+		inst.ledger = accounting.NewMemLedger(decimals, cfg.Payout.PplnsFactor)
+		inst.batches = payout.NewMemBatchStore()
+	}
 	// 算力口径按家族：bitcoin 系难度 1 = 2^32 哈希（默认）；
 	// blob/CN 系难度本身就是期望哈希数（multiplier=1）。zoka live 冒烟实测抓出的坑：
 	// 用 2^32 口径会把 1.2 KH/s 显成 964 GH/s（矿池网页只放真实数据铁律）。
@@ -127,7 +141,6 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 		hrCfg.Multiplier = 1
 	}
 	inst.tracker = hashrate.New(hrCfg)
-	inst.batches = payout.NewMemBatchStore()
 
 	// 链家族选型：节点适配器 × 方言 × 作业管理器
 	parts, err := buildFamily(ctx, cfg, decimals, inst)
@@ -141,7 +154,7 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	pcfg := payout.Config{
 		Coin: cfg.ID, Decimals: decimals,
 		FeePercent: cfg.Payout.FeePercent, MinPayout: parseFloat(cfg.Payout.MinPayout),
-		Maturity: cfg.Payout.Confirmations,
+		Maturity:          cfg.Payout.Confirmations,
 		FeeAddress:        cfg.FeeAddress,
 		FeeCollectEnabled: cfg.Payout.FeeCollect.Enabled,
 		FeeCollectMin:     cfg.Payout.FeeCollect.MinAmount,

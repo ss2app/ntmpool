@@ -31,8 +31,9 @@ type nodeIface interface {
 	SubmitBlob(ctx context.Context, sol *adapter.BlobSolution) (blockHash string, err error)
 }
 
-// BlockSink / AcceptedSink 会计层注入（与 jobmanager 同形）。
-type BlockSink func(ctx context.Context, b core.FoundBlock, rawBlockHex string) error
+// SubmitFunc / BlockSink / AcceptedSink 会计层注入（与 jobmanager 同形）。
+type SubmitFunc func(ctx context.Context) (finalHash string, err error)
+type BlockSink func(ctx context.Context, b core.FoundBlock, rawBlockHex string, submit SubmitFunc) error
 type AcceptedSink func(ctx context.Context, s core.Share)
 
 // cnJob 一个模板级 job。
@@ -254,28 +255,27 @@ func (m *Manager) HandleSubmit(ctx context.Context, sub stratum.CNSubmission) st
 	return stratum.SubmitResult{Outcome: core.OutcomeAccepted, CreditDiff: credit}
 }
 
-// handleBlock 提交爆块。与 bitcoin 系「先记后交」不同：blob 链的权威块 hash
-// 只有节点受理后才知道（zoka 由 /mining/submit 返回；块 id ≠ PoW hash），
-// 所以这里是「先交后记」。崩溃窗口 = 提交成功到落账之间（块在链上但池没记账，
-// 少记不多付，守恒不破）。TODO(M4 Postgres)：意图先落库 + 提交后补 hash。
+// handleBlock 提交爆块。blob 链的权威块 hash 只有节点受理后才知道（zoka 由
+// /mining/submit 返回；块 id ≠ PoW hash），所以「意图先落库」：先用 PoW hash 作
+// 占位记 submitting，SubmitBlob 拿到真 id 后由 BlockSink 改写 hash 并转 pending
+// （M4：闭合「提交成功→落账」的崩溃窗口，docs/05 场景B）。
 func (m *Manager) handleBlock(ctx context.Context, j *cnJob, sub stratum.CNSubmission, blob []byte, fullNonce uint64, hash []byte) {
 	sol := &adapter.BlobSolution{Work: j.work, Blob: blob, Nonce: fullNonce, Hash: hash}
-	blockHash, err := m.node.SubmitBlob(ctx, sol)
-	if err != nil {
-		// 提交被拒：不记账（share 已计权，矿工不吃亏）；badpow=0 时被拒说明
-		// 模板过期竞速或节点侧问题，日志由调用方 onBlock 之外的层记。
-		return
+	submit := func(ctx context.Context) (string, error) {
+		return m.node.SubmitBlob(ctx, sol) // 返回节点权威块 id
 	}
 	if m.onBlock == nil {
+		_, _ = submit(ctx)
 		return
 	}
+	// 意图 hash = PoW hash（每个解唯一）；BlockSink 提交成功后换成节点权威 id。
 	fb := core.FoundBlock{
-		Coin: m.coinID, Height: j.height, Hash: blockHash,
+		Coin: m.coinID, Height: j.height, Hash: hex.EncodeToString(hash),
 		Finder: sub.Address, Worker: sub.Worker,
 		Reward: j.reward, NetDiff: j.netDiff,
 		Status: core.BlockPending, FoundAt: time.Now(), Solo: sub.Solo,
 	}
-	_ = m.onBlock(ctx, fb, hex.EncodeToString(blob))
+	_ = m.onBlock(ctx, fb, hex.EncodeToString(blob), submit)
 }
 
 // ---- 内部工具 ----

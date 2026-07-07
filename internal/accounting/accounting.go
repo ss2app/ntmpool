@@ -33,6 +33,9 @@ type Ledger interface {
 
 	// RecordBlock 记一个池找到的块（初始 status=submitting，rawHex 供恢复重播/审计）。
 	RecordBlock(ctx context.Context, b core.FoundBlock, rawHex string) error
+	// UpdateBlockHash 把意图占位 hash 换成节点受理后的权威 hash（blob 链「意图先落库」
+	// 补录：块 id ≠ PoW hash，先用 PoW hash 落 submitting，提交拿到真 id 后改写）。
+	UpdateBlockHash(ctx context.Context, coin, oldHash, newHash string) error
 	// MarkBlockPending 块已成功提交给节点（submitting→pending）。
 	MarkBlockPending(ctx context.Context, coin, hash string) error
 

@@ -1,19 +1,21 @@
 // Package customhttp 自定义 REST 链适配器（zoka/CRB 先例形状）。
 //
 // 节点侧 API（zoka mining patch v1.6.0 的真实路由，diff 逐行核实）：
-//   GET  /chain/height                    → {"height":N}
-//   GET  /mining/template?address=A       → {"chain_id","height","prev_hash","pool_address",
-//                                            "timestamp","difficulty_bits","epoch_seed_hex",
-//                                            "blob_prefix_hex","template_id"}（无 reward 字段）
-//   POST /mining/submit {template_id,nonce(u64)} → {"status":"accepted","height","hash"} |
-//                                            {"status":...,"reason":...}
-//   GET  /blocks/{height}                 → {"hash","height","reward_atoms"}（无按 hash 查的路由，
-//                                            孤块判定 = 按我们记录的高度取主链块比 hash）
+//
+//	GET  /chain/height                    → {"height":N}
+//	GET  /mining/template?address=A       → {"chain_id","height","prev_hash","pool_address",
+//	                                         "timestamp","difficulty_bits","epoch_seed_hex",
+//	                                         "blob_prefix_hex","template_id"}（无 reward 字段）
+//	POST /mining/submit {template_id,nonce(u64)} → {"status":"accepted","height","hash"} |
+//	                                         {"status":...,"reason":...}
+//	GET  /blocks/{height}                 → {"hash","height","reward_atoms"}（无按 hash 查的路由，
+//	                                         孤块判定 = 按我们记录的高度取主链块比 hash）
 //
 // 钱包侧（打款；zoka 真实打款是 send-from-seed 加密封套，接 zoka 打款时在此扩展）：
-//   GET  /wallet/balance                  → {"balance_atoms":N}
-//   POST /wallet/sendmany {outputs:{addr:atoms}} → {"txid":...}
-//   GET  /wallet/tx?txid=T                → {"confirmations":N}
+//
+//	GET  /wallet/balance                  → {"balance_atoms":N}
+//	POST /wallet/sendmany {outputs:{addr:atoms}} → {"txid":...}
+//	GET  /wallet/tx?txid=T                → {"confirmations":N}
 //
 // blob 布局（CRB/zoka 先例）：blob_prefix_hex = 完整 PoW 输入、nonce 全零尾部 8 字节；
 // 低 4 字节矿工搜索区、高 4 字节连接 tag。difficulty_bits = leading-zero-bits，

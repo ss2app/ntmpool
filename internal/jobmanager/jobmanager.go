@@ -24,32 +24,38 @@ type nodeIface interface {
 	PayoutScript(ctx context.Context, address string) (string, error)
 }
 
-// BlockSink 会计层注入：池找到块时回调（先记后交由 JobManager 保证顺序，见 docs/05 场景B）。
-type BlockSink func(ctx context.Context, b core.FoundBlock, rawBlockHex string) error
+// SubmitFunc 由作业管理器提供：把已组装的块交给节点，返回节点认可的权威块 hash。
+// bitcoin 系块 hash 在提交前已确定（返回原 hash）；blob 系由节点受理后才给出。
+type SubmitFunc func(ctx context.Context) (finalHash string, err error)
+
+// BlockSink 会计层注入：池找到块 → 先记意图(submitting) → 调 submit 交节点 →
+// 成功则 submitting→pending（必要时改用权威 hash），失败留 submitting 交恢复扫描
+// （docs/05 场景B「意图先落库，动作后执行」）。
+type BlockSink func(ctx context.Context, b core.FoundBlock, rawBlockHex string, submit SubmitFunc) error
 
 // AcceptedSink 会计层注入：一条 accepted share 记权。
 type AcceptedSink func(ctx context.Context, s core.Share)
 
 // JobManager 每币一个。实现 stratum.ShareHandler。
 type JobManager struct {
-	coinID    string
-	node      nodeIface
-	hsh       hasher.Hasher
-	reg       *stratum.JobRegistry
-	poolTag   []byte
-	en2Size   int
-	decimals  int
+	coinID   string
+	node     nodeIface
+	hsh      hasher.Hasher
+	reg      *stratum.JobRegistry
+	poolTag  []byte
+	en2Size  int
+	decimals int
 
 	poolScript []byte // 矿池地址 scriptPubKey（启动时取一次）
 
-	jobSeq   atomic.Uint64
-	broadcast func()      // 通知所有连接推新 job（clean）
-	onBlock  BlockSink
-	onShare  AcceptedSink
+	jobSeq    atomic.Uint64
+	broadcast func() // 通知所有连接推新 job（clean）
+	onBlock   BlockSink
+	onShare   AcceptedSink
 
-	mu       sync.Mutex
+	mu           sync.Mutex
 	lastTemplate *gbtTemplate
-	lastRaw  json.RawMessage
+	lastRaw      json.RawMessage
 }
 
 var _ stratum.ShareHandler = (*JobManager)(nil)
@@ -101,7 +107,7 @@ func (m *JobManager) Init(ctx context.Context, poolAddress string) error {
 // ---- stratum.ShareHandler ----
 
 func (m *JobManager) Registry() *stratum.JobRegistry { return m.reg }
-func (m *JobManager) ExtraNonce2Size() int            { return m.en2Size }
+func (m *JobManager) ExtraNonce2Size() int           { return m.en2Size }
 
 // Snapshot 当前 job 的链上视图（coininstance 作业管线公共面）。
 func (m *JobManager) Snapshot() (height uint64, netDiff float64, ok bool) {
@@ -268,14 +274,19 @@ func (m *JobManager) handleBlock(ctx context.Context, job *stratum.Job, sub stra
 		Reward: satToStr(job.RewardSat, m.decimals), NetDiff: job.NetDiff,
 		Status: core.BlockPending, FoundAt: time.Now(), Solo: sub.Solo,
 	}
-	// 先记后交（docs/05 场景B）：BlockSink 负责先写 status=submitting 再由此提交。
-	if m.onBlock != nil {
-		if err := m.onBlock(ctx, fb, blockHex); err != nil {
-			return
+	// 意图先落库，动作后执行（docs/05 场景B）：BlockSink 记 submitting → 调 submit
+	// 交节点 → 成功 markPending。bitcoin 系 hash 提交前已知，submit 原样返回。
+	submit := func(ctx context.Context) (string, error) {
+		if err := m.node.SubmitBlock(ctx, blockHex); err != nil {
+			return "", err
 		}
+		return blockHashBE, nil
 	}
-	// 提交给节点（多节点并发提交由上层封装；M1 单节点）
-	_ = m.node.SubmitBlock(ctx, blockHex)
+	if m.onBlock != nil {
+		_ = m.onBlock(ctx, fb, blockHex, submit)
+		return
+	}
+	_, _ = submit(ctx)
 }
 
 func mustHex(s string) []byte {

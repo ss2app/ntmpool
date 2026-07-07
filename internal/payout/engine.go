@@ -10,6 +10,7 @@ import (
 	"github.com/scashcc/ntmpool/internal/accounting"
 	"github.com/scashcc/ntmpool/internal/adapter"
 	"github.com/scashcc/ntmpool/internal/core"
+	"github.com/scashcc/ntmpool/internal/metrics"
 )
 
 // NodeClassifier 是打款引擎对节点的依赖（孤块判定：确认数 + 主链 hash 逐字节比对）。
@@ -22,11 +23,11 @@ type NodeClassifier interface {
 // BatchStore 打款批次持久化（崩溃恢复的关键，docs/05 场景A）。
 // 内存实现供 M1/测试；Postgres 实现供生产（重启后 recovery 扫描它）。
 type BatchStore interface {
-	NextBatchID() int64
+	NextBatchID() (int64, error)
 	Save(b *Batch) error
-	Load(id int64) (*Batch, bool)
-	Unfinished() []*Batch // created/prepared/sent 但未 confirmed/failed
-	All() []*Batch        // 全部批次（新→旧），公共 API /payments 用
+	Load(id int64) (*Batch, bool, error)
+	Unfinished() ([]*Batch, error) // created/prepared/sent 但未 confirmed/failed
+	All() ([]*Batch, error)        // 全部批次（新→旧），公共 API /payments 用
 }
 
 // Batch 一笔打款批次的完整状态（对应 payment_batches 表）。
@@ -43,11 +44,11 @@ type Batch struct {
 
 // Config 打款引擎配置（热参数子集在这里取快照）。
 type Config struct {
-	Coin          string
-	Decimals      int
-	FeePercent    float64
-	MinPayout     float64
-	Maturity      int64 // 打款所需确认数（低于链成熟期 = 预打款）
+	Coin       string
+	Decimals   int
+	FeePercent float64
+	MinPayout  float64
+	Maturity   int64 // 打款所需确认数（低于链成熟期 = 预打款）
 
 	// 手续费自动归集（R9）：未归集费 ≥ FeeCollectMin 时在打款周期尾部自动
 	// 池钱包→FeeAddress（与打款共用每币锁，天然串行）。
@@ -61,16 +62,16 @@ type EventFunc func(kind, title string, fields map[string]string)
 
 // Engine 打款引擎（每币一个）。持有该币打款锁：正常打款/手续费/整备互斥。
 type Engine struct {
-	cfg     Config
-	ledger  accounting.Ledger
-	node    NodeClassifier
-	wallet  adapter.WalletAdapter
-	rawtx   adapter.RawTxWallet // 可选：拆步打款
-	store   BatchStore
+	cfg    Config
+	ledger accounting.Ledger
+	node   NodeClassifier
+	wallet adapter.WalletAdapter
+	rawtx  adapter.RawTxWallet // 可选：拆步打款
+	store  BatchStore
 
-	mu       sync.Mutex // 每币打款锁
-	enabled  bool
-	frozen   bool // 守恒对账破坏时冻结
+	mu      sync.Mutex // 每币打款锁
+	enabled bool
+	frozen  bool // 守恒对账破坏时冻结
 
 	// minOverrides 地址级起付额覆盖（矿工 mp= 设置，minersettings 注入；可为 nil）
 	minOverrides func() map[string]float64
@@ -252,8 +253,12 @@ func (e *Engine) payout(ctx context.Context) error {
 	if err != nil || len(payable) == 0 {
 		return err
 	}
+	batchID, err := e.store.NextBatchID()
+	if err != nil {
+		return fmt.Errorf("取批次号: %w", err)
+	}
 	batch := &Batch{
-		ID:        e.store.NextBatchID(),
+		ID:        batchID,
 		Kind:      "payout",
 		Outputs:   payable,
 		Status:    core.PaymentCreated,
@@ -263,7 +268,11 @@ func (e *Engine) payout(ctx context.Context) error {
 	if err := e.ledger.DeductForPayout(ctx, e.cfg.Coin, payable, batch.ID); err != nil {
 		return fmt.Errorf("扣余额失败: %w", err)
 	}
-	_ = e.store.Save(batch)
+	if err := e.store.Save(batch); err != nil {
+		// 意图未落库：尚未签名/广播，退回余额中止（绝不带着没记录的批次往下走）
+		_ = e.ledger.RefundPayout(ctx, e.cfg.Coin, payable, batch.ID)
+		return fmt.Errorf("批次意图落库失败(已退回余额): %w", err)
+	}
 
 	// ② 拆步打款（RawTxWallet）：签名即定 txid → 落库 → 广播（崩溃零歧义）
 	if e.rawtx != nil {
@@ -276,7 +285,15 @@ func (e *Engine) payout(ctx context.Context) error {
 			return fmt.Errorf("准备打款失败(已退回): %w", err)
 		}
 		batch.PlannedTxID, batch.RawTx, batch.Status = txid, rawtx, core.PaymentSent
-		_ = e.store.Save(batch) // 广播前落库！
+		if err := e.store.Save(batch); err != nil {
+			// 广播前落库失败 = 绝不广播（已签名未广播无双花风险，签名交易作废）
+			batch.Status = core.PaymentFailed
+			_ = e.store.Save(batch)
+			_ = e.ledger.RefundPayout(ctx, e.cfg.Coin, payable, batch.ID)
+			e.emit("payout_failed", "广播前落库失败（未广播，已退回余额）", map[string]string{
+				"batch": fmt.Sprint(batch.ID), "error": err.Error()})
+			return fmt.Errorf("广播前落库失败(未广播,已退回): %w", err)
+		}
 		if err := e.rawtx.Broadcast(ctx, rawtx); err != nil {
 			// 广播失败：交易已签名落库，交给恢复流程按 plannedtxid 判定，绝不在此重发
 			log.Printf("[payout %s] 广播失败 batch=%d txid=%s: %v（留待恢复扫描）",
@@ -286,7 +303,11 @@ func (e *Engine) payout(ctx context.Context) error {
 			return nil
 		}
 		batch.TxID = txid
-		_ = e.store.Save(batch)
+		if err := e.store.Save(batch); err != nil {
+			log.Printf("[payout %s] ⚠ 广播后落库失败 batch=%d（恢复扫描会按 plannedtxid 归位）: %v",
+				e.cfg.Coin, batch.ID, err)
+		}
+		metrics.PayoutSent(e.cfg.Coin, e.sumCoins(payable))
 		log.Printf("[payout %s] 打款 batch=%d 已广播 txid=%s (%d 地址)",
 			e.cfg.Coin, batch.ID, short(txid), len(payable))
 		e.emit("payout_sent", "打款已广播", map[string]string{
@@ -308,10 +329,26 @@ func (e *Engine) payout(ctx context.Context) error {
 	}
 	batch.TxID, batch.Status = txid, core.PaymentSent
 	_ = e.store.Save(batch)
+	metrics.PayoutSent(e.cfg.Coin, e.sumCoins(payable))
 	log.Printf("[payout %s] 打款 batch=%d txid=%s", e.cfg.Coin, batch.ID, short(txid))
 	e.emit("payout_sent", "打款已广播", map[string]string{
 		"batch": fmt.Sprint(batch.ID), "txid": txid, "addresses": fmt.Sprint(len(payable))})
 	return nil
+}
+
+// sumCoins 汇总一批打款输出为币量浮点（仅供 metrics 展示，绝不用于结算）。
+func (e *Engine) sumCoins(outputs map[string]string) float64 {
+	var total float64
+	unit := float64(int64(1))
+	for i := 0; i < e.cfg.Decimals; i++ {
+		unit *= 10
+	}
+	for _, s := range outputs {
+		if sat, err := parseAmountSat(s, e.cfg.Decimals); err == nil {
+			total += float64(sat) / unit
+		}
+	}
+	return total
 }
 
 // autoFeeCollect 手续费自动归集（须持 e.mu，打款周期尾部调）：
@@ -329,8 +366,13 @@ func (e *Engine) autoFeeCollect(ctx context.Context) {
 	if err != nil || totalSat <= 0 {
 		return
 	}
+	all, err := e.store.All()
+	if err != nil {
+		log.Printf("[payout %s] 自动归集读批次失败（下轮再试）: %v", e.cfg.Coin, err)
+		return
+	}
 	var collectedSat int64
-	for _, b := range e.store.All() {
+	for _, b := range all {
 		if b.Kind != "fee_collect" || b.Status == core.PaymentFailed {
 			continue
 		}
@@ -373,12 +415,23 @@ func (e *Engine) Recover(ctx context.Context) error {
 	if e.rawtx == nil {
 		return nil // 无拆步能力，unfinished 批次靠人工
 	}
-	for _, b := range e.store.Unfinished() {
+	unfinished, err := e.store.Unfinished()
+	if err != nil {
+		return fmt.Errorf("恢复扫描读批次: %w", err)
+	}
+	for _, b := range unfinished {
 		if b.PlannedTxID == "" {
-			// created 但无 txid：交易从未签名 → 退回余额
-			_ = e.ledger.RefundPayout(ctx, e.cfg.Coin, b.Outputs, b.ID)
+			// created 但无 txid：交易从未签名 → 退回余额再标 failed。
+			// 退款在 PG 实现里按 batch 幂等（重复恢复不会双退）；标记未落库时
+			// 批次保持 unfinished，下轮重试整个闭环。
+			if err := e.ledger.RefundPayout(ctx, e.cfg.Coin, b.Outputs, b.ID); err != nil {
+				log.Printf("[payout %s] 恢复: batch=%d 退款失败，下轮重试: %v", e.cfg.Coin, b.ID, err)
+				continue
+			}
 			b.Status = core.PaymentFailed
-			_ = e.store.Save(b)
+			if err := e.store.Save(b); err != nil {
+				log.Printf("[payout %s] 恢复: batch=%d 标记失败未落库（退款幂等，下轮补标）: %v", e.cfg.Coin, b.ID, err)
+			}
 			continue
 		}
 		exists, err := e.rawtx.TxExists(ctx, b.PlannedTxID)
@@ -430,8 +483,15 @@ func (e *Engine) FeeCollect(ctx context.Context, feeAddress, amount string) (str
 
 // sendBatchLocked 通用「意图落库→拆步签名→广播前落库→广播」批次发送（须持 e.mu）。
 func (e *Engine) sendBatchLocked(ctx context.Context, kind string, outputs map[string]string) (string, error) {
-	batch := &Batch{ID: e.store.NextBatchID(), Kind: kind, Outputs: outputs, Status: core.PaymentCreated, CreatedAt: time.Now()}
-	_ = e.store.Save(batch)
+	batchID, err := e.store.NextBatchID()
+	if err != nil {
+		return "", fmt.Errorf("取批次号: %w", err)
+	}
+	batch := &Batch{ID: batchID, Kind: kind, Outputs: outputs, Status: core.PaymentCreated, CreatedAt: time.Now()}
+	if err := e.store.Save(batch); err != nil {
+		// 意图未落库：未签名未广播，直接中止（fee 批次不动 ledger 余额，无需回滚）
+		return "", fmt.Errorf("批次意图落库失败: %w", err)
+	}
 	if e.rawtx != nil {
 		txid, rawtx, err := e.rawtx.PrepareSendMany(ctx, outputs)
 		if err != nil {
@@ -440,12 +500,20 @@ func (e *Engine) sendBatchLocked(ctx context.Context, kind string, outputs map[s
 			return "", err
 		}
 		batch.PlannedTxID, batch.RawTx, batch.Status = txid, rawtx, core.PaymentSent
-		_ = e.store.Save(batch) // 广播前落库！
+		if err := e.store.Save(batch); err != nil {
+			// 广播前落库失败 = 绝不广播（签名交易作废，无双花风险）
+			batch.Status = core.PaymentFailed
+			_ = e.store.Save(batch)
+			return "", fmt.Errorf("广播前落库失败(未广播): %w", err)
+		}
 		if err := e.rawtx.Broadcast(ctx, rawtx); err != nil {
 			return "", err
 		}
 		batch.TxID = txid
-		_ = e.store.Save(batch)
+		if err := e.store.Save(batch); err != nil {
+			log.Printf("[payout %s] ⚠ 广播后落库失败 batch=%d（恢复扫描按 plannedtxid 归位）: %v",
+				e.cfg.Coin, batch.ID, err)
+		}
 		return txid, nil
 	}
 	txid, err := e.wallet.SendMany(ctx, outputs)
@@ -455,7 +523,10 @@ func (e *Engine) sendBatchLocked(ctx context.Context, kind string, outputs map[s
 		return "", err
 	}
 	batch.TxID, batch.Status = txid, core.PaymentSent
-	_ = e.store.Save(batch)
+	if err := e.store.Save(batch); err != nil {
+		log.Printf("[payout %s] ⚠ 广播后落库失败 batch=%d txid=%s: %v",
+			e.cfg.Coin, batch.ID, short(txid), err)
+	}
 	return txid, nil
 }
 

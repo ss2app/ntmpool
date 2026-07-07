@@ -10,13 +10,13 @@ import "time"
 type ShareOutcome int
 
 const (
-	OutcomeAccepted ShareOutcome = iota // 计入 PPLNS/SOLO 权重
-	OutcomeBlock                        // 同时命中全网难度（爆块）
-	OutcomeStale                        // job 已过期（超过一步 grace 窗）
-	OutcomeDup                          // 重复 nonce
-	OutcomeLowDiff                      // 未达 share 难度（含 vardiff straddle 良性拒）
-	OutcomeBadPow                       // 池端重算失配 —— 共识 tripwire，出现即告警
-	OutcomeMalformed                    // 协议层非法提交
+	OutcomeAccepted  ShareOutcome = iota // 计入 PPLNS/SOLO 权重
+	OutcomeBlock                         // 同时命中全网难度（爆块）
+	OutcomeStale                         // job 已过期（超过一步 grace 窗）
+	OutcomeDup                           // 重复 nonce
+	OutcomeLowDiff                       // 未达 share 难度（含 vardiff straddle 良性拒）
+	OutcomeBadPow                        // 池端重算失配 —— 共识 tripwire，出现即告警
+	OutcomeMalformed                     // 协议层非法提交
 )
 
 func (o ShareOutcome) String() string {
@@ -63,17 +63,17 @@ const (
 
 // FoundBlock 记录池挖到的一个块。
 type FoundBlock struct {
-	Coin       string
-	Height     uint64
-	Hash       string // 我们提交的块 ID —— 孤块比对的基准
-	Finder     string // 爆块矿工地址
-	Worker     string
-	Reward     string  // 十进制字符串，币为单位（对齐 miningcore NUMERIC）
-	NetDiff    float64 // 该块的网络难度（PPLNS 窗口 = pplnsN × NetDiff）
-	Effort     float64
-	Status     BlockStatus
-	FoundAt    time.Time
-	Solo       bool
+	Coin    string
+	Height  uint64
+	Hash    string // 我们提交的块 ID —— 孤块比对的基准
+	Finder  string // 爆块矿工地址
+	Worker  string
+	Reward  string  // 十进制字符串，币为单位（对齐 miningcore NUMERIC）
+	NetDiff float64 // 该块的网络难度（PPLNS 窗口 = pplnsN × NetDiff）
+	Effort  float64
+	Status  BlockStatus
+	FoundAt time.Time
+	Solo    bool
 }
 
 // NetworkDifficulty 该块的网络难度。

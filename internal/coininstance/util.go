@@ -2,10 +2,18 @@ package coininstance
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 )
 
 func errf(format string, a ...any) error { return fmt.Errorf(format, a...) }
+
+func hostnameOr(fallback string) string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return fallback
+}
 
 func parseFloat(s string) float64 {
 	if s == "" {

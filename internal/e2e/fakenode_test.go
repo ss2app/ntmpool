@@ -17,14 +17,14 @@ import (
 type fakeNode struct {
 	srv *httptest.Server
 
-	mu           sync.Mutex
-	height       uint64
-	poolScript   string
-	submitted    map[uint64]string // height → 我们提交的块 hash（BE）
-	blockConf    map[string]int64  // blockhash → 确认数
-	broadcasts   []string          // 已广播的 rawtx
-	sentMany     int
-	targetHex    string
+	mu         sync.Mutex
+	height     uint64
+	poolScript string
+	submitted  map[uint64]string // height → 我们提交的块 hash（BE）
+	blockConf  map[string]int64  // blockhash → 确认数
+	broadcasts []string          // 已广播的 rawtx
+	sentMany   int
+	targetHex  string
 }
 
 func newFakeNode(poolScript string) *fakeNode {

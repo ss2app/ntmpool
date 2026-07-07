@@ -1,9 +1,9 @@
 package payout
 
 import (
-	"strings"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/scashcc/ntmpool/internal/accounting"
@@ -31,10 +31,10 @@ func (n *fakeNode) BlockHashAt(_ context.Context, height uint64) (string, error)
 
 // fakeWallet 实现 WalletAdapter + RawTxWallet，记录广播的 rawtx，可模拟广播失败。
 type fakeWallet struct {
-	prepared    map[string]string // rawtx → txid
-	broadcasted map[string]bool   // rawtx → 已广播
+	prepared          map[string]string // rawtx → txid
+	broadcasted       map[string]bool   // rawtx → 已广播
 	failNextBroadcast bool
-	txSeq       int
+	txSeq             int
 }
 
 func newFakeWallet() *fakeWallet {
@@ -228,7 +228,8 @@ func TestFreezeAndFeeOps(t *testing.T) {
 		t.Fatalf("FeeCollect: %v", err)
 	}
 	found := false
-	for _, b := range e.store.All() {
+	all, _ := e.store.All()
+	for _, b := range all {
 		if b.Kind == "fee_collect" && b.TxID == txid && b.Outputs["feeAddr"] == "1.50000000" {
 			found = true
 		}
@@ -279,7 +280,8 @@ func TestAutoFeeCollect(t *testing.T) {
 	}
 	// 费 = 50×10% = 5 ≥ 1 → 应有一笔 fee_collect 批次，金额 5
 	var fc *Batch
-	for _, batch := range e.store.All() {
+	batches, _ := e.store.All()
+	for _, batch := range batches {
 		if batch.Kind == "fee_collect" {
 			if fc != nil {
 				t.Fatal("不应有多笔归集")
@@ -295,7 +297,8 @@ func TestAutoFeeCollect(t *testing.T) {
 		t.Fatal(err)
 	}
 	n := 0
-	for _, batch := range e.store.All() {
+	batches, _ = e.store.All()
+	for _, batch := range batches {
 		if batch.Kind == "fee_collect" {
 			n++
 		}

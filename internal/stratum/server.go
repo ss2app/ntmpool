@@ -30,9 +30,9 @@ type Listener struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	connMu  sync.Mutex
-	conns   int            // 该端口当前在连数（MaxConns 上限用）
-	perIP   map[string]int // 真实 IP → 在连数（MaxConnsPerIP 上限用）
+	connMu sync.Mutex
+	conns  int            // 该端口当前在连数（MaxConns 上限用）
+	perIP  map[string]int // 真实 IP → 在连数（MaxConnsPerIP 上限用）
 }
 
 // BanChecker 连接准入检查（banlist.List 满足此签名；全池共享一份）。

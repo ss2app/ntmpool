@@ -114,10 +114,10 @@ func (c *Client) SendMany(ctx context.Context, outputs map[string]string) (strin
 		TxHash string `json:"tx_hash"`
 	}
 	err := c.call(ctx, "transfer", map[string]any{
-		"destinations":    dests,
-		"account_index":   0,
-		"get_tx_key":      true,
-		"do_not_relay":    false,
+		"destinations":  dests,
+		"account_index": 0,
+		"get_tx_key":    true,
+		"do_not_relay":  false,
 	}, &r)
 	if err != nil {
 		return "", err

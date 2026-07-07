@@ -28,6 +28,7 @@ import (
 
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/core"
+	"github.com/scashcc/ntmpool/internal/metrics"
 	"github.com/scashcc/ntmpool/internal/minersettings"
 	"github.com/scashcc/ntmpool/internal/vardiff"
 )
@@ -332,6 +333,7 @@ func (c *cnConn) onSubmit(ctx context.Context, msg *cnReq) error {
 
 	switch res.Outcome {
 	case core.OutcomeAccepted, core.OutcomeBlock:
+		metrics.ShareResult(c.d.coinID, res.Outcome)
 		c.ab.record(res.Outcome)
 		c.vd.OnAccepted(time.Now())
 		if err := c.reply(msg.ID, map[string]any{"status": "OK"}, nil); err != nil {
@@ -355,6 +357,7 @@ func (c *cnConn) onSubmit(ctx context.Context, msg *cnReq) error {
 
 // rejectSubmit 拒绝应答 + 自动 ban 记账；触发 ban 时断开连接。
 func (c *cnConn) rejectSubmit(id json.RawMessage, outcome core.ShareOutcome, message string) error {
+	metrics.ShareResult(c.d.coinID, outcome)
 	err := c.replyErr(id, message)
 	if c.ab.record(outcome) {
 		return fmt.Errorf("[%s] %s 自动 ban（恶意提交占比超阈值）", c.d.coinID, c.remoteIP)

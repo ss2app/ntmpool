@@ -58,8 +58,8 @@ func (f *fakeCoin) SetPortEnabled(port int, enabled bool) error {
 	}
 	return contextErr("不存在")
 }
-func (f *fakeCoin) SetNewConns(v bool)                        { f.cfg.NewConnsEnabled = v }
-func (f *fakeCoin) RunPayoutNow(context.Context) error        { f.ranPay = true; return nil }
+func (f *fakeCoin) SetNewConns(v bool)                 { f.cfg.NewConnsEnabled = v }
+func (f *fakeCoin) RunPayoutNow(context.Context) error { f.ranPay = true; return nil }
 func (f *fakeCoin) RunReconcile(context.Context) (string, error) {
 	return f.delta, nil
 }
@@ -78,8 +78,8 @@ func (f *fakeCoin) Network() core.NetworkSnapshot { return core.NetworkSnapshot{
 
 type strErr string
 
-func (e strErr) Error() string     { return string(e) }
-func contextErr(s string) error    { return strErr(s) }
+func (e strErr) Error() string  { return string(e) }
+func contextErr(s string) error { return strErr(s) }
 
 func newTestAdmin(t *testing.T) (*Server, *fakeCoin, string) {
 	t.Helper()

@@ -17,8 +17,8 @@ type Banner interface {
 // stale/lowdiff 是良性（vardiff straddle、换工竞速），绝不计入——
 // 否则把弱矿机 ban 了（lolMiner 连续 3 个误拒就弃池，误 ban 更致命）。
 const (
-	autoBanMinSamples = 10          // 至少积累多少条提交才判定
-	autoBanPercent    = 50          // 恶意占比阈值（%）
+	autoBanMinSamples = 10 // 至少积累多少条提交才判定
+	autoBanPercent    = 50 // 恶意占比阈值（%）
 	autoBanBaseTTL    = 10 * time.Minute
 	autoBanMaxTTL     = 24 * time.Hour
 )

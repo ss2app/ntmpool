@@ -126,12 +126,22 @@ func newManager(t *testing.T) (*Manager, *fakeBlobNode) {
 func TestCNJobAcceptAndBlock(t *testing.T) {
 	m, node := newManager(t)
 	var blocks, shares int
+	var finalHash string
 	m.SetCallbacks(nil,
-		func(_ context.Context, b core.FoundBlock, _ string) error {
+		func(ctx context.Context, b core.FoundBlock, _ string, submit SubmitFunc) error {
 			blocks++
-			if b.Reward != "50.00000000" || !strings.HasPrefix(b.Hash, "blockhash-") {
-				t.Fatalf("FoundBlock 字段错: %+v", b)
+			// 意图先落库：sink 收到的是 PoW hash（占位），提交后拿权威 blockhash-
+			if b.Reward != "50.00000000" || strings.HasPrefix(b.Hash, "blockhash-") {
+				t.Fatalf("意图 hash 应为 PoW hash 非权威块 id: %+v", b)
 			}
+			h, err := submit(ctx)
+			if err != nil {
+				t.Fatalf("submit: %v", err)
+			}
+			if !strings.HasPrefix(h, "blockhash-") {
+				t.Fatalf("submit 应返回权威 blockhash-, got %q", h)
+			}
+			finalHash = h
 			return nil
 		},
 		func(_ context.Context, _ core.Share) { shares++ },
@@ -162,6 +172,9 @@ func TestCNJobAcceptAndBlock(t *testing.T) {
 	if blocks != 1 || node.submitted != 1 || shares != 2 {
 		t.Fatalf("blocks=%d submitted=%d shares=%d", blocks, node.submitted, shares)
 	}
+	if !strings.HasPrefix(finalHash, "blockhash-") {
+		t.Fatalf("权威块 hash 未回传: %q", finalHash)
+	}
 }
 
 func TestCNJobBadPowTripwire(t *testing.T) {
@@ -169,7 +182,7 @@ func TestCNJobBadPowTripwire(t *testing.T) {
 	nonce, _ := mineOne(t, m, 1, false)
 	res := m.HandleSubmit(context.Background(), stratum.CNSubmission{
 		ConnID: 1, Address: "a", JobID: currentJobID(m),
-		NonceHex: nonce,
+		NonceHex:  nonce,
 		ResultHex: "deadbeef" + strings.Repeat("00", 28), // 伪造 hash
 		Judge:     judgeAt(1),
 	})

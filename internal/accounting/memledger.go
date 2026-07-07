@@ -22,9 +22,11 @@ type memShare struct {
 type memBlock struct {
 	b      core.FoundBlock
 	rawHex string
-	// 分账快照：confirm 时按当时 PPLNS 窗口算好的每地址应得（聪）
+	// 分账快照：confirm 时按当时 PPLNS 窗口算好的每地址应得（聪）与计提费，
+	// 孤块时按快照整体回滚（含费——费也来自该块，不回滚则守恒差 -fee 误冻结打款）
 	credited bool
 	payouts  map[string]int64
+	feeSat   int64
 }
 
 // MemLedger 单实例内存会计（M1 + 单元测试；生产多实例用 Postgres 实现）。
@@ -59,62 +61,11 @@ func NewMemLedger(decimals int, pplnsN float64) *MemLedger {
 	}
 }
 
-func (l *MemLedger) unit() int64 {
-	u := int64(1)
-	for i := 0; i < l.decimals; i++ {
-		u *= 10
-	}
-	return u
-}
+func (l *MemLedger) unit() int64 { return amountUnit(l.decimals) }
 
-func (l *MemLedger) toStr(sat int64) string {
-	u := l.unit()
-	neg := ""
-	if sat < 0 {
-		neg = "-"
-		sat = -sat
-	}
-	return fmt.Sprintf("%s%d.%0*d", neg, sat/u, l.decimals, sat%u)
-}
+func (l *MemLedger) toStr(sat int64) string { return formatAmount(sat, l.decimals) }
 
-func (l *MemLedger) parse(s string) (int64, error) {
-	var whole, frac int64
-	var fracDigits int
-	neg := false
-	i := 0
-	if len(s) > 0 && s[0] == '-' {
-		neg = true
-		i = 1
-	}
-	seenDot := false
-	for ; i < len(s); i++ {
-		c := s[i]
-		if c == '.' {
-			seenDot = true
-			continue
-		}
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("非法金额 %q", s)
-		}
-		if seenDot {
-			if fracDigits < l.decimals {
-				frac = frac*10 + int64(c-'0')
-				fracDigits++
-			}
-		} else {
-			whole = whole*10 + int64(c-'0')
-		}
-	}
-	for fracDigits < l.decimals {
-		frac *= 10
-		fracDigits++
-	}
-	v := whole*l.unit() + frac
-	if neg {
-		v = -v
-	}
-	return v, nil
-}
+func (l *MemLedger) parse(s string) (int64, error) { return parseAmount(s, l.decimals) }
 
 func (l *MemLedger) RecordShare(_ context.Context, s core.Share, weight float64) error {
 	l.mu.Lock()
@@ -129,6 +80,21 @@ func (l *MemLedger) RecordBlock(_ context.Context, b core.FoundBlock, rawHex str
 	b.Status = core.BlockPending // 逻辑上 submitting，内存实现简化为 pending 前的占位
 	l.blocks = append(l.blocks, &memBlock{b: b, rawHex: rawHex})
 	return nil
+}
+
+func (l *MemLedger) UpdateBlockHash(_ context.Context, _, oldHash, newHash string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if oldHash == newHash {
+		return nil
+	}
+	for _, mb := range l.blocks {
+		if mb.b.Hash == oldHash {
+			mb.b.Hash = newHash
+			return nil
+		}
+	}
+	return fmt.Errorf("块 %s 不存在", oldHash)
 }
 
 func (l *MemLedger) MarkBlockPending(_ context.Context, _, hash string) error {
@@ -235,6 +201,7 @@ func (l *MemLedger) ConfirmBlock(_ context.Context, b core.FoundBlock, feePercen
 	l.totalFees += feeSat
 	mb.credited = true
 	mb.payouts = payouts
+	mb.feeSat = feeSat
 	mb.b.Status = core.BlockConfirmed
 	l.setBlockStatus(b.Hash, core.BlockConfirmed)
 	return nil
@@ -262,7 +229,9 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 				l.debts[a] += remain
 			}
 		}
-		l.totalFees -= 0 // 费在 confirm 时计；孤块时保守不退费（费也来自该块，一并作废）
+		// 计提费一并作废（不作废则守恒 delta=-fee 误冻结打款；M4 修）
+		l.totalFees -= mb.feeSat
+		mb.feeSat = 0
 	}
 	mb.credited = false
 	mb.b.Status = core.BlockOrphaned

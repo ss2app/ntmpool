@@ -81,9 +81,10 @@ func TestBuildJobAndSubmitSelfConsistent(t *testing.T) {
 
 	var recordedBlock string
 	var recordedHashBE string
-	jm.SetCallbacks(func() {}, func(_ context.Context, b core.FoundBlock, rawHex string) error {
+	jm.SetCallbacks(func() {}, func(ctx context.Context, b core.FoundBlock, rawHex string, submit SubmitFunc) error {
 		recordedBlock = rawHex
 		recordedHashBE = b.Hash
+		_, _ = submit(ctx) // 走完提交路径（stubNode.SubmitBlock 记 submitted）
 		return nil
 	}, nil)
 

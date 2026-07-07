@@ -4,10 +4,11 @@
 -- share 明细只留短期（默认 3 天，够 PPLNS 窗口重建），审计类表永久保留。
 
 CREATE TABLE IF NOT EXISTS shares (
+    id           BIGSERIAL PRIMARY KEY,          -- 插入序 = PPLNS 窗口回溯序（稳定 tiebreaker）
     poolid       TEXT        NOT NULL,
     blockheight  BIGINT      NOT NULL,
     difficulty   DOUBLE PRECISION NOT NULL,  -- 计权难度（一步 grace 下可能是 prevDiff）
-    networkdifficulty DOUBLE PRECISION NOT NULL,
+    networkdifficulty DOUBLE PRECISION NOT NULL DEFAULT 0,
     miner        TEXT        NOT NULL,
     worker       TEXT        NULL,
     useragent    TEXT        NULL,
@@ -33,7 +34,9 @@ CREATE TABLE IF NOT EXISTS blocks (
     miner        TEXT        NULL,            -- 爆块者
     worker       TEXT        NULL,
     solo         BOOLEAN     NOT NULL DEFAULT FALSE,
-    reward       NUMERIC(28,8) NULL,
+    reward       NUMERIC NULL,
+    feeamount    NUMERIC NULL,                   -- confirm 时计提的手续费；孤块随 status 翻转自动出账
+    rawhex       TEXT        NULL,               -- 提交的原始块 hex（崩溃重播/审计；docs/05 场景B）
     source       TEXT        NULL,
     created      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (poolid, blockheight, type, transactionconfirmationdata)
@@ -42,7 +45,7 @@ CREATE TABLE IF NOT EXISTS blocks (
 CREATE TABLE IF NOT EXISTS balances (
     poolid       TEXT        NOT NULL,
     address      TEXT        NOT NULL,
-    amount       NUMERIC(28,8) NOT NULL DEFAULT 0,
+    amount       NUMERIC NOT NULL DEFAULT 0,
     created      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (poolid, address)
@@ -53,20 +56,31 @@ CREATE TABLE IF NOT EXISTS balance_changes (
     id           BIGSERIAL PRIMARY KEY,
     poolid       TEXT        NOT NULL,
     address      TEXT        NOT NULL,
-    amount       NUMERIC(28,8) NOT NULL,     -- 正=入账 负=扣减
+    amount       NUMERIC NOT NULL,     -- 正=入账 负=扣减
     usage        TEXT        NULL,           -- reward|payment|orphan_debt|debt_repay|manual_credit|manual_debit|fee
     tags         TEXT[]      NULL,           -- 关联对象，如 block:123 / payment:45 / admin:xxx
     created      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_balance_changes_pool_addr ON balance_changes(poolid, address, created);
 
+-- 分账快照：confirm 时每地址应得（抵债前全额，聪语义的十进制）。孤块回滚的唯一依据
+-- （对应内存实现的 memBlock.payouts）。orphan 后行保留、reversed 置真（审计可溯）。
+CREATE TABLE IF NOT EXISTS block_credits (
+    poolid       TEXT    NOT NULL,
+    blockhash    TEXT    NOT NULL,
+    address      TEXT    NOT NULL,
+    amount       NUMERIC NOT NULL,
+    reversed     BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (poolid, blockhash, address)
+);
+
 -- 孤块追缴（bitcoin09 事故机制的产品化）：预打款垫付的块孤了 → 生成欠款，从未来收益抵扣。
 CREATE TABLE IF NOT EXISTS debts (
     id           BIGSERIAL PRIMARY KEY,
     poolid       TEXT        NOT NULL,
     address      TEXT        NOT NULL,
-    original     NUMERIC(28,8) NOT NULL,     -- 原始欠款
-    remaining    NUMERIC(28,8) NOT NULL,     -- 尚未抵扣
+    original     NUMERIC NOT NULL,     -- 原始欠款
+    remaining    NUMERIC NOT NULL,     -- 尚未抵扣
     reason       TEXT        NOT NULL,       -- 如 orphaned block 12345
     created      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated      TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -79,13 +93,14 @@ CREATE TABLE IF NOT EXISTS payments (
     id           BIGSERIAL PRIMARY KEY,
     poolid       TEXT        NOT NULL,
     address      TEXT        NOT NULL,
-    amount       NUMERIC(28,8) NOT NULL,
+    amount       NUMERIC NOT NULL,
     batchid      BIGINT      NOT NULL,       -- 同一笔 sendmany 的所有输出共享 batchid（幂等键，防重启重发）
     transactionconfirmationdata TEXT NULL,   -- txid
     status       TEXT        NOT NULL DEFAULT 'created',
     confirmations BIGINT     NOT NULL DEFAULT 0,
     created      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated      TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (poolid, batchid, address)            -- Save 幂等 UPSERT 键
 );
 CREATE INDEX IF NOT EXISTS idx_payments_pool_addr ON payments(poolid, address, created);
 CREATE INDEX IF NOT EXISTS idx_payments_pool_status ON payments(poolid, status) WHERE status <> 'confirmed';
@@ -100,7 +115,7 @@ CREATE TABLE IF NOT EXISTS payment_batches (
     plannedtxid  TEXT        NULL,           -- 签名即定的 txid（广播前落库 —— 崩溃恢复零歧义的关键）
     rawtx        TEXT        NULL,           -- 已签名原始交易：恢复时可原样重播（同 txid 天然幂等防双花）
     txid         TEXT        NULL,           -- 实际广播确认的 txid（正常 == plannedtxid）
-    total        NUMERIC(28,8) NOT NULL,
+    total        NUMERIC NOT NULL,
     created      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -109,7 +124,7 @@ CREATE TABLE IF NOT EXISTS payment_batches (
 CREATE TABLE IF NOT EXISTS miner_settings (
     poolid       TEXT        NOT NULL,
     address      TEXT        NOT NULL,
-    paymentthreshold NUMERIC(28,8) NULL,
+    paymentthreshold NUMERIC NULL,
     passwordhash TEXT        NULL,           -- 首次带密码连接即绑定；改设置需同一密码
     accesskey    TEXT        NULL,           -- 私密面板链接 token（Braiins 模式）
     notify       JSONB       NULL,           -- 预留：telegram/email
@@ -165,12 +180,12 @@ CREATE TABLE IF NOT EXISTS config_audit (
 CREATE TABLE IF NOT EXISTS reconciliations (
     id           BIGSERIAL PRIMARY KEY,
     poolid       TEXT NOT NULL,
-    confirmed_rewards NUMERIC(28,8) NOT NULL,
-    total_paid   NUMERIC(28,8) NOT NULL,
-    total_balances NUMERIC(28,8) NOT NULL,
-    total_fees   NUMERIC(28,8) NOT NULL,
-    in_flight    NUMERIC(28,8) NOT NULL,
-    debts_net    NUMERIC(28,8) NOT NULL,
-    delta        NUMERIC(28,8) NOT NULL,      -- 应为 0，非 0 告警并冻结打款
+    confirmed_rewards NUMERIC NOT NULL,
+    total_paid   NUMERIC NOT NULL,
+    total_balances NUMERIC NOT NULL,
+    total_fees   NUMERIC NOT NULL,
+    in_flight    NUMERIC NOT NULL,
+    debts_net    NUMERIC NOT NULL,
+    delta        NUMERIC NOT NULL,      -- 应为 0，非 0 告警并冻结打款
     created      TIMESTAMPTZ NOT NULL DEFAULT now()
 );

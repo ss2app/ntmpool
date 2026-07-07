@@ -11,6 +11,7 @@ import (
 	"github.com/scashcc/ntmpool/internal/core"
 	"github.com/scashcc/ntmpool/internal/hasher"
 	"github.com/scashcc/ntmpool/internal/jobmanager"
+	"github.com/scashcc/ntmpool/internal/metrics"
 	"github.com/scashcc/ntmpool/internal/stratum"
 )
 
@@ -43,7 +44,11 @@ func buildBitcoinFamily(ctx context.Context, cfg config.CoinConfig, decimals int
 		return nil, errf("[%s] 初始化矿池地址脚本失败: %v", cfg.ID, err)
 	}
 	dialect := stratum.NewV1Dialect(cfg.ID, jm)
-	jm.SetCallbacks(dialect.BroadcastJob, inst.blockSink(), inst.shareSink())
+	sink := inst.blockSink()
+	jm.SetCallbacks(dialect.BroadcastJob,
+		func(ctx context.Context, b core.FoundBlock, rawHex string, submit jobmanager.SubmitFunc) error {
+			return sink(ctx, b, rawHex, submit)
+		}, inst.shareSink())
 
 	return &familyParts{
 		status:     node,
@@ -56,19 +61,45 @@ func buildBitcoinFamily(ctx context.Context, cfg config.CoinConfig, decimals int
 	}, nil
 }
 
-// blockSink 爆块入账回调（家族共用）。
-func (inst *Instance) blockSink() func(ctx context.Context, b core.FoundBlock, rawHex string) error {
-	return func(ctx context.Context, b core.FoundBlock, rawHex string) error {
-		hashShort := b.Hash
-		if len(hashShort) > 12 {
-			hashShort = hashShort[:12]
+// blockSink 爆块生命周期回调（家族共用）：意图先落库(submitting) → 交节点 →
+// 成功则改用权威 hash 并转 pending，失败留 submitting 交分类器/恢复扫描按链上比对
+// 归位（docs/05 场景B「意图先落库，动作后执行」）。submit 由作业管理器提供：
+// bitcoin 系返回原 hash，blob 系返回节点受理后的权威块 id。
+func (inst *Instance) blockSink() func(ctx context.Context, b core.FoundBlock, rawHex string, submit func(context.Context) (string, error)) error {
+	return func(ctx context.Context, b core.FoundBlock, rawHex string, submit func(context.Context) (string, error)) error {
+		coin := inst.cfg.ID
+		// ① 意图先落库
+		if err := inst.ledger.RecordBlock(ctx, b, rawHex); err != nil {
+			log.Printf("[%s] ★爆块意图落库失败 height=%d: %v", coin, b.Height, err)
+			return err
 		}
-		log.Printf("[%s] ★爆块 height=%d hash=%s finder=%s", inst.cfg.ID, b.Height, hashShort, b.Finder)
+		// ② 交节点
+		finalHash, err := submit(ctx)
+		if err != nil {
+			// 提交失败：意图留 submitting，分类器按 Confirmations/主链 hash 比对归位；
+			// share 已计权矿工不吃亏，未入账不多付（守恒不破）。
+			log.Printf("[%s] 爆块提交失败 height=%d intent=%s: %v（留待分类器归位）",
+				coin, b.Height, short(b.Hash), err)
+			return nil
+		}
+		// ③ 补权威 hash（blob 链 id≠PoW hash）+ 转 pending
+		if finalHash != "" && finalHash != b.Hash {
+			if err := inst.ledger.UpdateBlockHash(ctx, coin, b.Hash, finalHash); err != nil {
+				log.Printf("[%s] 爆块 hash 补录失败 %s→%s: %v", coin, short(b.Hash), short(finalHash), err)
+			} else {
+				b.Hash = finalHash
+			}
+		}
+		if err := inst.ledger.MarkBlockPending(ctx, coin, b.Hash); err != nil {
+			log.Printf("[%s] 爆块转 pending 失败 hash=%s: %v", coin, short(b.Hash), err)
+		}
+		metrics.BlockSubmitted(coin)
+		log.Printf("[%s] ★爆块 height=%d hash=%s finder=%s", coin, b.Height, short(b.Hash), b.Finder)
 		inst.notifyEvent("block_found", "★爆块", map[string]string{
 			"height": fmt.Sprint(b.Height), "hash": b.Hash,
 			"finder": short(b.Finder), "reward": b.Reward,
 		})
-		return inst.ledger.RecordBlock(ctx, b, rawHex)
+		return nil
 	}
 }
 

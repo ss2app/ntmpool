@@ -67,8 +67,8 @@ type bucket struct {
 type Tracker struct {
 	mu      sync.Mutex
 	cfg     Config
-	recent  []shareRec           // 按时间递增
-	buckets map[int64]*bucket    // bucketStartUnix → bucket
+	recent  []shareRec        // 按时间递增
+	buckets map[int64]*bucket // bucketStartUnix → bucket
 }
 
 func New(cfg Config) *Tracker {

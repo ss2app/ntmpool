@@ -39,12 +39,23 @@ type Pool interface {
 	Network() core.NetworkSnapshot
 }
 
+// InstanceInfo 多实例注册表的一行（公共 API /api/instances，前端网关列在线实例）。
+type InstanceInfo struct {
+	ID       string   `json:"id"`
+	Hostname string   `json:"hostname"`
+	Version  string   `json:"version"`
+	Coins    []string `json:"coins"`
+	LastSeen string   `json:"lastSeen"`
+	Alive    bool     `json:"alive"`
+}
+
 // Server 公共 API。
 type Server struct {
-	pools   func() map[string]Pool // 快照函数：热添加币后 API 自动可见
-	masker  *Masker
-	limiter *rateLimiter
-	now     func() time.Time // 可注入（测试）
+	pools     func() map[string]Pool // 快照函数：热添加币后 API 自动可见
+	instances func() []InstanceInfo  // 多实例列表（nil = 单实例，端点返回空）
+	masker    *Masker
+	limiter   *rateLimiter
+	now       func() time.Time // 可注入（测试）
 }
 
 func New(pools func() map[string]Pool, maskSecret []byte) *Server {
@@ -56,6 +67,9 @@ func New(pools func() map[string]Pool, maskSecret []byte) *Server {
 	}
 }
 
+// SetInstances 注入多实例列表来源（M4 横向扩展；nil 时 /api/instances 返回空数组）。
+func (s *Server) SetInstances(f func() []InstanceInfo) { s.instances = f }
+
 // Handler 返回挂好全部路由的 http.Handler（含 CORS）。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -66,7 +80,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/pools/{id}/miners", s.handleMiners)
 	mux.HandleFunc("GET /api/pools/{id}/miners/{addr}", s.handleMinerDetail)
 	mux.HandleFunc("GET /api/pools/{id}/performance", s.handlePerformance)
+	mux.HandleFunc("GET /api/instances", s.handleInstances)
 	return cors(mux)
+}
+
+// handleInstances 列出共享 Postgres 里注册的全部池实例及判活（多服务器横向扩展）。
+func (s *Server) handleInstances(w http.ResponseWriter, _ *http.Request) {
+	out := []InstanceInfo{}
+	if s.instances != nil {
+		if list := s.instances(); list != nil {
+			out = list
+		}
+	}
+	writeJSON(w, out)
 }
 
 // cors 公共 API 只读，放开跨域（前端网站直连）。
@@ -92,10 +118,10 @@ type coinInfo struct {
 }
 
 type varDiffInfo struct {
-	MinDiff        float64 `json:"minDiff"`
-	MaxDiff        float64 `json:"maxDiff"`
-	TargetTime     float64 `json:"targetTime"`
-	RetargetTime   float64 `json:"retargetTime"`
+	MinDiff      float64 `json:"minDiff"`
+	MaxDiff      float64 `json:"maxDiff"`
+	TargetTime   float64 `json:"targetTime"`
+	RetargetTime float64 `json:"retargetTime"`
 }
 
 type portInfo struct {
@@ -106,10 +132,10 @@ type portInfo struct {
 }
 
 type paymentProcessingInfo struct {
-	Enabled             bool            `json:"enabled"`
-	MinimumPayment      json.RawMessage `json:"minimumPayment"`
-	PayoutScheme        string          `json:"payoutScheme"`
-	PayoutSchemeConfig  map[string]any  `json:"payoutSchemeConfig"`
+	Enabled            bool            `json:"enabled"`
+	MinimumPayment     json.RawMessage `json:"minimumPayment"`
+	PayoutScheme       string          `json:"payoutScheme"`
+	PayoutSchemeConfig map[string]any  `json:"payoutSchemeConfig"`
 }
 
 type poolStatsInfo struct {
@@ -126,18 +152,18 @@ type networkStatsInfo struct {
 }
 
 type poolInfo struct {
-	ID                    string                `json:"id"`
-	Coin                  coinInfo              `json:"coin"`
-	Ports                 map[string]portInfo   `json:"ports"`
-	PaymentProcessing     paymentProcessingInfo `json:"paymentProcessing"`
-	PoolFeePercent        float64               `json:"poolFeePercent"`
-	Address               string                `json:"address"` // 池地址链上公开，无需脱敏
-	PoolStats             poolStatsInfo         `json:"poolStats"`
-	NetworkStats          networkStatsInfo      `json:"networkStats"`
-	TotalBlocks           int                   `json:"totalBlocks"`
-	TotalConfirmedBlocks  int                   `json:"totalConfirmedBlocks"`
-	TotalOrphanedBlocks   int                   `json:"totalOrphanedBlocks"`
-	TotalPaid             json.RawMessage       `json:"totalPaid"`
+	ID                   string                `json:"id"`
+	Coin                 coinInfo              `json:"coin"`
+	Ports                map[string]portInfo   `json:"ports"`
+	PaymentProcessing    paymentProcessingInfo `json:"paymentProcessing"`
+	PoolFeePercent       float64               `json:"poolFeePercent"`
+	Address              string                `json:"address"` // 池地址链上公开，无需脱敏
+	PoolStats            poolStatsInfo         `json:"poolStats"`
+	NetworkStats         networkStatsInfo      `json:"networkStats"`
+	TotalBlocks          int                   `json:"totalBlocks"`
+	TotalConfirmedBlocks int                   `json:"totalConfirmedBlocks"`
+	TotalOrphanedBlocks  int                   `json:"totalOrphanedBlocks"`
+	TotalPaid            json.RawMessage       `json:"totalPaid"`
 }
 
 type blockInfo struct {
@@ -358,7 +384,11 @@ func (s *Server) handlePayments(w http.ResponseWriter, r *http.Request) {
 func flattenPayments(p Pool, m *Masker, onlyAddr string) []paymentInfo {
 	coin := p.Cfg().ID
 	rows := []paymentInfo{}
-	for _, b := range p.Batches().All() {
+	all, err := p.Batches().All()
+	if err != nil {
+		return rows // 读库失败：给空列表（API 只读，不 500 全站）
+	}
+	for _, b := range all {
 		if b.Kind != "payout" {
 			continue
 		}

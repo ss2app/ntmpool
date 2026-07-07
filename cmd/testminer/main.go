@@ -66,21 +66,21 @@ type miner struct {
 	br   *bufio.Reader
 	user string
 
-	en1      []byte
-	en2Size  int
-	target   *btcwork.BigTarget
-	diff     float64
+	en1     []byte
+	en2Size int
+	target  *btcwork.BigTarget
+	diff    float64
 
 	// 当前 job
-	jobID     string
-	prevInt   []byte
-	coinb1    []byte
-	coinb2    []byte
-	branch    [][]byte
-	version   uint32
-	bits      uint32
-	ntime     uint32
-	haveJob   bool
+	jobID   string
+	prevInt []byte
+	coinb1  []byte
+	coinb2  []byte
+	branch  [][]byte
+	version uint32
+	bits    uint32
+	ntime   uint32
+	haveJob bool
 
 	en2Ctr   uint32
 	accepted int

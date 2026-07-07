@@ -32,12 +32,12 @@ type fakePool struct {
 	conns   int
 }
 
-func (f *fakePool) Cfg() config.CoinConfig          { return f.cfg }
-func (f *fakePool) Ledger() accounting.Ledger       { return f.ledger }
-func (f *fakePool) Hashrate() *hashrate.Tracker     { return f.tracker }
-func (f *fakePool) Batches() payout.BatchStore      { return f.batches }
-func (f *fakePool) ConnectedMiners() int            { return f.conns }
-func (f *fakePool) Network() core.NetworkSnapshot   { return f.net }
+func (f *fakePool) Cfg() config.CoinConfig        { return f.cfg }
+func (f *fakePool) Ledger() accounting.Ledger     { return f.ledger }
+func (f *fakePool) Hashrate() *hashrate.Tracker   { return f.tracker }
+func (f *fakePool) Batches() payout.BatchStore    { return f.batches }
+func (f *fakePool) ConnectedMiners() int          { return f.conns }
+func (f *fakePool) Network() core.NetworkSnapshot { return f.net }
 
 func newFakePool(t *testing.T) *fakePool {
 	t.Helper()
@@ -65,8 +65,9 @@ func newFakePool(t *testing.T) *fakePool {
 	// 一笔已发出的打款批次（addrA 拿 35.625 = 47.5×0.75）
 	_ = l.DeductForPayout(ctx, "tst", map[string]string{addrA: "30.00000000"}, 1)
 	bs := payout.NewMemBatchStore()
+	bid, _ := bs.NextBatchID()
 	_ = bs.Save(&payout.Batch{
-		ID: bs.NextBatchID(), Kind: "payout",
+		ID: bid, Kind: "payout",
 		Outputs: map[string]string{addrA: "30.00000000"},
 		Status:  core.PaymentSent, TxID: "txid-abc", CreatedAt: tNow.Add(-10 * time.Minute),
 	})
@@ -104,6 +105,36 @@ func get(t *testing.T, h http.Handler, path string) (*httptest.ResponseRecorder,
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec, rec.Body.String()
+}
+
+func TestInstancesEndpoint(t *testing.T) {
+	s, _ := newTestServer(t)
+	// 无来源（单实例）→ 空数组，不是 null
+	rec, body := get(t, s.Handler(), "/api/instances")
+	if rec.Code != 200 || body != "[]\n" && body != "[]" {
+		t.Fatalf("单实例应返回空数组: code=%d body=%q", rec.Code, body)
+	}
+	// 注入多实例来源
+	s.SetInstances(func() []InstanceInfo {
+		return []InstanceInfo{
+			{ID: "pool1", Hostname: "hk1", Version: "v1", Coins: []string{"zoka", "btc09"}, LastSeen: "2026-07-07T00:00:00Z", Alive: true},
+			{ID: "pool2", Hostname: "hk2", Version: "v1", Coins: []string{"zoka"}, LastSeen: "2026-07-06T00:00:00Z", Alive: false},
+		}
+	})
+	rec, body = get(t, s.Handler(), "/api/instances")
+	if rec.Code != 200 {
+		t.Fatalf("code=%d body=%s", rec.Code, body)
+	}
+	var out []InstanceInfo
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 || out[0].ID != "pool1" || !out[0].Alive || out[1].Alive {
+		t.Fatalf("实例列表错误: %+v", out)
+	}
+	if len(out[0].Coins) != 2 || out[0].Coins[0] != "zoka" {
+		t.Fatalf("币列表错误: %+v", out[0].Coins)
+	}
 }
 
 func TestPoolsShape(t *testing.T) {

@@ -152,18 +152,18 @@ func TestCNLoginAndJob(t *testing.T) {
 
 func TestCNWorkerIdentification(t *testing.T) {
 	cases := []struct {
-		login, pass, rigid string
+		login, pass, rigid   string
 		wantAddr, wantWorker string
-		wantDiff float64
+		wantDiff             float64
 	}{
 		{"addr", "x", "", "addr", "default", 0},
-		{"addr", "x", "rig7", "addr", "rig7", 0},                     // rigid 一等公民
-		{"addr+w3", "x", "", "addr", "w3", 0},                        // +worker 后缀
-		{"addr", "worker1:me@x.com", "", "addr", "worker1", 0},       // pass worker:email
-		{"addr", "worker1", "rig7", "addr", "rig7", 0},               // rigid > pass
-		{"addr.5000", "x", "", "addr", "default", 5000},              // .难度 后缀
-		{"addr+20000", "x", "", "addr", "default", 20000},            // +难度 后缀
-		{"addr", "d=8192", "", "addr", "default", 8192},              // 密码 d=
+		{"addr", "x", "rig7", "addr", "rig7", 0},               // rigid 一等公民
+		{"addr+w3", "x", "", "addr", "w3", 0},                  // +worker 后缀
+		{"addr", "worker1:me@x.com", "", "addr", "worker1", 0}, // pass worker:email
+		{"addr", "worker1", "rig7", "addr", "rig7", 0},         // rigid > pass
+		{"addr.5000", "x", "", "addr", "default", 5000},        // .难度 后缀
+		{"addr+20000", "x", "", "addr", "default", 20000},      // +难度 后缀
+		{"addr", "d=8192", "", "addr", "default", 8192},        // 密码 d=
 	}
 	for i, c := range cases {
 		addr, worker, diff := parseCNLogin(c.login, c.pass, c.rigid)

@@ -143,7 +143,9 @@ func TestSinkIsolation(t *testing.T) {
 	}
 }
 
-type funcSink struct{ fn func(context.Context, Event) error }
+type funcSink struct {
+	fn func(context.Context, Event) error
+}
 
-func (f *funcSink) Name() string                              { return "func" }
-func (f *funcSink) Send(ctx context.Context, e Event) error   { return f.fn(ctx, e) }
+func (f *funcSink) Name() string                            { return "func" }
+func (f *funcSink) Send(ctx context.Context, e Event) error { return f.fn(ctx, e) }

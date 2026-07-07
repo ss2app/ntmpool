@@ -25,6 +25,7 @@ import (
 	"github.com/scashcc/ntmpool/internal/btcwork"
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/core"
+	"github.com/scashcc/ntmpool/internal/metrics"
 	"github.com/scashcc/ntmpool/internal/minersettings"
 	"github.com/scashcc/ntmpool/internal/vardiff"
 )
@@ -125,13 +126,13 @@ type rpcMsg struct {
 
 // v1Conn 每连接状态。
 type v1Conn struct {
-	d          *V1Dialect
-	raw        net.Conn
-	w          *bufio.Writer
-	wmu        sync.Mutex
-	port       config.PortConfig
+	d           *V1Dialect
+	raw         net.Conn
+	w           *bufio.Writer
+	wmu         sync.Mutex
+	port        config.PortConfig
 	extraNonce1 []byte
-	vd         *vardiff.State
+	vd          *vardiff.State
 
 	address    string
 	worker     string
@@ -348,6 +349,7 @@ func (c *v1Conn) onSubmit(ctx context.Context, msg *rpcMsg) error {
 
 	switch res.Outcome {
 	case core.OutcomeAccepted, core.OutcomeBlock:
+		metrics.ShareResult(c.d.coinID, res.Outcome)
 		c.ab.record(res.Outcome)
 		c.vd.OnAccepted(time.Now())
 		if err := c.reply(msg.ID, true, nil); err != nil {
@@ -369,6 +371,7 @@ func (c *v1Conn) onSubmit(ctx context.Context, msg *rpcMsg) error {
 
 // rejectSubmit 拒绝应答 + 自动 ban 记账；触发 ban 时断开连接（新连在 accept 层被拒）。
 func (c *v1Conn) rejectSubmit(id json.RawMessage, outcome core.ShareOutcome, errObj any) error {
+	metrics.ShareResult(c.d.coinID, outcome)
 	err := c.reply(id, nil, errObj)
 	if c.ab.record(outcome) {
 		return fmt.Errorf("[%s] %s 自动 ban（恶意提交占比超阈值）", c.d.coinID, c.remoteIP)

@@ -80,8 +80,8 @@ func cnMineUntilBlock(t *testing.T, addr string) {
 	}
 	var loginResp struct {
 		Result struct {
-			ID  string          `json:"id"`
-			Job wireJob         `json:"job"`
+			ID  string  `json:"id"`
+			Job wireJob `json:"job"`
 		} `json:"result"`
 		Error *struct {
 			Message string `json:"message"`
