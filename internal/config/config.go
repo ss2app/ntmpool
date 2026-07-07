@@ -30,7 +30,8 @@ type PortConfig struct {
 	TLS      bool          `json:"tls"`
 	Proxy    string        `json:"proxyProtocol"` // "off"|"optional"|"required"（藏转发器后必须 required）
 	Enabled  bool          `json:"enabled"`
-	MaxConns int           `json:"maxConns"`
+	MaxConns int           `json:"maxConns"`      // 端口在连上限（0 = 不限）
+	MaxConnsPerIP int      `json:"maxConnsPerIp"` // 每真实 IP 在连上限（0 = 不限）
 }
 
 // ConsolidationConfig 钱包整备（note/UTXO 定时合并，docs/02 §6）。

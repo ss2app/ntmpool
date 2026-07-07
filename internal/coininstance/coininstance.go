@@ -49,6 +49,11 @@ type authHookable interface {
 	SetAuthHook(func(addr, worker string, p minersettings.PasswordParams))
 }
 
+// autoBannable 支持协议层自动 ban 的方言（V1/CN 都实现）。
+type autoBannable interface {
+	SetAutoBan(stratum.Banner)
+}
+
 // familyParts 一个链家族（bitcoin GBT / blob CN 系）拼装出的全部部件。
 // 家族构建器见 family_bitcoin.go / family_blob.go —— M3 选型化的核心：
 // coininstance 只认这些面，节点形态/方言/算法在构建器里按 cfg.Adapter 绑定。
@@ -158,6 +163,15 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 		for _, d := range parts.dialects {
 			if ah, ok := d.(authHookable); ok {
 				ah.SetAuthHook(hook)
+			}
+		}
+	}
+
+	// 协议层自动 ban（badpow/malformed/dup 占比超阈值 → 指数退避 ban IP）
+	if deps.Ban != nil {
+		for _, d := range parts.dialects {
+			if ab, ok := d.(autoBannable); ok {
+				ab.SetAutoBan(deps.Ban)
 			}
 		}
 	}

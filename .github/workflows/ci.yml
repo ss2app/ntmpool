@@ -17,10 +17,41 @@ jobs:
         run: go build ./...
       - name: Vet
         run: go vet ./...
-      - name: Test (含算法金锚自检 / vardiff 三件套)
+      - name: Test (含算法金锚自检 / vardiff 三件套 / CN 方言+多币 e2e)
         run: go test ./...
       - name: Cross-compile smoke (linux-amd64 / windows-amd64 / linux-arm64)
         run: |
           GOOS=linux  GOARCH=amd64 go build -o /dev/null ./cmd/ntmpool
           GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/ntmpool
           GOOS=linux  GOARCH=arm64 go build -o /dev/null ./cmd/ntmpool
+
+  # RandomX cgo（生产 linux 二进制形态）：vendored libRandomX stock 配置（rx/0）。
+  # ⚠ 必须 -DRANDOMX_STOCK：vendored configuration.h 默认是 dragonx 常量，
+  # 官方向量金锚测试会拦下链错的库。
+  randomx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Cache librandomx build
+        uses: actions/cache@v4
+        with:
+          path: third_party/randomx/build-stock
+          key: librandomx-stock-${{ runner.os }}-${{ hashFiles('third_party/randomx/src/**', 'third_party/randomx/CMakeLists.txt') }}
+      - name: Build vendored libRandomX (stock rx/0, ARCH=default)
+        run: |
+          if [ ! -f third_party/randomx/build-stock/librandomx.a ]; then
+            cmake -S third_party/randomx -B third_party/randomx/build-stock \
+              -DARCH=default -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+              -DCMAKE_C_FLAGS=-DRANDOMX_STOCK -DCMAKE_CXX_FLAGS=-DRANDOMX_STOCK
+            cmake --build third_party/randomx/build-stock --target randomx -j
+          fi
+      - name: Build (tags randomx)
+        run: go build -tags randomx ./...
+      - name: Vet (tags randomx)
+        run: go vet -tags randomx ./...
+      - name: Test rx/0 金锚 + 全量回归 (tags randomx)
+        run: go test -tags randomx ./...

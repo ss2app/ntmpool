@@ -77,6 +77,7 @@ type CNDialect struct {
 	handler CNShareHandler
 	connSeq atomic.Uint64
 	conns   sync.Map // *cnConn → struct{}
+	banner  Banner   // 协议层自动 ban（可选）
 
 	onAuth func(addr, worker string, p minersettings.PasswordParams)
 }
@@ -89,6 +90,9 @@ func NewCNDialect(coinID string, h CNShareHandler) *CNDialect {
 func (d *CNDialect) SetAuthHook(h func(addr, worker string, p minersettings.PasswordParams)) {
 	d.onAuth = h
 }
+
+// SetAutoBan 注入自动 ban 写入口（启动时一次）。
+func (d *CNDialect) SetAutoBan(b Banner) { d.banner = b }
 
 func (d *CNDialect) Name() string { return "cryptonote" }
 
@@ -124,6 +128,7 @@ type cnConn struct {
 	userAgent string
 	remoteIP  string
 	loggedIn  bool
+	ab        *autoBan
 
 	seen sync.Map // jobid:nonce → 去重
 }
@@ -146,6 +151,7 @@ func (d *CNDialect) Serve(ctx context.Context, conn net.Conn, port config.PortCo
 		vd:       vardiff.New(vcfg, time.Now()),
 		remoteIP: remoteHost(conn),
 	}
+	c.ab = &autoBan{banner: d.banner, ip: c.remoteIP}
 	d.conns.Store(c, struct{}{})
 	defer d.conns.Delete(c)
 
@@ -296,14 +302,14 @@ func (c *cnConn) onSubmit(ctx context.Context, msg *cnReq) error {
 	}
 	var p cnSubmitParams
 	if err := json.Unmarshal(msg.Params, &p); err != nil || p.JobID == "" || p.Nonce == "" {
-		return c.replyErr(msg.ID, "Malformed submit")
+		return c.rejectSubmit(msg.ID, core.OutcomeMalformed, "Malformed submit")
 	}
 	if p.ID != "" && p.ID != c.sessID {
 		return c.replyErr(msg.ID, "Unauthenticated")
 	}
 	dedup := p.JobID + ":" + strings.ToLower(p.Nonce)
 	if _, dup := c.seen.LoadOrStore(dedup, struct{}{}); dup {
-		return c.replyErr(msg.ID, "Duplicate share")
+		return c.rejectSubmit(msg.ID, core.OutcomeDup, "Duplicate share")
 	}
 
 	c.mu.Lock()
@@ -326,6 +332,7 @@ func (c *cnConn) onSubmit(ctx context.Context, msg *cnReq) error {
 
 	switch res.Outcome {
 	case core.OutcomeAccepted, core.OutcomeBlock:
+		c.ab.record(res.Outcome)
 		c.vd.OnAccepted(time.Now())
 		if err := c.reply(msg.ID, map[string]any{"status": "OK"}, nil); err != nil {
 			return err
@@ -333,17 +340,26 @@ func (c *cnConn) onSubmit(ctx context.Context, msg *cnReq) error {
 		c.maybeRetarget()
 		return nil
 	case core.OutcomeStale:
-		return c.replyErr(msg.ID, "Invalid job id")
+		return c.rejectSubmit(msg.ID, res.Outcome, "Invalid job id")
 	case core.OutcomeLowDiff:
-		return c.replyErr(msg.ID, "Low difficulty share")
+		return c.rejectSubmit(msg.ID, res.Outcome, "Low difficulty share")
 	case core.OutcomeDup:
-		return c.replyErr(msg.ID, "Duplicate share")
+		return c.rejectSubmit(msg.ID, res.Outcome, "Duplicate share")
 	case core.OutcomeBadPow:
 		// 共识 tripwire：矿工声称 hash 与池端重算不符
-		return c.replyErr(msg.ID, "Bad hash (recompute mismatch)")
+		return c.rejectSubmit(msg.ID, res.Outcome, "Bad hash (recompute mismatch)")
 	default:
-		return c.replyErr(msg.ID, "Malformed submit")
+		return c.rejectSubmit(msg.ID, res.Outcome, "Malformed submit")
 	}
+}
+
+// rejectSubmit 拒绝应答 + 自动 ban 记账；触发 ban 时断开连接。
+func (c *cnConn) rejectSubmit(id json.RawMessage, outcome core.ShareOutcome, message string) error {
+	err := c.replyErr(id, message)
+	if c.ab.record(outcome) {
+		return fmt.Errorf("[%s] %s 自动 ban（恶意提交占比超阈值）", c.d.coinID, c.remoteIP)
+	}
+	return err
 }
 
 // maybeRetarget vardiff 调档后推带新 target 的 job（CN 没有 set_difficulty，难度随 job 走）。

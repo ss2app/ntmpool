@@ -76,6 +76,7 @@ type V1Dialect struct {
 	handler ShareHandler
 	connSeq atomic.Uint64
 	conns   sync.Map // *v1Conn → struct{}，用于新块广播
+	banner  Banner   // 协议层自动 ban（可选）
 
 	// onAuth 授权钩子（可选）：密码参数交上层持久化（矿工设置 mp= 等）。
 	// 只做记录/设置，不影响授权结果。
@@ -90,6 +91,9 @@ func NewV1Dialect(coinID string, h ShareHandler) *V1Dialect {
 func (d *V1Dialect) SetAuthHook(h func(addr, worker string, p minersettings.PasswordParams)) {
 	d.onAuth = h
 }
+
+// SetAutoBan 注入自动 ban 写入口（启动时一次）。
+func (d *V1Dialect) SetAutoBan(b Banner) { d.banner = b }
 
 // BroadcastJob 新块到达时推最新 job 给所有在连矿工（clean_jobs=true 作废旧工作）。
 // 由 JobManager 的 broadcast 回调驱动。写各连接是并发安全的（writeJSON 有锁）。
@@ -136,6 +140,7 @@ type v1Conn struct {
 	authorized bool
 	subscribed bool
 	lastJobID  string
+	ab         *autoBan
 
 	seen sync.Map // jobid:en2:ntime:nonce → 去重
 }
@@ -165,6 +170,7 @@ func (d *V1Dialect) Serve(ctx context.Context, conn net.Conn, port config.PortCo
 		vd:          vardiff.New(vcfg, time.Now()),
 		remoteIP:    remoteHost(conn),
 	}
+	c.ab = &autoBan{banner: d.banner, ip: c.remoteIP}
 
 	d.conns.Store(c, struct{}{})
 	defer d.conns.Delete(c)
@@ -305,13 +311,13 @@ func (c *v1Conn) onSubmit(ctx context.Context, msg *rpcMsg) error {
 	// params = [worker, jobID, en2, ntime, nonce, (version_bits)]
 	var p []string
 	if err := json.Unmarshal(msg.Params, &p); err != nil || len(p) < 5 {
-		return c.reply(msg.ID, nil, stratumErr(20, "Malformed submit"))
+		return c.rejectSubmit(msg.ID, core.OutcomeMalformed, stratumErr(20, "Malformed submit"))
 	}
 	en2, err1 := hex.DecodeString(p[2])
 	ntime, err2 := parseHexU32(p[3])
 	nonce, err3 := parseHexU32(p[4])
 	if err1 != nil || err2 != nil || err3 != nil {
-		return c.reply(msg.ID, nil, stratumErr(20, "Malformed submit fields"))
+		return c.rejectSubmit(msg.ID, core.OutcomeMalformed, stratumErr(20, "Malformed submit fields"))
 	}
 	var vbits uint32
 	if len(p) >= 6 {
@@ -321,7 +327,7 @@ func (c *v1Conn) onSubmit(ctx context.Context, msg *rpcMsg) error {
 	// 去重键（每连接）
 	dedup := p[1] + ":" + p[2] + ":" + p[3] + ":" + p[4]
 	if _, dup := c.seen.LoadOrStore(dedup, struct{}{}); dup {
-		return c.reply(msg.ID, nil, stratumErr(22, "Duplicate share"))
+		return c.rejectSubmit(msg.ID, core.OutcomeDup, stratumErr(22, "Duplicate share"))
 	}
 
 	sub := Submission{
@@ -342,6 +348,7 @@ func (c *v1Conn) onSubmit(ctx context.Context, msg *rpcMsg) error {
 
 	switch res.Outcome {
 	case core.OutcomeAccepted, core.OutcomeBlock:
+		c.ab.record(res.Outcome)
 		c.vd.OnAccepted(time.Now())
 		if err := c.reply(msg.ID, true, nil); err != nil {
 			return err
@@ -349,15 +356,24 @@ func (c *v1Conn) onSubmit(ctx context.Context, msg *rpcMsg) error {
 		c.maybeRetarget()
 		return nil
 	case core.OutcomeStale:
-		return c.reply(msg.ID, nil, stratumErr(21, "Job not found (stale)"))
+		return c.rejectSubmit(msg.ID, res.Outcome, stratumErr(21, "Job not found (stale)"))
 	case core.OutcomeLowDiff:
-		return c.reply(msg.ID, nil, stratumErr(23, "Low difficulty share"))
+		return c.rejectSubmit(msg.ID, res.Outcome, stratumErr(23, "Low difficulty share"))
 	case core.OutcomeBadPow:
 		// 共识 tripwire：矿工声称的 hash 与池端重算不符
-		return c.reply(msg.ID, nil, stratumErr(20, "Bad PoW (recompute mismatch)"))
+		return c.rejectSubmit(msg.ID, res.Outcome, stratumErr(20, "Bad PoW (recompute mismatch)"))
 	default:
-		return c.reply(msg.ID, nil, stratumErr(20, "Rejected"))
+		return c.rejectSubmit(msg.ID, res.Outcome, stratumErr(20, "Rejected"))
 	}
+}
+
+// rejectSubmit 拒绝应答 + 自动 ban 记账；触发 ban 时断开连接（新连在 accept 层被拒）。
+func (c *v1Conn) rejectSubmit(id json.RawMessage, outcome core.ShareOutcome, errObj any) error {
+	err := c.reply(id, nil, errObj)
+	if c.ab.record(outcome) {
+		return fmt.Errorf("[%s] %s 自动 ban（恶意提交占比超阈值）", c.d.coinID, c.remoteIP)
+	}
+	return err
 }
 
 func (c *v1Conn) maybeRetarget() {

@@ -29,6 +29,10 @@ type Listener struct {
 	ln     net.Listener
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	connMu  sync.Mutex
+	conns   int            // 该端口当前在连数（MaxConns 上限用）
+	perIP   map[string]int // 真实 IP → 在连数（MaxConnsPerIP 上限用）
 }
 
 // BanChecker 连接准入检查（banlist.List 满足此签名；全池共享一份）。
@@ -82,7 +86,7 @@ func (m *Manager) StartPort(parent context.Context, pc config.PortConfig) error 
 		return err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	l := &Listener{cfg: pc, ln: ln, cancel: cancel}
+	l := &Listener{cfg: pc, ln: ln, cancel: cancel, perIP: map[string]int{}}
 	m.listeners[pc.Port] = l
 
 	l.wg.Add(1)
@@ -107,16 +111,59 @@ func (m *Manager) StartPort(parent context.Context, pc config.PortConfig) error 
 					continue
 				}
 			}
-			// TODO(M3): 每 IP 并发上限 / 连接速率 / PROXY protocol 解包 / TLS
+			// TODO(M3+): 连接速率限制 / TLS
 			l.wg.Add(1)
-			go func() {
+			go func(raw net.Conn) {
 				defer l.wg.Done()
-				defer conn.Close()
+				defer raw.Close()
+				// PROXY protocol 解包（R12：转发器后拿真实 IP）——头读取有超时，
+				// 放独立 goroutine，慢连接不阻塞 accept 循环
+				conn, err := resolveProxy(raw, pc.Proxy)
+				if err != nil {
+					return
+				}
+				ip := remoteHost(conn)
+				// 真实 IP 再过一次 ban（转发流量在 accept 时只能查到转发器 IP）
+				if ban != nil {
+					if banned, _ := ban.Banned(ip); banned {
+						return
+					}
+				}
+				if !l.acquire(ip, pc) {
+					return // 端口/每 IP 并发上限
+				}
+				defer l.release(ip)
 				_ = d.Serve(ctx, conn, pc)
-			}()
+			}(conn)
 		}
 	}()
 	return nil
+}
+
+// acquire 端口在连数 + 每 IP 在连数双上限（0 = 不限）。
+func (l *Listener) acquire(ip string, pc config.PortConfig) bool {
+	l.connMu.Lock()
+	defer l.connMu.Unlock()
+	if pc.MaxConns > 0 && l.conns >= pc.MaxConns {
+		return false
+	}
+	if pc.MaxConnsPerIP > 0 && l.perIP[ip] >= pc.MaxConnsPerIP {
+		return false
+	}
+	l.conns++
+	l.perIP[ip]++
+	return true
+}
+
+func (l *Listener) release(ip string) {
+	l.connMu.Lock()
+	defer l.connMu.Unlock()
+	l.conns--
+	if n := l.perIP[ip] - 1; n > 0 {
+		l.perIP[ip] = n
+	} else {
+		delete(l.perIP, ip)
+	}
 }
 
 // StopPort 热停止端口：停止 accept 并断开该端口全部连接。

@@ -53,14 +53,17 @@ M1 收尾：
 
 **M2 = 全部 DONE（2026-07-06）**。
 
-## M3 — 多币 + 多方言（下一期）
+## M3 — 多币 + 多方言（本期）
 
-- CryptoNote 方言（XMRig 系 login/job/submit）——协议细节已调研齐，见 **docs/04 §2**（login params/algo 协商/seed_hash 64hex/worker 识别顺序 rigid>pass>+worker/keepalived）。验证客户端：XMRig 官方（标准参考实现）+ NTMminer rx 系。
-- RandomX hasher FFI：Go cgo 链 stock librandomx（`-DARCH=default` 重编，C 链 C++ 要 `-lstdc++`——工厂坑见 `_knowledge/pitfalls/randomx-vendor-into-c-miner.md`）；金锚自检 = rx/0 官方 test vector + 与 NTMminer `rx_dragonx.c` 跨实现逐字节对拍。
-- custom-http 适配器（zoka 先例：节点 REST /mining/template+submit；CRB miningcore 魔改先例）+ cryptonote-rpc 适配器（门罗系 daemon+wallet 分离）。
-- 验证素材：**dragonx**（rx/dragonx，103.80 有 live 节点+miningcore 池可对拍口径）、**zoka**（rx/0 标准，live）、taron 冷归档 `coins/taron`（rx/tar miningcore CN family 配置参考；币已放弃只作代码参考）。
-- 多币单实例共存（每币独立开关/独立日志/独立地址对）——架构已支持（CoinInstance 独立生命周期），补多币 e2e。
-- 顺带：协议层自动 ban（invalidPercent 阈值+指数退避，banlist.Strikes 已备好）+ PROXY protocol 解包（藏转发器后拿真实 IP，R12）。
+- [x] **选型化**（2026-07-07）：coininstance 拆链家族构建器（`family_bitcoin.go`/`family_blob.go`），按 `cfg.Adapter` 绑定 节点适配器×算法×作业管理器×方言；公共面 = statusSource/jobPipe/HashPSSource（可选，无真值口径的链 API 直接省略全网算力，绝不反推）。
+- [x] **CryptoNote 方言 `stratum/dialect_cn.go`**：login/job/submit/keepalived/getjob；worker 识别 rigid>pass>+worker、固定难度 `.N`/`+N`/`d=`、algo 能力协商（不含本币算法明确拒）、标准错误 message 集合、vardiff 一步 grace 经 Judge 闭包下沉、难度变更随新 job 下发（CN 无 set_difficulty）。链差异（blob 布局/target 编码/hash 字节序/组块载荷）全部下沉 CNShareHandler。
+- [x] **blob 作业管理器 `internal/cnjob` + 数学库 `internal/cnwork`**：nonce 字段统一模型（低 SearchLen 字节矿工滚 + 高位连接 tag）盖住两类实战布局——zoka/CRB（尾部 8 字节、4+4、target 64hex-BE、hash 大端）与 monero 系（偏移 39、4 字节、nicehash 分片 3+1、target compact-LE、hash 小端，免 merkle 重建，代价=每 job ≤256 连接）；池端重算 badpow tripwire（矿工 result 逐字节比对）+ 连接 tag 防伪造（忽略矿工带回高位，池侧重建）；blob 链块 id ≠ PoW hash → 先交后记拿节点权威块 hash（TODO M4 Postgres 意图先落库）。
+- [x] **适配器三件**：`customhttp`（zoka mining-patch REST 形状：/chain/height、/mining/template、/mining/submit(template_id+nonce)、钱包 REST）+ `cnrpc`（门罗 daemon /json_rpc：get_info/get_block_template(两 blob)/submit_block/块头查询；reserve_size=1 + nicehash 分片）+ `cnwallet`（wallet-rpc get_balance/transfer 单笔多 destinations/get_transfer_by_txid）。金额原子↔十进制纯整数换算（adapter/amount.go）。
+- [x] **RandomX hasher FFI**（`internal/hasher/randomx`，build tag `randomx`）：cgo 链 **vendored 同源库** `third_party/randomx`（与 NTMminer 同一份源码，BSD，含 init_cache_salted 扩展）；**stock 配置（-DRANDOMX_STOCK）= rx/0**（⚠ vendored 默认是 dragonx 常量，链错金锚拦）；light 模式 + seed LRU（保留 2 epoch）+ 每 seed VM 锁；SelfTest = 官方 4 向量（与 NTMminer rx_kat.c STOCK 段同组）。KeyedHasher 注册表 + SelfTestAll 双注册表启动门禁。CI 增 randomx job（cmake 构建缓存 + `-tags randomx` 全量测试）；本地 Windows 默认不带 tag（中文路径 mingw cgo 铁律①）。**rx/dragonx 变体 = 第二份库 + zkrx_ 式符号前缀隔离，M3-6 迁移 dragonx 时加。**
+- [x] **多币单实例共存 e2e**：TestMultiCoinCoexistence（btc 系 + CN 系同进程双管线双爆块）+ CN 全链路 e2e（假 REST 节点【节点端真验块】+ 真 CN 协议矿工：login→job→爆块→submit→确认→PPLNS→sendmany）+ CN 孤块路径。
+- [x] **连接治理**：协议层自动 ban（badpow/malformed/dup 占比 ≥50%（≥10 样本）→ 指数退避 ban，stale/lowdiff 良性绝不计入防误 ban）+ PROXY protocol v1 解包（off/optional/required，真实 IP 二次过 ban 名单）+ 端口 MaxConns / 每 IP MaxConnsPerIP 双上限。
+- [ ] **live 验证（M3-6，下一步）**：dragonx（rx/dragonx，103.80 live 节点+miningcore 池对拍口径）、zoka（rx/0 live，custom-http 对接真节点）；XMRig 官方 + NTMminer rx 系连池冒烟；rx/dragonx 前缀库。
+- [ ] 可选：真 ZMQ 新块通知（替代轮询，从 M1 顺延）。
 
 ## M4 — 横向扩展 + 前端 API 定稿
 
