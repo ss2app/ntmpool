@@ -62,7 +62,8 @@ M1 收尾：
 - [x] **RandomX hasher FFI**（`internal/hasher/randomx`，build tag `randomx`）：cgo 链 **vendored 同源库** `third_party/randomx`（与 NTMminer 同一份源码，BSD，含 init_cache_salted 扩展）；**stock 配置（-DRANDOMX_STOCK）= rx/0**（⚠ vendored 默认是 dragonx 常量，链错金锚拦）；light 模式 + seed LRU（保留 2 epoch）+ 每 seed VM 锁；SelfTest = 官方 4 向量（与 NTMminer rx_kat.c STOCK 段同组）。KeyedHasher 注册表 + SelfTestAll 双注册表启动门禁。CI 增 randomx job（cmake 构建缓存 + `-tags randomx` 全量测试）；本地 Windows 默认不带 tag（中文路径 mingw cgo 铁律①）。**rx/dragonx 变体 = 第二份库 + zkrx_ 式符号前缀隔离，M3-6 迁移 dragonx 时加。**
 - [x] **多币单实例共存 e2e**：TestMultiCoinCoexistence（btc 系 + CN 系同进程双管线双爆块）+ CN 全链路 e2e（假 REST 节点【节点端真验块】+ 真 CN 协议矿工：login→job→爆块→submit→确认→PPLNS→sendmany）+ CN 孤块路径。
 - [x] **连接治理**：协议层自动 ban（badpow/malformed/dup 占比 ≥50%（≥10 样本）→ 指数退避 ban，stale/lowdiff 良性绝不计入防误 ban）+ PROXY protocol v1 解包（off/optional/required，真实 IP 二次过 ban 名单）+ 端口 MaxConns / 每 IP MaxConnsPerIP 双上限。
-- [ ] **live 验证（M3-6，下一步）**：dragonx（rx/dragonx，103.80 live 节点+miningcore 池对拍口径）、zoka（rx/0 live，custom-http 对接真节点）；XMRig 官方 + NTMminer rx 系连池冒烟；rx/dragonx 前缀库。
+- [x] **zoka live 真机冒烟（2026-07-07，103.80 服务器，冒烟完即 pkill）**：CI artifact（ubuntu-22.04 cgo 二进制）→ /data/ntmpool-smoke，custom-http 对接**真 zoka 主网节点**（127.0.0.1:7100，height 2257+），NTMminer v1.11.1 **发行版**锄头 `-a zoka` 连池。三轮迭代定版：**180s found=20 accepted=20 rejected=0、badpow=0**（池端 rx/0 cgo 重算与真锄头逐 share 字节吻合）、vardiff 2000→8.2K 收敛、job 节流 ~14s/换。冒烟抓出并已修 3 个真 bug：①同高度模板 2s churn（zoka 模板每拉必变 timestamp）→ cnjob 15s 节流；②hashrate 用 2^32 口径把 1.2KH/s 显成 964GH/s → blob 系 multiplier=1；③vardiff 调档重推同 blob → 矿工重置 nonce 重找同解 = Duplicate share → 改 pendingDifficulty 语义（随下一个新模板生效）。未爆块（主网难度 vs 4T CPU，符合预期，与 BTX live 冒烟同口径）。
+- [ ] M3 尾巴（后续会话）：**rx/dragonx 前缀库**（第二份 librandomx + zkrx_ 式符号隔离，dragonx 迁移时做）；**XMRig 官方客户端对拍**（走 cnrpc/monero 系路径，等有 offset-39 blob 的币/节点可测——zoka blob 布局 XMRig 本来就挖不了）；customhttp 补固定 reward 适配器选项（zoka 模板无 reward 字段，打款前要）。
 - [ ] 可选：真 ZMQ 新块通知（替代轮询，从 M1 顺延）。
 
 ## M4 — 横向扩展 + 前端 API 定稿
