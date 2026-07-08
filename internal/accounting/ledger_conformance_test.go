@@ -291,6 +291,27 @@ func runLedgerConformance(t *testing.T, mk mkLedger) {
 		}
 	})
 
+	t.Run("空奖励块可落库不丢块", func(t *testing.T) {
+		// 回归：zoka 等 custom-http 链模板无 reward → FoundBlock.Reward=""。
+		// 曾因空串塞 numeric 列触发 22P02，RecordBlock 报错 → blockSink 提前 return
+		// → 块永不 submit = 真矿工白挖（2026-07-07 zoka 13 个真块被丢）。
+		// 空奖励必须能落库（归一为 0），块绝不能丢。
+		l, coin := mk(t)
+		_ = l.RecordShare(ctx, confShare(coin, "A", time.Now()), 1)
+		b := confBlock(coin, "hEmpty", "A", "", 200, 1.0, false) // reward=""
+		if err := l.RecordBlock(ctx, b, "raw"); err != nil {
+			t.Fatalf("空奖励块落库失败（白挖回归）: %v", err)
+		}
+		pend, err := l.PendingBlocks(ctx, coin)
+		if err != nil || len(pend) != 1 || pend[0].Hash != "hEmpty" {
+			t.Fatalf("空奖励块应作为待确认块存在: %v %+v", err, pend)
+		}
+		if err := l.ConfirmBlock(ctx, b, 0); err != nil {
+			t.Fatalf("空奖励块确认失败: %v", err)
+		}
+		assertDelta0(t, ctx, l, coin, "空奖励块确认后")
+	})
+
 	t.Run("PendingBlocks与状态机", func(t *testing.T) {
 		l, coin := mk(t)
 		_ = l.RecordShare(ctx, confShare(coin, "A", time.Now()), 1)

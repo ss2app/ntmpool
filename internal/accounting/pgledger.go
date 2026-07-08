@@ -154,7 +154,17 @@ func (l *PGLedger) RecordBlock(ctx context.Context, b core.FoundBlock, rawHex st
 	if err := l.FlushShares(ctx); err != nil {
 		return fmt.Errorf("爆块前 flush share: %w", err)
 	}
-	if _, err := l.parse(b.Reward); err != nil {
+	// 块奖励可能为空：zoka 等 custom-http 链的 /mining/template 不下发 reward 字段
+	// → FoundBlock.Reward=""。空串塞进 numeric 列会触发 22P02，让整条爆块落库失败；
+	// blockSink 收到 err 即提前 return、永不 submit → 真块被丢 = 真矿工白挖
+	// （2026-07-07 zoka 影子池 13 个真块被此 bug 白挖，详见 docs/BUG-zoka爆块漏判-排查.md）。
+	// 一条块绝不能因金额格式化问题而丢——空奖励归一到 "0"（accrue-only 币无影响；
+	// 打款币的真值应由适配器从节点 /blocks 回填，见该链适配器 TODO）。
+	reward := b.Reward
+	if reward == "" {
+		reward = "0"
+	}
+	if _, err := l.parse(reward); err != nil {
 		return fmt.Errorf("块奖励金额非法: %w", err)
 	}
 	_, err := l.h.ExecContext(ctx, `
@@ -162,7 +172,7 @@ func (l *PGLedger) RecordBlock(ctx context.Context, b core.FoundBlock, rawHex st
 		                    miner, worker, solo, reward, rawhex, effort, source, created)
 		VALUES ($1,$2,$3,'submitting',$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT (poolid, blockheight, type, transactionconfirmationdata) DO NOTHING`,
-		l.coin, int64(b.Height), b.NetDiff, b.Hash, b.Finder, b.Worker, b.Solo, b.Reward,
+		l.coin, int64(b.Height), b.NetDiff, b.Hash, b.Finder, b.Worker, b.Solo, reward,
 		nullIfEmpty(rawHex), b.Effort, l.instance, blockTime(b))
 	return err
 }
