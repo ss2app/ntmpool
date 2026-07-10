@@ -263,7 +263,9 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 		HashBigEndian:   false, // sha256d 值按 bitcoin 惯例小端解释
 		TargetCompactLE: true,  // drg-xmrig/NTMminer 认 XMRig compact-LE
 		HeightHint:      t.Height,
-		SubmitRef:       &drgSubmitRef{CoinbaseData: t.CoinbaseTxn.Data, TxData: txData},
+		// 同高度同前块 = 同一份可挖工作；curtime（每秒变）不算换 job → 消除 stale 洪峰。
+		JobKey:    fmt.Sprintf("%d|%s", t.Height, t.PreviousBlockHash),
+		SubmitRef: &drgSubmitRef{CoinbaseData: t.CoinbaseTxn.Data, TxData: txData},
 	}
 	return &adapter.BlockTemplate{
 		Height:        t.Height,

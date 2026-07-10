@@ -59,6 +59,13 @@ type BlobWork struct {
 	// HeightHint 模板高度（适配器提交/查块时用，与 BlockTemplate.Height 一致）。
 	HeightHint uint64
 
+	// JobKey 适配器声明的「同一个 job」标识：只要它不变，就是同一份可挖工作，
+	// 不必因 blob 里无关字节抖动（如 dragonx GBT 每秒变的 curtime）而换 job。
+	// 空 = 回退到「整个 HashingBlob 逐字节比较」（zoka 等链保持原行为）。
+	// dragonx 设为 height+prevhash：同高度同前块即同 job，curtime 抖动不换工，
+	// 消除「每 15s 无谓换 job → 矿工 job 过期 stale」（2026-07-10 真实矿工实测 stale~50% 的根因）。
+	JobKey string
+
 	// SubmitRef 适配器组块提交所需的私有引用
 	// （zoka: template_id；monero: blocktemplate_blob hex）。
 	SubmitRef any

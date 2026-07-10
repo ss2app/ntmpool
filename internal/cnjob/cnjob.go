@@ -66,7 +66,9 @@ type Manager struct {
 	lastFetch time.Time
 }
 
-const keepJobs = 4
+// keepJobs 保留最近 N 个 job 供 share 归属。够大以覆盖「矿工网络延迟 + 池换 job」
+// 的窗口：真实矿工经中转/跨境提交有 RTT，太小(原 4)会把在途 share 判 stale。
+const keepJobs = 24
 
 // templateRefresh 同高度模板重拉间隔。zoka 类链模板每次拉都带新 timestamp/template_id
 // （blob 必变），不节流的话 2s 轮询 = 每 2s 推新 job 白白打断矿工（live 冒烟实测）。
@@ -113,12 +115,20 @@ func (m *Manager) Refresh(ctx context.Context, force bool) error {
 
 	m.mu.Lock()
 	m.lastFetch = time.Now()
-	// blob 没变（同模板轮询）就不发新 job，避免矿工无谓换工
-	if cur, ok := m.jobs[m.current]; ok &&
-		cur.height == tpl.Height &&
-		string(cur.work.HashingBlob) == string(work.HashingBlob) {
-		m.mu.Unlock()
-		return nil
+	// 同一份可挖工作就不发新 job，避免矿工无谓换工（换工 = 矿工手上 job 过期 stale）。
+	// 判定：适配器给了 JobKey 就按它（dragonx=height+prevhash，忽略 curtime 每秒抖动）；
+	// 否则回退到整个 HashingBlob 逐字节比较（zoka 等链原行为）。
+	if cur, ok := m.jobs[m.current]; ok && cur.height == tpl.Height {
+		same := false
+		if work.JobKey != "" {
+			same = cur.work.JobKey == work.JobKey
+		} else {
+			same = string(cur.work.HashingBlob) == string(work.HashingBlob)
+		}
+		if same {
+			m.mu.Unlock()
+			return nil
+		}
 	}
 	id := strconv.FormatUint(m.jobSeq.Add(1), 16)
 	j := &cnJob{

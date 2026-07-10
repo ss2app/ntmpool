@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"math/big"
 	"sync"
 	"testing"
@@ -36,9 +37,10 @@ var _ hasher.TwoStageKeyedHasher = twoStageKeyed{}
 // fakeDrgNode dragonx 形状假节点：140B blob、nonce 字段 [108:140]（滚 [108:112]、
 // tag [112:116]、保留区 [116:140] 带模板盐）、PowIsBlockHash。
 type fakeDrgNode struct {
-	mu      sync.Mutex
-	height  uint64
-	lastSol *adapter.BlobSolution
+	mu          sync.Mutex
+	height      uint64
+	lastSol     *adapter.BlobSolution
+	curtimeByte byte // 每次 GetTemplate 抖动一次（模拟 dragonx GBT curtime 每秒变）
 }
 
 func drgTarget() *big.Int {
@@ -55,7 +57,8 @@ func (f *fakeDrgNode) GetTemplate(_ context.Context) (*adapter.BlockTemplate, er
 	for i := 108; i < 140; i++ {
 		blob[i] = 0
 	}
-	blob[120] = 0xAB // 保留区模板盐（实例隔离位，矿工必须原样回显）
+	blob[120] = 0xAB          // 保留区模板盐（实例隔离位，矿工必须原样回显）
+	blob[104] = f.curtimeByte // 模拟 curtime 抖动：blob 变但同高度同 job
 	work := &adapter.BlobWork{
 		HashingBlob: blob, NonceOffset: 108, NonceLen: 8, SearchLen: 4,
 		WireNonceLen: 32, PowIsBlockHash: true,
@@ -63,6 +66,8 @@ func (f *fakeDrgNode) GetTemplate(_ context.Context) (*adapter.BlockTemplate, er
 		NetworkTarget: drgTarget(), HashBigEndian: false,
 		TargetCompactLE: true,
 		HeightHint:      f.height + 1,
+		// JobKey = 高度（忽略 blob 里随查询变化的 curtimeByte）→ 同高度不换 job
+		JobKey: fmt.Sprintf("%d", f.height+1),
 	}
 	return &adapter.BlockTemplate{
 		Height: f.height + 1, PrevHash: "prev", CoinbaseValue: "3.00000000",
@@ -116,6 +121,34 @@ func drgMine(t *testing.T, m *Manager, connID uint32, required float64, wantPowO
 	}
 	t.Fatal("找不到满足条件的 nonce")
 	return "", "", nil
+}
+
+// JobKey 去重：curtime 抖动（blob 变但同高度）不换 job，避免矿工 job 过期 stale。
+func TestDrgJobKeyNoChurnOnCurtime(t *testing.T) {
+	m, node := newDrgManager(t)
+	id1 := currentJobID(m)
+	// curtime 抖动 3 次（blob 每次都变），高度不变 → job 必须不换
+	for i := 0; i < 3; i++ {
+		node.mu.Lock()
+		node.curtimeByte = byte(i + 1)
+		node.mu.Unlock()
+		if err := m.Refresh(context.Background(), false); err != nil {
+			t.Fatal(err)
+		}
+		if currentJobID(m) != id1 {
+			t.Fatalf("curtime 抖动第 %d 次换了 job（应保持 %s，得 %s）—— stale 洪峰根因未修", i, id1, currentJobID(m))
+		}
+	}
+	// 高度推进 → 必须换 job
+	node.mu.Lock()
+	node.height++
+	node.mu.Unlock()
+	if err := m.Refresh(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if currentJobID(m) == id1 {
+		t.Fatal("高度变化必须换 job")
+	}
 }
 
 // 双段路径：badpow 比内层 result、爆块 hash 用外层 pow 反转（PowIsBlockHash）、
