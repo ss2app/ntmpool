@@ -43,6 +43,7 @@ type CoinControl interface {
 	UnfreezePayout()
 	FeeSweep(ctx context.Context, coldAddress, amount string) (txid string, err error)
 	FeeCollect(ctx context.Context, amount string) (txid string, err error)
+	UncollectedFees(ctx context.Context) (string, error)
 	ConnectedMiners() int
 	Network() core.NetworkSnapshot
 }
@@ -228,10 +229,16 @@ func (s *Server) handleCoin(w http.ResponseWriter, r *http.Request) {
 	for i := range cfg.Nodes {
 		cfg.Nodes[i].Pass = "(redacted)"
 	}
+	// 未归集费（计提 − 已归集批次）：feecollect 操作前的把关数字。读失败给空串不阻断视图。
+	unc, err := p.UncollectedFees(r.Context())
+	if err != nil {
+		unc = ""
+	}
 	writeJSON(w, struct {
-		Config config.CoinConfig `json:"config"`
-		Frozen bool              `json:"frozen"`
-	}{cfg, p.PayoutFrozen()})
+		Config          config.CoinConfig `json:"config"`
+		Frozen          bool              `json:"frozen"`
+		UncollectedFees string            `json:"uncollectedFees"`
+	}{cfg, p.PayoutFrozen(), unc})
 }
 
 // handlePayoutPatch 部分更新打款热参数（未给的字段不动）。

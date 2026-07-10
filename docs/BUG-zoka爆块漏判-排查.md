@@ -49,14 +49,19 @@ Postgres 报 `invalid input syntax for type numeric: "" (SQLSTATE 22P02)` → `R
 
 ## 待办（重新部署复验）
 
-1. 重编 `ntmpool` 二进制（含本修复）→ 覆盖 `/data/ntmpool-zoka/ntmpool`。
-2. 重启影子池连真节点（7100/17011），重新引流真矿工（209 systemd `zoka-stratum-tunnel.service`）。
-3. **验证爆块闭环**：爆块 → RecordBlock 成功（submitting）→ SubmitBlob 成功 → 节点返回权威 hash →
-   MarkBlockPending。看 `pool.log` 出现「★爆块 height=… hash=…」而非落库失败。
-4. **⚠ 下游待查（本 bug 修好后才暴露的第 2 关）**：config `poolAddress="zoka-shadow-pool"` 是占位符。
-   zoka-node（池适配器）据记忆硬编码 pool2 挖矿地址、忽略传入 address，所以 SubmitBlob 应能落到真地址——
-   但**重新引流前必须先确认** SubmitBlob 真能被节点受理、块真能上链，别修好落库又卡在提交/上链。
-5. （非阻塞）打款币若用 custom-http 且模板无 reward，应由适配器从节点 `/blocks/{height}` 的
+1. ✅ **已做（2026-07-08）**：修复推 CI（commit 75553a0），CI 双 job 全绿——`build` job 带真 postgres:16
+   跑双实现 conformance（含新回归「空奖励块可落库」在**真 PG** 上通过）+ `randomx` job 出 linux 二进制。
+   artifact `ntmpool-linux-x64-randomx` 已 SFTP 部署到 `/data/ntmpool-zoka/ntmpool`（sha256
+   `8ffdd0c6…`，旧二进制备份 `ntmpool.bak.20260708`=`9e38a124…`）。启动冒烟通过：干净 boot、连 PG、
+   randomx 加载、stratum 17011 监听、优雅停。
+2. ✅ **poolAddress 占位符已排除**：curl 真节点 `/mining/template?address=X` 用两个不同 address 返回
+   **同一个** `pool_address: zpriv:d67d3e99…` + 同一 blob_prefix → zoka-node 忽略传入 address、用自己
+   硬编码的 pool2 地址。占位符 `zoka-shadow-pool` 无害，提交的块落真 pool2 地址。
+3. **⏳ 待你在场执行 = 重新引流真矿工复验爆块闭环**：209 systemd `zoka-stratum-tunnel.service` 落地端口
+   `7011→17011` + daemon-reload+restart（permitopen 已放行 17011）。**盯 `pool.log` 出现
+   「★爆块 height=… hash=…」而非落库失败**，确认 RecordBlock 成功→SubmitBlob 成功→节点返回权威 hash。
+   引流前建议先 TRUNCATE 影子 PG 测试数据（干净口径）。
+4. （非阻塞）打款币若用 custom-http 且模板无 reward，应由适配器从节点 `/blocks/{height}` 的
    `reward_atoms` 回填真奖励；zoka 是 accrue-only 不打款，记 0 无影响。
 
 ## 排查证据/环境保留

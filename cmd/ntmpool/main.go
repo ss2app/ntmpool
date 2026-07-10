@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -155,6 +156,41 @@ func main() {
 		return out
 	}
 
+	// /metrics 真值 gauge：每次抓取从会计层现读（PG 持久化时重启不清零）。
+	// 进程内 *_total counter 随重启归零，爆块/打款这种低频事件的业务总量以这组为准。
+	metrics.SetTruthSource(func() map[string]metrics.Truth {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		instMu.Lock()
+		insts := make(map[string]*coininstance.Instance, len(instByID))
+		for id, inst := range instByID {
+			insts[id] = inst
+		}
+		instMu.Unlock()
+		out := make(map[string]metrics.Truth, len(insts))
+		for id, inst := range insts {
+			snap, err := inst.Ledger().Snapshot(ctx, id)
+			if err != nil {
+				log.Printf("[metrics] %s 读会计快照失败（本次省略）: %v", id, err)
+				continue
+			}
+			var balance float64
+			for _, amt := range snap.Balances {
+				balance += displayFloat(amt)
+			}
+			tr := metrics.Truth{
+				BlocksFound: snap.BlocksFound, BlocksConfirmed: snap.Confirmed, BlocksOrphaned: snap.Orphaned,
+				FeesAccrued: displayFloat(snap.TotalFees), FeesUncollected: -1,
+				TotalPaid: displayFloat(snap.TotalPaid), MinerBalance: balance, DebtsNet: displayFloat(snap.DebtsNet),
+			}
+			if unc, err := inst.UncollectedFees(ctx); err == nil {
+				tr.FeesUncollected = displayFloat(unc)
+			}
+			out[id] = tr
+		}
+		return out
+	})
+
 	// 公共 API（miningcore 形状 + 地址脱敏，internal/api）
 	apiSrv := api.New(poolsSnapshot, []byte(cfg.MaskSecret))
 	if db != nil {
@@ -245,6 +281,12 @@ func main() {
 	for _, inst := range instances {
 		inst.Stop()
 	}
+}
+
+// displayFloat 金额字符串 → 浮点，仅供 metrics 展示（结算永远走字符串/整数，金额铁律）。
+func displayFloat(s string) float64 {
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
 }
 
 // loadOrCreateSalt 矿工设置密码 hash 的盐：首次启动随机生成并落盘，之后复用

@@ -341,7 +341,7 @@ func (e *Engine) payout(ctx context.Context) error {
 			log.Printf("[payout %s] ⚠ 广播后落库失败 batch=%d（恢复扫描会按 plannedtxid 归位）: %v",
 				e.cfg.Coin, batch.ID, err)
 		}
-		metrics.PayoutSent(e.cfg.Coin, e.sumCoins(payable))
+		metrics.PayoutSent(e.cfg.Coin, "payout", e.sumCoins(payable))
 		log.Printf("[payout %s] 打款 batch=%d 已广播 txid=%s (%d 地址)",
 			e.cfg.Coin, batch.ID, short(txid), len(payable))
 		e.emit("payout_sent", "打款已广播", map[string]string{
@@ -363,7 +363,7 @@ func (e *Engine) payout(ctx context.Context) error {
 	}
 	batch.TxID, batch.Status = txid, core.PaymentSent
 	_ = e.store.Save(batch)
-	metrics.PayoutSent(e.cfg.Coin, e.sumCoins(payable))
+	metrics.PayoutSent(e.cfg.Coin, "payout", e.sumCoins(payable))
 	log.Printf("[payout %s] 打款 batch=%d txid=%s", e.cfg.Coin, batch.ID, short(txid))
 	e.emit("payout_sent", "打款已广播", map[string]string{
 		"batch": fmt.Sprint(batch.ID), "txid": txid, "addresses": fmt.Sprint(len(payable))})
@@ -385,25 +385,33 @@ func (e *Engine) sumCoins(outputs map[string]string) float64 {
 	return total
 }
 
-// autoFeeCollect 手续费自动归集（须持 e.mu，打款周期尾部调）：
-// 未归集费 = Ledger 计提总费 − Σ 已归集批次（含在途，保守防重复归集），
-// 达到 FeeCollectMin 才动手。失败只记日志，下轮再试。
-func (e *Engine) autoFeeCollect(ctx context.Context) {
-	if !e.cfg.FeeCollectEnabled || e.cfg.FeeAddress == "" {
-		return
+// UncollectedFees 未归集手续费（十进制字符串）= Ledger 计提总费 − Σ 已归集批次
+// （含在途，与 autoFeeCollect 同口径）。供管理后台/metrics 展示与人工归集校验。
+// 只读 ledger/store（各自并发安全），不取 e.mu——/metrics 抓取绝不阻塞打款周期。
+func (e *Engine) UncollectedFees(ctx context.Context) (string, error) {
+	unc, err := e.uncollectedFeeSat(ctx)
+	if err != nil {
+		return "", err
 	}
+	if unc < 0 {
+		unc = 0
+	}
+	return formatAmountSat(unc, e.cfg.Decimals), nil
+}
+
+// uncollectedFeeSat 未归集费（最小单位整数，金额铁律不过浮点）。
+func (e *Engine) uncollectedFeeSat(ctx context.Context) (int64, error) {
 	stats, err := e.ledger.Snapshot(ctx, e.cfg.Coin)
 	if err != nil {
-		return
+		return 0, err
 	}
 	totalSat, err := parseAmountSat(stats.TotalFees, e.cfg.Decimals)
-	if err != nil || totalSat <= 0 {
-		return
+	if err != nil {
+		return 0, err
 	}
 	all, err := e.store.All()
 	if err != nil {
-		log.Printf("[payout %s] 自动归集读批次失败（下轮再试）: %v", e.cfg.Coin, err)
-		return
+		return 0, err
 	}
 	var collectedSat int64
 	for _, b := range all {
@@ -416,7 +424,20 @@ func (e *Engine) autoFeeCollect(ctx context.Context) {
 			}
 		}
 	}
-	unc := totalSat - collectedSat
+	return totalSat - collectedSat, nil
+}
+
+// autoFeeCollect 手续费自动归集（须持 e.mu，打款周期尾部调）：
+// 未归集费达到 FeeCollectMin 才动手。失败只记日志，下轮再试。
+func (e *Engine) autoFeeCollect(ctx context.Context) {
+	if !e.cfg.FeeCollectEnabled || e.cfg.FeeAddress == "" {
+		return
+	}
+	unc, err := e.uncollectedFeeSat(ctx)
+	if err != nil {
+		log.Printf("[payout %s] 自动归集算未归集费失败（下轮再试）: %v", e.cfg.Coin, err)
+		return
+	}
 	if unc <= 0 {
 		return
 	}
@@ -548,6 +569,7 @@ func (e *Engine) sendBatchLocked(ctx context.Context, kind string, outputs map[s
 			log.Printf("[payout %s] ⚠ 广播后落库失败 batch=%d（恢复扫描按 plannedtxid 归位）: %v",
 				e.cfg.Coin, batch.ID, err)
 		}
+		metrics.PayoutSent(e.cfg.Coin, kind, e.sumCoins(outputs))
 		return txid, nil
 	}
 	txid, err := e.wallet.SendMany(ctx, outputs)
@@ -561,6 +583,7 @@ func (e *Engine) sendBatchLocked(ctx context.Context, kind string, outputs map[s
 		log.Printf("[payout %s] ⚠ 广播后落库失败 batch=%d txid=%s: %v",
 			e.cfg.Coin, batch.ID, short(txid), err)
 	}
+	metrics.PayoutSent(e.cfg.Coin, kind, e.sumCoins(outputs))
 	return txid, nil
 }
 

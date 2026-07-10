@@ -275,6 +275,11 @@ func TestAutoFeeCollect(t *testing.T) {
 	node.conf["h"] = 200
 	node.mainHash[100] = "h"
 
+	// 确认前未归集=0
+	if unc, err := e.UncollectedFees(ctx); err != nil || unc != "0.00000000" {
+		t.Fatalf("确认前未归集费应为 0: %q err=%v", unc, err)
+	}
+
 	if err := e.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +310,10 @@ func TestAutoFeeCollect(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("重复归集: %d 笔", n)
+	}
+	// 归集后未归集=0（UncollectedFees 与 autoFeeCollect 同口径）
+	if unc, err := e.UncollectedFees(ctx); err != nil || unc != "0.00000000" {
+		t.Fatalf("归集后未归集费应为 0: %q err=%v", unc, err)
 	}
 	// 事件链完整：block_confirmed + payout_sent + fee_collected
 	joined := strings.Join(events, ",")

@@ -382,6 +382,11 @@ func (inst *Instance) FeeCollect(ctx context.Context, amount string) (string, er
 	return inst.engine.FeeCollect(ctx, inst.Cfg().FeeAddress, amount)
 }
 
+// UncollectedFees 未归集手续费（计提总费 − 已归集批次，含在途）。metrics/后台展示用。
+func (inst *Instance) UncollectedFees(ctx context.Context) (string, error) {
+	return inst.engine.UncollectedFees(ctx)
+}
+
 // ApplyPayout 热更新打款参数（R4）：费率/起付额/确认数/开关/归集，立即生效不追溯。
 func (inst *Instance) ApplyPayout(p config.PayoutConfig) {
 	inst.engine.SetParams(p.FeePercent, parseFloat(p.MinPayout), p.Confirmations)

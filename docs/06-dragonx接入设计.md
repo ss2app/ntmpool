@@ -95,8 +95,12 @@
 
 ## 7. 已知残留 / M5.x 硬化候选
 
-- **`blocks_submitted_total` metric 埋点遗漏**（cnjob 爆块路径没调 metrics.BlockSubmitted）：
-  真实爆块 3131180 后该计数器仍 0，但 PG blocks 表/打款/分账全部正确 → 纯监控瑕疵、不影响功能。补埋点即可。
+- ~~`blocks_submitted_total` metric 埋点遗漏~~ ✅2026-07-11 核实为**误诊**：埋点自 M4(2658b00)
+  就在共用 `blockSink()`（cnjob 路径经 onBlock 走它），真因=metrics 是进程内存态、systemd
+  重启即清零，爆块这种低频事件一重启读数就归 0。已修：/metrics 增加**会计层真值 gauge**
+  （SetTruthSource 每次抓取现读 PG：`ntmpool_blocks{coin,status}`、fees_accrued/uncollected、
+  paid/miner_balance/debts_net，重启不丢，业务总量以这组为准）；`payouts_total` 加 kind 标签
+  （payout/fee_collect/fee_sweep 分开计）；admin 单币视图新增 `uncollectedFees` 字段。
 - opid 落库 + Recover 按 opid 归位 txid（闭合 z_sendmany crash 窗口）。
 - z_sendmany 分页（当前 >45 收款人 fail-fast；真矿工多了再做）。
 - ZMQ 新块通知（沿用轮询先跑通）。
