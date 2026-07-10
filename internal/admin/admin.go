@@ -252,6 +252,10 @@ func (s *Server) handlePayoutPatch(w http.ResponseWriter, r *http.Request) {
 		MinPayout     *string  `json:"minPayout"`
 		Confirmations *int64   `json:"confirmations"`
 		Enabled       *bool    `json:"enabled"`
+		FeeCollect    *struct {
+			Enabled   *bool   `json:"enabled"`
+			MinAmount *string `json:"minAmount"`
+		} `json:"feeCollect"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -272,6 +276,19 @@ func (s *Server) handlePayoutPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Enabled != nil {
 		next.Enabled = *body.Enabled
+	}
+	if body.FeeCollect != nil {
+		if body.FeeCollect.Enabled != nil {
+			// 没配费地址时开归集 = engine 每轮静默跳过，等于没开——直接拒绝，别让人误以为开了
+			if *body.FeeCollect.Enabled && p.Cfg().FeeAddress == "" {
+				http.Error(w, "feeAddress 未配置，无法启用手续费归集", http.StatusBadRequest)
+				return
+			}
+			next.FeeCollect.Enabled = *body.FeeCollect.Enabled
+		}
+		if body.FeeCollect.MinAmount != nil {
+			next.FeeCollect.MinAmount = *body.FeeCollect.MinAmount
+		}
 	}
 	p.ApplyPayout(next)
 	s.commit(r, "payout.update", id, body)

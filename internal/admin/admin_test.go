@@ -174,6 +174,24 @@ func TestPayoutPatchPartialAndAudit(t *testing.T) {
 	if rec := req(t, h, "PATCH", "/admin/v1/coins/tst/payout", "tok123", `{"feePercent":150}`); rec.Code != 400 {
 		t.Fatalf("非法费率应 400: %d", rec.Code)
 	}
+	// feeCollect 热更（M5 生产教训：config.json 改了会被热状态 overlay 盖掉，
+	// 唯一正确开法=走 PATCH 落热状态）——没配 feeAddress 时开归集必须拒绝
+	if rec := req(t, h, "PATCH", "/admin/v1/coins/tst/payout", "tok123",
+		`{"feeCollect":{"enabled":true,"minAmount":"0.05"}}`); rec.Code != 400 {
+		t.Fatalf("无 feeAddress 开归集应 400: %d %s", rec.Code, rec.Body.String())
+	}
+	fc.cfg.FeeAddress = "feeAddr1"
+	rec = req(t, h, "PATCH", "/admin/v1/coins/tst/payout", "tok123",
+		`{"feeCollect":{"enabled":true,"minAmount":"0.05"}}`)
+	if rec.Code != 200 {
+		t.Fatalf("feeCollect 热更失败: %d %s", rec.Code, rec.Body.String())
+	}
+	if !fc.cfg.Payout.FeeCollect.Enabled || fc.cfg.Payout.FeeCollect.MinAmount != "0.05" {
+		t.Fatalf("feeCollect 未生效: %+v", fc.cfg.Payout.FeeCollect)
+	}
+	if fc.cfg.Payout.FeePercent != 5 {
+		t.Fatalf("feeCollect 热更不应动其他字段: %+v", fc.cfg.Payout)
+	}
 	// 审计已落盘
 	b, err := os.ReadFile(filepath.Join(dir, "audit.jsonl"))
 	if err != nil || !strings.Contains(string(b), "payout.update") {
