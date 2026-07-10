@@ -45,6 +45,17 @@ type BlobWork struct {
 	// login extensions 要声明 "nicehash"（XMRig 据此只滚低 3 字节）。
 	Nicehash bool
 
+	// WireNonceLen 矿工 submit 里回显的 nonce 字段字节数（0 = 与 NonceLen 相同）。
+	// dragonx 类：块头 nonce 字段 32B，矿工只滚低 4 字节但回显完整 32B——池只滚
+	// 低 NonceLen(8) 字节做搜索区+连接 tag，[NonceLen:WireNonceLen) 为模板保留区
+	// （适配器可写实例盐），提交时逐字节回显校验（防伪造/坏矿工，miningcore 同款）。
+	WireNonceLen int
+
+	// PowIsBlockHash true 时 PoW hash 反转即链上块 hash（dragonx：块 id =
+	// reverse(sha256d(173B))）。爆块落库占位直接用显示序真块 hash——即使提交
+	// 失败/崩溃，分类器也能按链上 hash 归位（免 blob 链"先交后记"的两难）。
+	PowIsBlockHash bool
+
 	// HeightHint 模板高度（适配器提交/查块时用，与 BlockTemplate.Height 一致）。
 	HeightHint uint64
 
@@ -58,7 +69,10 @@ type BlobSolution struct {
 	Work  *BlobWork
 	Blob  []byte // 已写入完整 nonce 字段的 PoW 输入
 	Nonce uint64 // 完整 nonce 字段值（LE 解释；zoka 提交只要它）
-	Hash  []byte // 池端重算的共识哈希
+	Hash  []byte // 池端重算的共识哈希（双段算法 = 外层 PoW hash）
+	// AuxHash 双段算法的内层哈希（rx/dragonx：RandomX 结果 = 块序列化里的
+	// nSolution 内容，组块提交必需）；单段算法为 nil。
+	AuxHash []byte
 }
 
 // BlobSubmitter blob 系适配器必须实现：提交爆块解并返回链上权威块 hash

@@ -22,8 +22,10 @@ func buildFamily(ctx context.Context, cfg config.CoinConfig, decimals int, inst 
 		return buildBitcoinFamily(ctx, cfg, decimals, inst)
 	case "custom-http", "cryptonote-rpc":
 		return buildBlobFamily(ctx, cfg, decimals, inst)
+	case "dragonx-rpc":
+		return buildDragonXFamily(ctx, cfg, decimals, inst)
 	default:
-		return nil, errf("[%s] 未知适配器 %q（可选 bitcoin-rpc / cryptonote-rpc / custom-http）", cfg.ID, cfg.Adapter)
+		return nil, errf("[%s] 未知适配器 %q（可选 bitcoin-rpc / cryptonote-rpc / custom-http / dragonx-rpc）", cfg.ID, cfg.Adapter)
 	}
 }
 

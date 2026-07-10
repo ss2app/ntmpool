@@ -7,6 +7,7 @@
 package cnjob
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -198,31 +199,77 @@ func (m *Manager) HandleSubmit(ctx context.Context, sub stratum.CNSubmission) st
 	}
 	work := j.work
 
-	nonce, nBytes, err := cnwork.ParseNonceLE(sub.NonceHex)
-	if err != nil || nBytes > work.NonceLen || sub.ResultHex == "" {
-		return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
+	wireLen := work.WireNonceLen
+	if wireLen == 0 {
+		wireLen = work.NonceLen
 	}
-	// 只信矿工的搜索区；连接 tag 用池侧记录重建（防伪造，CRB/zoka 先例同款）
-	search := nonce & searchMask(work.SearchLen)
+	var (
+		search    uint64
+		wireBytes []byte
+	)
+	if wireLen == work.NonceLen {
+		nonce, nBytes, err := cnwork.ParseNonceLE(sub.NonceHex)
+		if err != nil || nBytes > work.NonceLen || sub.ResultHex == "" {
+			return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
+		}
+		search = nonce & searchMask(work.SearchLen)
+	} else {
+		// 宽 wire nonce（dragonx 类）：矿工回显完整字段，池只滚低 NonceLen 字节
+		wb, err := hex.DecodeString(strings.TrimSpace(sub.NonceHex))
+		if err != nil || len(wb) != wireLen || sub.ResultHex == "" {
+			return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
+		}
+		wireBytes = wb
+		search = cnwork.NonceFieldLE(wireBytes, 0, work.NonceLen) & searchMask(work.SearchLen)
+	}
 
+	// 只信矿工的搜索区；连接 tag 用池侧记录重建（防伪造，CRB/zoka 先例同款）
 	candidate := materialize(work, sub.ConnID, search)
 	fullNonce := cnwork.NonceFieldLE(candidate, work.NonceOffset, work.NonceLen)
+
+	// 宽 wire nonce 回显校验：矿工必须原样带回池下发的整个 nonce 字段。
+	// 回显被改 = 矿工实际 hash 的 blob 与池重建不同——与其困惑地 badpow 不如明确 malformed。
+	if wireBytes != nil && !bytes.Equal(wireBytes, candidate[work.NonceOffset:work.NonceOffset+wireLen]) {
+		return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
+	}
 
 	key, err := seedKey(work.SeedHash)
 	if err != nil {
 		return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
 	}
-	hash, err := m.hsh.HashKeyed(key, candidate)
-	if err != nil {
-		return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
-	}
 
-	// 共识 tripwire：矿工声称的 hash 必须与池端重算逐字节一致
-	if !strings.EqualFold(sub.ResultHex, hex.EncodeToString(hash)) {
-		return stratum.SubmitResult{Outcome: core.OutcomeBadPow}
+	// 池端重算（共识 tripwire：矿工声称的 hash 必须与池端重算逐字节一致）。
+	// 双段算法（rx/dragonx）：矿工上报内层 result，难度/命中用外层 pow；
+	// 单段算法两者是同一个 hash。
+	var hash, aux []byte
+	if ts, isTwoStage := m.hsh.(hasher.TwoStageKeyedHasher); isTwoStage {
+		result, pow, err := ts.HashKeyedTwoStage(key, candidate)
+		if err != nil {
+			return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
+		}
+		if !strings.EqualFold(sub.ResultHex, hex.EncodeToString(result)) {
+			return stratum.SubmitResult{Outcome: core.OutcomeBadPow}
+		}
+		hash, aux = pow, result
+	} else {
+		h, err := m.hsh.HashKeyed(key, candidate)
+		if err != nil {
+			return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
+		}
+		if !strings.EqualFold(sub.ResultHex, hex.EncodeToString(h)) {
+			return stratum.SubmitResult{Outcome: core.OutcomeBadPow}
+		}
+		hash = h
 	}
 
 	shareDiff := cnwork.ShareDiff(hash, work.HashBigEndian)
+	// 双段双接受（miningcore DragonX 同款）：内层 rx 真实性已由重算证明，
+	// 内外任一口径达标即计 share——兼容按内层 hash 过滤的 legacy 锄头。
+	if aux != nil {
+		if d := cnwork.ShareDiff(aux, work.HashBigEndian); d > shareDiff {
+			shareDiff = d
+		}
+	}
 
 	// 命中全网目标 → 爆块（爆块 share 同样计入 PPLNS 权重，miningcore 同款语义）
 	if cnwork.MeetsTarget(hash, work.NetworkTarget, work.HashBigEndian) {
@@ -237,7 +284,7 @@ func (m *Manager) HandleSubmit(ctx context.Context, sub stratum.CNSubmission) st
 				Difficulty: credit, Solo: sub.Solo, At: time.Now(),
 			})
 		}
-		m.handleBlock(ctx, j, sub, candidate, fullNonce, hash)
+		m.handleBlock(ctx, j, sub, candidate, fullNonce, hash, aux)
 		return stratum.SubmitResult{Outcome: core.OutcomeBlock, CreditDiff: credit}
 	}
 
@@ -259,8 +306,8 @@ func (m *Manager) HandleSubmit(ctx context.Context, sub stratum.CNSubmission) st
 // /mining/submit 返回；块 id ≠ PoW hash），所以「意图先落库」：先用 PoW hash 作
 // 占位记 submitting，SubmitBlob 拿到真 id 后由 BlockSink 改写 hash 并转 pending
 // （M4：闭合「提交成功→落账」的崩溃窗口，docs/05 场景B）。
-func (m *Manager) handleBlock(ctx context.Context, j *cnJob, sub stratum.CNSubmission, blob []byte, fullNonce uint64, hash []byte) {
-	sol := &adapter.BlobSolution{Work: j.work, Blob: blob, Nonce: fullNonce, Hash: hash}
+func (m *Manager) handleBlock(ctx context.Context, j *cnJob, sub stratum.CNSubmission, blob []byte, fullNonce uint64, hash, aux []byte) {
+	sol := &adapter.BlobSolution{Work: j.work, Blob: blob, Nonce: fullNonce, Hash: hash, AuxHash: aux}
 	submit := func(ctx context.Context) (string, error) {
 		return m.node.SubmitBlob(ctx, sol) // 返回节点权威块 id
 	}
@@ -269,8 +316,14 @@ func (m *Manager) handleBlock(ctx context.Context, j *cnJob, sub stratum.CNSubmi
 		return
 	}
 	// 意图 hash = PoW hash（每个解唯一）；BlockSink 提交成功后换成节点权威 id。
+	// PowIsBlockHash 链（dragonx）：反转即链上真块 hash，占位直接用显示序——
+	// 即使提交失败/崩溃，分类器也能按链上 hash 归位。
+	intentHash := hex.EncodeToString(hash)
+	if j.work.PowIsBlockHash {
+		intentHash = hex.EncodeToString(reverseBytes(hash))
+	}
 	fb := core.FoundBlock{
-		Coin: m.coinID, Height: j.height, Hash: hex.EncodeToString(hash),
+		Coin: m.coinID, Height: j.height, Hash: intentHash,
 		Finder: sub.Address, Worker: sub.Worker,
 		Reward: j.reward, NetDiff: j.netDiff,
 		Status: core.BlockPending, FoundAt: time.Now(), Solo: sub.Solo,
@@ -301,6 +354,14 @@ func searchMask(nbytes int) uint64 {
 	return (uint64(1) << (8 * uint(nbytes))) - 1
 }
 
+func reverseBytes(b []byte) []byte {
+	out := make([]byte, len(b))
+	for i, v := range b {
+		out[len(b)-1-i] = v
+	}
+	return out
+}
+
 func seedKey(seedHash string) ([]byte, error) {
 	if seedHash == "" {
 		return nil, nil
@@ -328,6 +389,14 @@ func validateWork(w *adapter.BlobWork) error {
 	}
 	if w.NonceOffset < 0 || w.NonceOffset+w.NonceLen > len(w.HashingBlob) {
 		return fmt.Errorf("nonce 字段越界（offset=%d len=%d blob=%d）", w.NonceOffset, w.NonceLen, len(w.HashingBlob))
+	}
+	if w.WireNonceLen != 0 {
+		if w.WireNonceLen < w.NonceLen {
+			return fmt.Errorf("WireNonceLen=%d < NonceLen=%d", w.WireNonceLen, w.NonceLen)
+		}
+		if w.NonceOffset+w.WireNonceLen > len(w.HashingBlob) {
+			return fmt.Errorf("wire nonce 字段越界（offset=%d wire=%d blob=%d）", w.NonceOffset, w.WireNonceLen, len(w.HashingBlob))
+		}
 	}
 	if w.NetworkTarget == nil || w.NetworkTarget.Sign() <= 0 {
 		return fmt.Errorf("NetworkTarget 缺失")

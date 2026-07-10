@@ -137,7 +137,7 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	// blob/CN 系难度本身就是期望哈希数（multiplier=1）。zoka live 冒烟实测抓出的坑：
 	// 用 2^32 口径会把 1.2 KH/s 显成 964 GH/s（矿池网页只放真实数据铁律）。
 	hrCfg := hashrate.Config{}
-	if cfg.Adapter == "custom-http" || cfg.Adapter == "cryptonote-rpc" {
+	if cfg.Adapter == "custom-http" || cfg.Adapter == "cryptonote-rpc" || cfg.Adapter == "dragonx-rpc" {
 		hrCfg.Multiplier = 1
 	}
 	inst.tracker = hashrate.New(hrCfg)
@@ -162,6 +162,11 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	inst.engine = payout.NewEngine(pcfg, inst.ledger, parts.classifier, parts.wallet, inst.batches)
 	inst.engine.SetEnabled(deps.Payouts && cfg.Payout.Enabled)
 	inst.engine.SetEvents(inst.notifyEvent)
+	// 钱包整备（隐私链 shield/merge）：钱包适配器实现 WalletMaintainer 即接线
+	if m, ok := parts.wallet.(adapter.WalletMaintainer); ok {
+		inst.engine.SetMaintainer(m)
+		log.Printf("[%s] 钱包整备器已接线（打款前 shield/merge）", cfg.ID)
+	}
 	if deps.Settings != nil {
 		coinID := cfg.ID
 		inst.engine.SetMinPayoutOverrides(func() map[string]float64 {

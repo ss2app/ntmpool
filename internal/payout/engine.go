@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,6 +78,9 @@ type Engine struct {
 	minOverrides func() map[string]float64
 	// events 运营事件上报（可为 nil）
 	events EventFunc
+	// maintainer 钱包整备器（可为 nil；dragonx 类隐私链：shield 成熟 coinbase
+	// 回金库，打款锁内、payout 前调——docs/02 §6 承诺的接线，dragonx 首用）
+	maintainer adapter.WalletMaintainer
 }
 
 func NewEngine(cfg Config, l accounting.Ledger, node NodeClassifier, w adapter.WalletAdapter, store BatchStore) *Engine {
@@ -98,6 +102,13 @@ func (e *Engine) Enabled() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.enabled
+}
+
+// SetMaintainer 注入钱包整备器（启动时一次；nil 安全）。
+func (e *Engine) SetMaintainer(m adapter.WalletMaintainer) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.maintainer = m
 }
 
 // SetMinPayoutOverrides 注入地址级起付额来源（启动时一次）。
@@ -190,11 +201,34 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 	if !e.enabled || e.frozen {
 		return nil
 	}
+	e.maintain(ctx)
 	if err := e.payout(ctx); err != nil {
 		return err
 	}
 	e.autoFeeCollect(ctx)
 	return nil
+}
+
+// maintain 钱包整备（须持 e.mu，payout 前调）：隐私链把成熟 coinbase shield 回
+// 金库，垫付资金闭环。失败只记日志下轮再试，绝不阻断本轮打款。
+func (e *Engine) maintain(ctx context.Context) {
+	if e.maintainer == nil {
+		return
+	}
+	need, desc, err := e.maintainer.NeedsMaintenance(ctx)
+	if err != nil || !need {
+		return
+	}
+	txids, err := e.maintainer.Maintain(ctx)
+	if err != nil {
+		log.Printf("[payout %s] 钱包整备失败（下轮再试）: %v", e.cfg.Coin, err)
+		return
+	}
+	if len(txids) > 0 {
+		log.Printf("[payout %s] 钱包整备完成: %s txids=%v", e.cfg.Coin, desc, txids)
+		e.emit("wallet_maintained", "钱包整备完成（shield/merge）", map[string]string{
+			"desc": desc, "txids": strings.Join(txids, ",")})
+	}
 }
 
 // classify 推进待确认块状态：确认数达标 + 主链 hash 逐字节比对 → confirm/orphan。
