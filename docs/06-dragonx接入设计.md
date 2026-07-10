@@ -34,8 +34,11 @@
 ## 2. 池端校验（双段哈希，miningcore 同款语义）
 
 1. **badpow**：重算 `rx_hash = RandomX_dragonx(seed, blob140含矿工nonce)`，与 submit 的 `result` 逐字节比对。
-2. **难度/块**：`pow = sha256d(blob140 || 0x20 || rx_hash)`，小端解释；share diff 按 pow 算（drg-xmrig/NTMminer 都按 pow 过滤；
-   miningcore 的 max(powDiff,rxDiff) 兼容 legacy xmrig-hac，我们不需要）。**pow 反转即真块 hash**（块 id == PoW hash，天然免"blob 链先交后记"问题，但仍走意图先落库拿节点权威 hash 复核）。
+2. **难度/块**：`pow = sha256d(blob140 || 0x20 || rx_hash)`，小端解释。share diff = **max(powDiff, rxDiff)**
+   （miningcore 同款双接受：drg-xmrig/NTMminer 按 pow 过滤、legacy xmrig-hac 按 rx 过滤——rx 真实性已由 badpow
+   重算证明，任一达标即计 share；双段哈希两个值本来都有，零额外开销。★2026-07-10 用户确认矿工现役默认锄头
+   = 官方 drg-xmrig，兼容它是硬要求）。**块判定只看 pow**（pow 反转即真块 hash，天然免"blob 链先交后记"
+   问题，但仍走意图先落库拿节点权威 hash 复核）。
 3. nonce 校验：wire nonce 32B，[0:4]=搜索区，[4:8] 必须 == 池写入的连接 tag，[8:28] 必须 == 模板值（防伪造/跨连接重放）。
 
 ## 3. 设计决策
@@ -92,7 +95,37 @@
 
 ## 7. 已知残留 / M5.x 硬化候选
 
+- **`blocks_submitted_total` metric 埋点遗漏**（cnjob 爆块路径没调 metrics.BlockSubmitted）：
+  真实爆块 3131180 后该计数器仍 0，但 PG blocks 表/打款/分账全部正确 → 纯监控瑕疵、不影响功能。补埋点即可。
 - opid 落库 + Recover 按 opid 归位 txid（闭合 z_sendmany crash 窗口）。
-- `RandomX-dragonx-spec.md §3` epoch 订正（等 CI 真链 KAT 绿）。
-- legacy xmrig-hac 的 max(powDiff,rxDiff) 兼容（无需求不做）。
+- z_sendmany 分页（当前 >45 收款人 fail-fast；真矿工多了再做）。
 - ZMQ 新块通知（沿用轮询先跑通）。
+- ~~epoch 订正~~ ✅2026-07-10 CI 真链 KAT 绿后已订正 spec §3（1024/64 钉死）。
+- ~~max(powDiff,rxDiff) 双接受~~ ✅已实现（用户确认矿工现役默认 drg-xmrig，legacy 兼容顺手做了）。
+- ~~stale 洪峰~~ ✅已修（JobKey 高度去重，49%→0%，commit 9af48b4；沉淀 pitfall
+  `blob链-job按JobKey去重-别让无关字节换工.md`）。
+
+## 8. 实施记录（2026-07-10，代码全部落地 + CI 绿）
+
+commits：`22af0df`（1/4 哈希器+前缀库+金锚）、`84157df`（2/4 管线+适配器+family+e2e）、
+`9af48b4`（3/4 stale 修复 JobKey）。
+- CI randomx job：双库构建（stock 原名 + dragonx drgrx_ 前缀）成功，`-tags randomx` 全量测试绿
+  = **三层金锚全过 → seed 1024/64 终极裁定 + 无串味 + 引擎锚复现**。
+- 主 job：真链块 #3131000 组头/序列化纯 Go 金锚 + dragonx 形状 cnjob 单测 + e2e
+  （share→爆块(假节点真验)→10确认→PPLNS→z_sendmany(opid 轮询)→shield 回补 + 孤块不误打款
+  + 同高度竞争块 1 confirm 2 orphan）全绿。
+
+## 9. ★真实生产验证（2026-07-10，103.80，Task 6 收官）
+
+部署 systemd `ntmpool-drg.service`（stratum 5333，PG=dragonx-postgres 的 ntmpool 库）→ 退役 miningcore
+（`docker stop dragonx-pool`，可回滚）→ **真实矿工引流**（中转机 122.10.119.40 `iptables DNAT` 5 端口
+→池 5333，回滚脚本 `/root/drgx-divert-revert.sh`，验完已回滚）。铁证（节点 + PG 独立核实，非日志转述）：
+- **badpow=0**：11 个真实矿工（官方 drg-xmrig）连上，池端 rx/dragonx 重算与官方锄头逐字节一致
+  = 核心共识正确性的生产铁证。
+- **真爆块**：块 3131180 上主链（hash `00000050…d6fc7b`，节点 getblock 确认）。
+- **同高度双爆块正确处理**（真实场景撞上）：PG blocks 表 3131180 一 confirmed 一 orphaned，
+  另一块 submitblock 被拒 inconclusive → 判孤块，绝不双份入账。
+- **10 确认 z_sendmany 真打款**：txid `2b4aea3679841d90…67bfadc`，金库出账 199.8999 note →
+  矿工 `zs18g77w…`(finder) 1.8248 + `zs1j3s95c…` 1.0661 + 找零 197.0089 回金库（z_viewtransaction 铁证）。
+- **stale 修复实测**：切修复版后 49%→0%，有效算力翻倍。
+部署坐标/运维/回滚详见记忆 [[dragonx-drgx-coin]]、[[pool-server-103-80-18-140]]。

@@ -94,6 +94,22 @@ M1 收尾：
 - 迁移顺序建议：新币直接上 NTMPool → zoka/dragonx 等成熟币最后迁
 - 压测：share flood、连接风暴、断线重连风暴
 
+### ✅ M5-DragonX 全线收官（2026-07-10）— NTMPool 首次真实生产验证
+
+代码：`22af0df`（rx/dragonx 双段哈希器 + drgrx_ 前缀第二份 libRandomX + 三层金锚）→
+`84157df`（作业管线/dragonxrpc 适配器/family 拼装/e2e）→ `9af48b4`（stale 修复）。**唯一设计事实源 = docs/06。**
+- **新增家族 `dragonx-rpc`**：bitcoin-RPC 节点 × blob 作业管线 × CN 方言 × rx/dragonx 双段 PoW ×
+  z_* 隐私钱包（异步 opid 内吞成同步 txid + WalletMaintainer shield 回补金库）。
+- **10 确认垫付打款**（用户拍板，金库垫付、coinbase 100 确认成熟后自动 shield 回补），Confirmations 配 10。
+- **真实生产矿工验证（103.80，退役 miningcore→切 NTMPool，中转机 iptables DNAT 引流 11 真实矿工，
+  验完回滚）**：**badpow=0**（池端 rx/dragonx 重算与官方 drg-xmrig 逐字节一致）+ 真爆块 3131180 上主链 +
+  **同高度双爆块 1confirmed/1orphaned 不双份入账** + 10 确认 z_sendmany 真打款给矿工 zs（txid 2b4aea…）。
+- **实战抓修的坑**：stale 洪峰（curtime 抖动导致每 15s 无谓换 job，49%→0%，见 pitfall
+  `blob链-job按JobKey去重-别让无关字节换工.md`）。
+- 已知小 bug（M5.x）：`blocks_submitted_total` metric 埋点遗漏（爆块未计数，PG/打款正常，不影响功能）；
+  z_sendmany opid 崩溃恢复（>45 收款人 fail-fast，分页待做）；opid 落库闭合 crash 窗口。
+- **剩**：正式切流决策由用户定（这次验完已回滚旧机）；btc09/midstate 迁移（各自补 hasher）。
+
 ## 二期候选（不排期）
 
 PPS 结算、Stratum V2、合并挖矿、PoS 质押池模块、自动兑换、前端大全网站（M4 API 已定稿，可启动）

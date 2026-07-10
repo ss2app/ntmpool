@@ -199,12 +199,17 @@ func (h *Hasher) HashKeyed(key, input []byte) ([]byte, error) {
 // —— 金锚（三层，任何一层失败拒绝启动）——
 //
 // 锚1 引擎合成锚：与 NTMminer rx_kat.c dragonx 段同组（经真池 share accepted
-//     跨实现背书后钉死的回归锚）。
+//
+//	跨实现背书后钉死的回归锚）。
+//
 // 锚2 外层拼装锚：合成 rx_hash 的 173B sha256d，独立 hashlib 预言机生成——
-//     单测拼装与字节序，不依赖 RandomX。
+//
+//	单测拼装与字节序，不依赖 RandomX。
+//
 // 锚3 真链块锚（终极）：主网块 #3131000 的 140B 头 + ruleA(interval1024/lag64)
-//     seed → result 必须等于链上 solution、pow 反转必须等于链上块 hash。
-//     这一锚同时钉死 seed epoch 规则（若失败优先怀疑 epoch 规则而非引擎）。
+//
+//	seed → result 必须等于链上 solution、pow 反转必须等于链上块 hash。
+//	这一锚同时钉死 seed epoch 规则（若失败优先怀疑 epoch 规则而非引擎）。
 const (
 	// anchorFull346 块 #3131000 完整 173B 头 hex（2026-07-10 节点 getblock raw 实取，
 	// 本地 sha256d 已验 == 块 hash）。唯一权威串：blob=前 140B、[140]=0x20、solution=后 32B。
