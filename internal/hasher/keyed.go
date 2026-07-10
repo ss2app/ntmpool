@@ -16,6 +16,17 @@ type KeyedHasher interface {
 	SelfTest() error
 }
 
+// TwoStageKeyedHasher 双段 PoW 算法（如 rx/dragonx：内层 RandomX 是矿工上报的
+// result（badpow 逐字节比对它），外层 sha256d(140B||0x20||rx_hash) 才是难度与
+// 块判定用的 PoW 值）。cnjob 探测到本接口即走双段编排；单段算法零影响。
+//
+// 契约：HashKeyed 必须返回 pow（与单段调用方口径一致——pow 反转即块 hash）。
+type TwoStageKeyedHasher interface {
+	KeyedHasher
+	// HashKeyedTwoStage 返回 (result=矿工可见结果哈希, pow=最终 PoW 哈希)。
+	HashKeyedTwoStage(key, input []byte) (result, pow []byte, err error)
+}
+
 var keyedRegistry = map[string]KeyedHasher{}
 
 // RegisterKeyed 注册一个带 key 算法实现（在各实现包的 init 中调用）。

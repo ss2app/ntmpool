@@ -65,6 +65,24 @@ jobs:
               -DCMAKE_C_FLAGS=-DRANDOMX_STOCK -DCMAKE_CXX_FLAGS=-DRANDOMX_STOCK
             cmake --build third_party/randomx/build-stock --target randomx -j
           fi
+      - name: Cache librandomx-drg build (dragonx 常量 + drgrx_ 前缀)
+        uses: actions/cache@v4
+        with:
+          path: third_party/randomx/build-drg
+          key: librandomx-drg-${{ runner.os }}-${{ hashFiles('third_party/randomx/src/**', 'third_party/randomx/CMakeLists.txt', 'scripts/drgrx-prefix.sh') }}
+      # 第二份库：默认配置 = dragonx 常量（不加 -DRANDOMX_STOCK！），再全符号加
+      # drgrx_ 前缀 + COMDAT 打散 → 与 build-stock 原名符号同二进制共存不串味。
+      # 串味兜底：dragonxrx 三层金锚 + TestDivergesFromStock + rx/0 官方向量同跑。
+      - name: Build vendored libRandomX (dragonx) + drgrx_ prefix isolate
+        run: |
+          if [ ! -f third_party/randomx/build-drg/librandomx_drg.o ]; then
+            cmake -S third_party/randomx -B third_party/randomx/build-drg \
+              -DARCH=default -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            cmake --build third_party/randomx/build-drg --target randomx -j
+            sh scripts/drgrx-prefix.sh third_party/randomx/build-drg/librandomx.a \
+                                       third_party/randomx/build-drg/librandomx_drg.o
+          fi
       - name: Build (tags randomx)
         run: go build -tags randomx ./...
       - name: Vet (tags randomx)
