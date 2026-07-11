@@ -105,7 +105,8 @@ type NetworkSnapshot struct {
 // 多通道并存时取最先到者，按 (Height,Hash) 去重。
 type TipEvent struct {
 	Coin   string
-	Height uint64
-	Hash   string
+	Height uint64 // 0 = 该通道不知道高度（如 ZMQ hashblock 只有 hash）
+	Hash   string // display hex；可为空（去重键退化为 Height）
+	Source string // 通道名（longpoll/zmq/…），仅供日志
 	At     time.Time
 }

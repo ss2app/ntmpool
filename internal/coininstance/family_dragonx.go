@@ -3,6 +3,7 @@ package coininstance
 import (
 	"context"
 
+	"github.com/scashcc/ntmpool/internal/adapter"
 	"github.com/scashcc/ntmpool/internal/adapter/dragonxrpc"
 	"github.com/scashcc/ntmpool/internal/cnjob"
 	"github.com/scashcc/ntmpool/internal/config"
@@ -50,5 +51,7 @@ func buildDragonXFamily(_ context.Context, cfg config.CoinConfig, _ int, inst *I
 		jobs:       jm,
 		dialects:   map[string]stratum.Dialect{"cryptonote": dialect},
 		connCount:  dialect.ConnCount,
+		// GBT longpoll：挂等请求在节点上，链头一动立即唤醒（比 ZMQ 少一次拉取 RTT）
+		notifiers: []adapter.Notifier{c.LongPollNotifier()},
 	}, nil
 }

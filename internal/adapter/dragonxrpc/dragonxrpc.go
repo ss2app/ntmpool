@@ -70,6 +70,7 @@ type Client struct {
 	cachedSeedH    uint64
 	cachedSeedHash string // 内部序 64 hex
 	seedValid      bool
+	lastLongPollID string // GBT longpollid（挂等通知用，GetTemplate/waitTip 都会刷新）
 }
 
 var (
@@ -204,6 +205,7 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 		CurTime              int64  `json:"curtime"`
 		MinTime              int64  `json:"mintime"`
 		Height               uint64 `json:"height"`
+		LongPollID           string `json:"longpollid"`
 		CoinbaseTxn          *struct {
 			Data          string `json:"data"`
 			Hash          string `json:"hash"`
@@ -216,6 +218,11 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 	}
 	if err := c.call(ctx, "getblocktemplate", []any{}, &t); err != nil {
 		return nil, err
+	}
+	if t.LongPollID != "" {
+		c.mu.Lock()
+		c.lastLongPollID = t.LongPollID
+		c.mu.Unlock()
 	}
 	if t.CoinbaseTxn == nil || t.CoinbaseTxn.Data == "" {
 		return nil, fmt.Errorf("[%s] GBT 无 coinbasetxn——节点须配 pubkey=（池 R 地址公钥，见 _knowledge/地址簿.md）", c.name)

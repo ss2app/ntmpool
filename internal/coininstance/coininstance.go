@@ -22,6 +22,7 @@ import (
 	"github.com/scashcc/ntmpool/internal/notify"
 	"github.com/scashcc/ntmpool/internal/payout"
 	"github.com/scashcc/ntmpool/internal/stratum"
+	"github.com/scashcc/ntmpool/internal/zmqsub"
 )
 
 const extraNonce2Size = 4
@@ -68,6 +69,7 @@ type familyParts struct {
 	jobs       jobPipe
 	dialects   map[string]stratum.Dialect
 	connCount  func() int
+	notifiers  []adapter.Notifier // 新块推送通道（longpoll/ZMQ/…）；轮询兜底永远另行保留
 }
 
 // Instance 一个运行中的币。
@@ -147,6 +149,12 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	if err != nil {
 		cancel()
 		return nil, err
+	}
+	// ZMQ 新块通知（家族无关，配置驱动）：nodes[0].zmq 非空即挂 hashblock 订阅
+	if z := cfg.Nodes[0].ZMQ; z != "" {
+		parts.notifiers = append(parts.notifiers, &zmqsub.Notifier{
+			Coin: cfg.ID, Endpoint: z, Topic: "hashblock",
+		})
 	}
 	inst.parts = parts
 
@@ -230,7 +238,7 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 }
 
 func (inst *Instance) startLoops(ctx context.Context) {
-	// 模板刷新循环（M1 = 轮询；ZMQ/push 通知作为 M3 增强）。
+	// 模板刷新循环（轮询兜底——推送断了池不能瞎，docs/02 铁律，永远保留）。
 	inst.wg.Add(1)
 	go func() {
 		defer inst.wg.Done()
@@ -245,6 +253,44 @@ func (inst *Instance) startLoops(ctx context.Context) {
 			}
 		}
 	}()
+
+	// 新块推送通道（longpoll/ZMQ 并存，取最先到者）：事件到手即 force 刷模板，
+	// 消掉轮询的秒级滞后（孤块主因之一）。多通道同一新块按 (Height,Hash) 去重；
+	// 漏网的重复事件由 cnjob JobKey 同工作判定兜底，只多一次幂等 GBT，不打断矿工。
+	if len(inst.parts.notifiers) > 0 {
+		tips := make(chan core.TipEvent, 16)
+		for _, n := range inst.parts.notifiers {
+			n := n
+			inst.wg.Add(1)
+			go func() {
+				defer inst.wg.Done()
+				_ = n.Run(ctx, tips)
+			}()
+		}
+		inst.wg.Add(1)
+		go func() {
+			defer inst.wg.Done()
+			var lastKey string
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case ev := <-tips:
+					key := fmt.Sprintf("%d|%s", ev.Height, ev.Hash)
+					if key == lastKey {
+						continue
+					}
+					lastKey = key
+					if err := inst.parts.jobs.Refresh(ctx, true); err != nil {
+						log.Printf("[%s] %s 事件刷模板失败: %v", inst.cfg.ID, ev.Source, err)
+						continue
+					}
+					log.Printf("[%s] 新块推送(%s) height=%d → 模板已即时刷新", inst.cfg.ID, ev.Source, ev.Height)
+				}
+			}
+		}()
+		log.Printf("[%s] 新块推送通道已接线 ×%d（轮询兜底保留）", inst.cfg.ID, len(inst.parts.notifiers))
+	}
 
 	// 打款循环
 	interval := time.Duration(inst.cfg.Payout.IntervalSec) * time.Second
