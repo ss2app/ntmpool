@@ -141,3 +141,11 @@ commits：`22af0df`（1/4 哈希器+前缀库+金锚）、`84157df`（2/4 管线
   矿工 `zs18g77w…`(finder) 1.8248 + `zs1j3s95c…` 1.0661 + 找零 197.0089 回金库（z_viewtransaction 铁证）。
 - **stale 修复实测**：切修复版后 49%→0%，有效算力翻倍。
 部署坐标/运维/回滚详见记忆 [[dragonx-drgx-coin]]、[[pool-server-103-80-18-140]]。
+
+## §8 SOLO 端口上线（2026-07-11）
+
+- **端口**：池 **5444**（`mode:"solo"`，cryptonote 方言，vardiff 同 5333），admin API 热加，已持久化进 config.state.json（重启不丢）。公网入口 **hk.dragonx.cc:7777**（中转机 122.10.119.40 DNAT，规则 comment=`drgx-solo`，回滚脚本 `/root/drgx-solo-revert.sh`；中转机云安全组已放行 TCP 7777——⚠新开公网端口先看 DNAT 包计数，计数=0 即上游安全组没开）。
+- **费率**：`soloFeePercent` 热参数（admin PATCH `{"soloFeePercent":N}`），当前 **3%（与 PPLNS 相同）**；nil=与 feePercent 相同。engine.feeFor 按块 Solo 标记选费率。
+- **分账语义**：solo 爆块=奖励扣费后全归爆块者（Mem/PG 同义）；**solo share 只记录（shares.solo 列）绝不进 PPLNS 窗口**（2026-07-11 修复，conformance「SOLO份额不进PPLNS窗口」双向回归钉死；schema 幂等 `ADD COLUMN IF NOT EXISTS solo`）。成熟/打款与 PPLNS 同（10 确认、minPayout 20、z_sendmany 同一批次流水线）。
+- **网页**：API `ports[].solo` + `soolFeePercent`→ntmminer.com 自动显示（币卡 SOLO 徽标/教程页模式列+说明/结算规则双费率）——纯数据驱动，改费率无需动网页。
+- 相关 commits：`0550694`（solo 窗口修复）、`86ddaa9`（soloFeePercent）、`7c00d06`/`a557187`（web）。

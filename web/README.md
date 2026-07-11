@@ -44,10 +44,15 @@
 
 ```bash
 node --check js/app.js   # 先语法检查
+# ⚠ 改了 js/css 必须先 bump index.html 里的版本号 query（?v=YYYYMMDDx），
+#   否则 Cloudflare 边缘缓存继续发旧版（详见 _knowledge/pitfalls/cloudflare缓存js-版本号cache-busting.md）
 scp -i <id_rsa> -P 8422 index.html root@134.185.123.52:/var/www/ntmminer/
 scp -i <id_rsa> -P 8422 js/*.js    root@134.185.123.52:/var/www/ntmminer/js/
 scp -i <id_rsa> -P 8422 css/*.css  root@134.185.123.52:/var/www/ntmminer/css/
+scp -i <id_rsa> -P 8422 img/*      root@134.185.123.52:/var/www/ntmminer/img/   # 币 logo（config.js 的 logo 字段引用）
 ```
+
+nginx 已配缓存头兜底：js/css `max-age=300`、HTML `no-cache`。
 
 ## 已知口径 / 约束
 
@@ -56,3 +61,5 @@ scp -i <id_rsa> -P 8422 css/*.css  root@134.185.123.52:/var/www/ntmminer/css/
 - 图表丢掉当前未采满的 10 分钟桶（否则末尾假跌 0）。
 - 矿工自查限速 60 次/分/IP 在池端按 IP 计——经隧道后池端只见 127.0.0.1，等于全站共享限速；nginx 已按真实 IP 20r/s 限流 + 10s 缓存缓解。
 - 币卡「池费率」直读 API（dragonx=3%）；「0 手续费」宣传语指 **NTMminer 0% 开发者抽水**，两者别混。
+- **SOLO 全数据驱动**：API ports 里有 `solo:true` 端口 → 币卡出 SOLO 徽标；`soloFeePercent` 存在 → 各处费率自动双显；config.js stratum 条目加 `mode:'solo'` → 教程页接入点表标 SOLO+说明。dragonx 现役：`hk.dragonx.cc:7777`（SOLO 3%）。
+- 币 logo：config.js 币种加 `logo:'/img/xxx.png'`（透明 PNG，渲染在**黑色圆底**上）；没有 logo 自动回退彩色字母圆标。
