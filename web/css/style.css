@@ -235,3 +235,28 @@ footer a { color: var(--ink-2); }
   .hero { padding: 40px 0 24px; }
   .nav-links { display: none; }
 }
+
+/* ---- 矿工自查：矿机列表（在线/离线分组行卡）---- */
+.wk-h { display: flex; align-items: center; gap: 8px; }
+.wk-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); display: inline-block; flex: none; box-shadow: 0 0 7px rgba(12, 163, 12, 0.55); }
+.wk-dot.off { background: var(--critical); box-shadow: none; }
+.wk-grid { min-width: 480px; }
+.wk-row { display: grid; grid-template-columns: 14px minmax(90px, 1.3fr) minmax(96px, 1fr) minmax(80px, 0.9fr) minmax(84px, auto); gap: 10px; align-items: center; padding: 10px 8px; border-bottom: 1px solid var(--grid); }
+.wk-row:last-child { border-bottom: none; }
+.wk-row.head { padding: 6px 8px; border-bottom: 1px solid var(--baseline); }
+.wk-row.head span { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+.wk-name { font-family: var(--mono); font-weight: 700; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; }
+.wk-hr { font-weight: 700; font-variant-numeric: tabular-nums; }
+.wk-sub { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.wk-ago { color: var(--muted); font-size: 12.5px; text-align: right; white-space: nowrap; }
+.wk-row.off .wk-name, .wk-row.off .wk-hr { color: var(--muted); }
+.wk-row.off .wk-ago { color: var(--serious); }
+.wk-sec { color: var(--muted); font-size: 12.5px; font-weight: 600; margin: 12px 0 0; display: flex; align-items: center; gap: 7px; }
+
+/* ---- 矿工自查：支付记录卡片 ---- */
+.pay-list { display: flex; flex-direction: column; gap: 10px; }
+.pay-card { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; }
+.pay-amt { font-size: 19px; font-weight: 800; color: var(--series-2); letter-spacing: -0.3px; font-variant-numeric: tabular-nums; }
+.pay-amt small { font-size: 12px; color: var(--ink-2); font-weight: 600; margin-left: 4px; }
+.pay-sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; display: flex; align-items: center; gap: 8px; }
+.pay-tx { display: flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; font-size: 13px; white-space: nowrap; }

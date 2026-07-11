@@ -92,6 +92,8 @@ window.NTM_I18N = {
     lookup_cur_hashrate: '当前算力',
     lookup_workers: '我的设备',
     lookup_payments: '支付记录',
+    lookup_workers_online: '在线矿机',
+    lookup_workers_offline: '离线',
     lookup_none_yet: '—',
     // connect
     conn_intro_t: '三步开始挖矿',
@@ -220,6 +222,8 @@ window.NTM_I18N = {
     lookup_cur_hashrate: 'Current hashrate',
     lookup_workers: 'My workers',
     lookup_payments: 'Payments',
+    lookup_workers_online: 'Online rigs',
+    lookup_workers_offline: 'Offline',
     lookup_none_yet: '—',
     conn_intro_t: 'Start mining in three steps',
     conn_step1_t: 'Get a wallet address',

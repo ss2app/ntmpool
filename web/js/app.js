@@ -450,31 +450,53 @@
               ${d.lastPayment ? `<div class="hint">${esc(timeAgo(d.lastPayment))}${d.lastPaymentTxid ? ' · txid ' + esc(d.lastPaymentTxid.slice(0, 10)) + '…' : ''}</div>` : ''}</div>
           </div>
           <div class="panel" style="margin-top:6px"><h3>${esc(t('chart_miner_hashrate'))}</h3><div class="chart-box" id="miner-chart"></div></div>
-          <div class="panel"><h3>${esc(t('lookup_workers'))}</h3>
-            <div class="tbl-wrap"><table class="tbl">
-              <tr><th>${esc(t('col_worker'))}</th><th class="num">${esc(t('col_hashrate'))}</th><th class="num">${esc(t('col_shares'))}</th><th>${esc(t('col_lastshare'))}</th></tr>
-              ${Object.keys(workers).length ? Object.entries(workers).sort((a, b) => a[0].localeCompare(b[0])).map(([w, x]) => `<tr>
-                <td class="mono">${esc(w || 'default')}</td>
-                <td class="num">${esc(fmtHRText(x.hashrate))}</td>
-                <td class="num">${(Number(x.sharesPerSecond) || 0).toFixed(3)}</td>
-                <td${x.lastSeen ? ` title="${esc(fmtTime(x.lastSeen))}"` : ''}>${x.lastSeen ? esc(timeAgo(x.lastSeen)) : '—'}</td></tr>`).join('')
-              : `<tr><td colspan="4" style="color:var(--muted)">${esc(t('empty_miners'))}</td></tr>`}
-            </table></div>
-          </div>
+          ${(() => {
+            // 离线识别：24h 曲线里出现过、但即时窗口里已消失的矿机（掉线定位）
+            const lastBucket = {};
+            (d.performanceSamples || []).forEach((s) => Object.keys(s.workers || {}).forEach((w) => {
+              if (!lastBucket[w] || s.created > lastBucket[w]) lastBucket[w] = s.created;
+            }));
+            const online = Object.entries(workers).sort((a, b) => a[0].localeCompare(b[0]));
+            const offline = Object.keys(lastBucket).filter((w) => !(w in workers)).sort().map((w) => [w, lastBucket[w]]);
+            const row = ([w, x]) => `<div class="wk-row">
+                <span class="wk-dot"></span>
+                <span class="wk-name" title="${esc(w)}">${esc(w || 'default')}</span>
+                <span class="wk-hr">${esc(fmtHRText(x.hashrate))}</span>
+                <span class="wk-sub">${(Number(x.sharesPerSecond) || 0).toFixed(3)}/s</span>
+                <span class="wk-ago"${x.lastSeen ? ` title="${esc(fmtTime(x.lastSeen))}"` : ''}>${x.lastSeen ? esc(timeAgo(x.lastSeen)) : '—'}</span>
+              </div>`;
+            const offRow = ([w, at]) => `<div class="wk-row off">
+                <span class="wk-dot off"></span>
+                <span class="wk-name" title="${esc(w)}">${esc(w)}</span>
+                <span class="wk-hr">—</span>
+                <span class="wk-sub">—</span>
+                <span class="wk-ago" title="${esc(fmtTime(at))}">${esc(timeAgo(at))}</span>
+              </div>`;
+            return `<div class="panel">
+              <h3 class="wk-h"><span class="wk-dot${online.length ? '' : ' off'}"></span>${esc(t('lookup_workers_online'))} (${online.length})</h3>
+              <div class="tbl-wrap"><div class="wk-grid">
+                <div class="wk-row head"><span></span><span>${esc(t('col_worker'))}</span><span>${esc(t('col_hashrate'))}</span><span>${esc(t('col_shares'))}</span><span style="text-align:right">${esc(t('col_lastshare'))}</span></div>
+                ${online.length ? online.map(row).join('') : `<div class="wk-row"><span></span><span style="color:var(--muted)">${esc(t('empty_miners'))}</span></div>`}
+                ${offline.length ? `<div class="wk-sec"><span class="wk-dot off"></span>${esc(t('lookup_workers_offline'))} (${offline.length})</div>${offline.map(offRow).join('')}` : ''}
+              </div></div>
+            </div>`;
+          })()}
           <div class="panel"><h3>${esc(t('lookup_payments'))}</h3>
-            ${(d.recentPayments || []).length ? `<div class="tbl-wrap"><table class="tbl">
-              <tr><th>${esc(t('col_time'))}</th><th class="num">${esc(t('col_amount'))}</th><th>${esc(t('col_status'))}</th><th>${esc(t('col_txid'))}</th></tr>
+            ${(d.recentPayments || []).length ? `<div class="pay-list">
               ${d.recentPayments.map((x) => {
                 const st = x.status || 'sent';
-                return `<tr>
-                  <td title="${esc(fmtTime(x.created))}">${esc(timeAgo(x.created))}</td>
-                  <td class="num">${esc(fmtAmt(x.amount))} ${esc(sym)}</td>
-                  <td><span class="status ${esc(st)}">${esc(t('status_' + st) !== 'status_' + st ? t('status_' + st) : st)}</span></td>
-                  <td>${shortHex(x.transactionConfirmationData, true)}</td></tr>`;
+                return `<div class="pay-card">
+                  <div>
+                    <div class="pay-amt">${esc(fmtAmt(x.amount))}<small>${esc(sym)}</small></div>
+                    <div class="pay-sub"><span title="${esc(fmtTime(x.created))}">${esc(timeAgo(x.created))}</span><span class="status ${esc(st)}">${esc(t('status_' + st) !== 'status_' + st ? t('status_' + st) : st)}</span></div>
+                  </div>
+                  <div class="pay-tx">${shortHex(x.transactionConfirmationData, true)}</div>
+                </div>`;
               }).join('')}
-            </table></div>` : `<div class="chart-empty">${esc(t('empty_payments'))}</div>`}
+            </div>` : `<div class="chart-empty">${esc(t('empty_payments'))}</div>`}
           </div>`;
         hashrateChart('miner-chart', d.performanceSamples || [], t('lookup_cur_hashrate'), '#199e70');
+        bindCopy(box);
       } catch (e) {
         box.innerHTML = `<div class="err-box">${esc(e.status === 429 ? t('lookup_err_rate') : t('lookup_err_notfound'))}</div>`;
       }
