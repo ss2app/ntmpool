@@ -78,8 +78,14 @@
   }
 
   // ---------- api ----------
-  async function api(path) {
-    const r = await fetch(CFG.api.base + path, { headers: { Accept: 'application/json' } });
+  // 多实例：币可在 config.js 里声明独立 apiBase（如 btc09 走 /api-btc09），
+  // 未声明的走全局 CFG.api.base。
+  function apiBaseFor(coinId) {
+    const c = coinId && CFG.coins && CFG.coins[coinId];
+    return (c && c.apiBase) || CFG.api.base;
+  }
+  async function api(path, coinId) {
+    const r = await fetch(apiBaseFor(coinId) + path, { headers: { Accept: 'application/json' } });
     if (!r.ok) { const e = new Error(`HTTP ${r.status}`); e.status = r.status; throw e; }
     const total = parseInt(r.headers.get('X-Total-Count') || '', 10);
     const data = await r.json();
@@ -178,16 +184,27 @@
   }
 
   async function refreshHome() {
-    let pools;
-    try {
-      const r = await api('/pools');
-      pools = (r.data && r.data.pools) || [];
-      state.pools = pools;
-    } catch (_) {
+    // 跨实例聚合：全局 base + 各币独立 apiBase 各拉一次 /pools，按 id 去重合并。
+    const bases = [...new Set([CFG.api.base]
+      .concat(Object.values(CFG.coins || {}).map((c) => c.apiBase).filter(Boolean)))];
+    const results = await Promise.allSettled(bases.map(async (b) => {
+      const r = await fetch(b + '/pools', { headers: { Accept: 'application/json' } });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      return (d && d.pools) || [];
+    }));
+    const seen = new Set();
+    const pools = [];
+    for (const res of results) {
+      if (res.status !== 'fulfilled') continue;
+      for (const p of res.value) if (p && p.id && !seen.has(p.id)) { seen.add(p.id); pools.push(p); }
+    }
+    if (!pools.length && results.every((r) => r.status === 'rejected')) {
       const cards = $('#home-cards');
       if (cards) cards.innerHTML = `<div class="err-box">${esc(t('err_api'))}</div>`;
       return;
     }
+    state.pools = pools;
     const strip = $('#home-strip');
     if (strip) {
       const miners = pools.reduce((a, p) => a + ((p.poolStats && p.poolStats.connectedMiners) || 0), 0);
@@ -285,8 +302,8 @@
 
   async function tabDashboard(coinId, body) {
     const [poolR, perfR] = await Promise.all([
-      api(`/pools/${encodeURIComponent(coinId)}`),
-      api(`/pools/${encodeURIComponent(coinId)}/performance`),
+      api(`/pools/${encodeURIComponent(coinId)}`, coinId),
+      api(`/pools/${encodeURIComponent(coinId)}/performance`, coinId),
     ]);
     const p = poolR.data.pool || poolR.data;
     const meta = coinMeta(coinId) || {};
@@ -322,7 +339,7 @@
     const pageSize = 15;
     let page = 0, total = null;
     const load = async () => {
-      const r = await api(`/pools/${encodeURIComponent(coinId)}/${kind}?page=${page}&pageSize=${pageSize}`);
+      const r = await api(`/pools/${encodeURIComponent(coinId)}/${kind}?page=${page}&pageSize=${pageSize}`, coinId);
       total = r.total;
       const rows = Array.isArray(r.data) ? r.data : [];
       const meta = coinMeta(coinId) || {};
@@ -380,7 +397,7 @@
   }
 
   async function tabMiners(coinId, body) {
-    const r = await api(`/pools/${encodeURIComponent(coinId)}/miners`);
+    const r = await api(`/pools/${encodeURIComponent(coinId)}/miners`, coinId);
     const rows = Array.isArray(r.data) ? r.data : [];
     body.innerHTML = `
       <div class="panel">
@@ -417,7 +434,7 @@
       box.innerHTML = `<div class="skeleton loading">…</div>`;
       destroyCharts();
       try {
-        const r = await api(`/pools/${encodeURIComponent(coinId)}/miners/${encodeURIComponent(addr)}`);
+        const r = await api(`/pools/${encodeURIComponent(coinId)}/miners/${encodeURIComponent(addr)}`, coinId);
         const d = r.data;
         const sym = meta.symbol || '';
         const perf = d.performance || {};
@@ -455,7 +472,7 @@
   async function tabConnect(coinId, body) {
     const meta = coinMeta(coinId) || {};
     let pool = null;
-    try { const r = await api(`/pools/${encodeURIComponent(coinId)}`); pool = r.data.pool || r.data; } catch (_) {}
+    try { const r = await api(`/pools/${encodeURIComponent(coinId)}`, coinId); pool = r.data.pool || r.data; } catch (_) {}
     const pay = (pool && pool.paymentProcessing) || {};
     const sym = meta.symbol || '';
     const ep = (meta.stratum && meta.stratum[0]) || { host: '', port: 0 };

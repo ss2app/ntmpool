@@ -39,5 +39,30 @@ window.NTM_CONFIG = {
       descEn: 'DragonX (DRGX) is a privacy chain in the Hush / Komodo family. PoW is the rx/dragonx RandomX variant — CPU friendly, ASIC resistant. Miners use shielded zs addresses for both login and payouts.',
       descZh: 'DragonX（DRGX）是 Hush / Komodo 系的强隐私链，PoW 为 RandomX 变体 rx/dragonx —— CPU 友好、抗 ASIC。矿工登录与收款均使用 zs 隐私地址。',
     },
+    btc09: {
+      symbol: '09C',
+      name: 'Bitcoin 09',
+      algo: 'Argon2id (64 MiB)',
+      color: '#f7931a',
+      logo: '/img/bitcoin09.png',
+      hashUnit: 'H/s',
+      // 独立 NTMPool 实例：前端经 /api-btc09 反代（nginx→隧道→池 4410）
+      apiBase: '/api-btc09',
+      stratum: [
+        { host: 'hk.ntmminer.com', port: 8344 },
+        { host: 'hk.ntmminer.com', port: 8345, mode: 'solo' },
+      ],
+      ntmAlgoFlag: 'btc09',
+      addressPrefix: '4',
+      addressExample: '4k26Vj...(你的 09C 地址)',
+      xmrigCompatible: false, // 09C 是 NTMminer 专属线协议
+      confirmations: 10,
+      links: {
+        site: 'https://btc09.org',
+        git: 'https://github.com/krutftw/bitcoin09',
+      },
+      descEn: 'Bitcoin 09 (09C) is a clean-room Go rewrite of Bitcoin with one change: PoW is Argon2id at 64 MiB per hash — memory-hard, CPU-only, ASIC/GPU hostile. 21M cap, 50-coin subsidy, 10-minute blocks, halving every 210,000 blocks.',
+      descZh: 'Bitcoin 09（09C）是 Bitcoin 的 clean-room Go 重写，只改一处：PoW 换成 64 MiB Argon2id —— 内存硬、CPU 专属、天然抗 ASIC/GPU。2100 万上限、50 币补贴、10 分钟出块、每 21 万块减半，经济模型与比特币逐条一致。',
+    },
   },
 };
