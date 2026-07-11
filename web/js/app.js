@@ -427,6 +427,7 @@
   }
 
   async function tabMiners(coinId, body) {
+    const meta = coinMeta(coinId) || {};
     const r = await api(`/pools/${encodeURIComponent(coinId)}/miners`, coinId);
     const rows = Array.isArray(r.data) ? r.data : [];
     body.innerHTML = `
