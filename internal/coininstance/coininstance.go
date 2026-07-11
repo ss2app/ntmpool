@@ -162,6 +162,7 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	pcfg := payout.Config{
 		Coin: cfg.ID, Decimals: decimals,
 		FeePercent: cfg.Payout.FeePercent, MinPayout: parseFloat(cfg.Payout.MinPayout),
+		SoloFeePercent:    cfg.Payout.SoloFeePercent,
 		Maturity:          cfg.Payout.Confirmations,
 		FeeAddress:        cfg.FeeAddress,
 		FeeCollectEnabled: cfg.Payout.FeeCollect.Enabled,
@@ -436,12 +437,14 @@ func (inst *Instance) UncollectedFees(ctx context.Context) (string, error) {
 // ApplyPayout 热更新打款参数（R4）：费率/起付额/确认数/开关/归集，立即生效不追溯。
 func (inst *Instance) ApplyPayout(p config.PayoutConfig) {
 	inst.engine.SetParams(p.FeePercent, parseFloat(p.MinPayout), p.Confirmations)
+	inst.engine.SetSoloFeePercent(p.SoloFeePercent)
 	inst.engine.SetEnabled(inst.deps.Payouts && p.Enabled)
 	inst.engine.SetFeeCollect(p.FeeCollect.Enabled, p.FeeCollect.MinAmount)
 	inst.mu.Lock()
 	cur := &inst.cfg.Payout
 	cur.FeePercent, cur.MinPayout, cur.Confirmations, cur.Enabled =
 		p.FeePercent, p.MinPayout, p.Confirmations, p.Enabled
+	cur.SoloFeePercent = p.SoloFeePercent
 	cur.FeeCollect = p.FeeCollect
 	if p.IntervalSec > 0 {
 		cur.IntervalSec = p.IntervalSec // 下一轮 ticker 周期不变（M2 简化）；重启后生效

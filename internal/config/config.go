@@ -52,14 +52,15 @@ type FeeCollectConfig struct {
 }
 
 type PayoutConfig struct {
-	Enabled       bool    `json:"enabled"`       // 铁律：第一天就有的总开关
-	Scheme        string  `json:"scheme"`        // "pplns"（solo 由端口 mode 决定）
-	PplnsFactor   float64 `json:"pplnsFactor"`   // 窗口 = factor × 网络难度
-	FeePercent    float64 `json:"feePercent"`    // 热参数
-	MinPayout     string  `json:"minPayout"`     // 默认起付额（矿工可用 mp= 覆盖调高）
-	Confirmations int64   `json:"confirmations"` // 打款所需确认数（热参数；低于链成熟期=预打款）
-	IntervalSec   int     `json:"intervalSeconds"`
-	OrphanDebts   bool    `json:"orphanDebts"` // 预打款垫付孤块后是否追缴（R4）
+	Enabled        bool     `json:"enabled"`                  // 铁律：第一天就有的总开关
+	Scheme         string   `json:"scheme"`                   // "pplns"（solo 由端口 mode 决定）
+	PplnsFactor    float64  `json:"pplnsFactor"`              // 窗口 = factor × 网络难度
+	FeePercent     float64  `json:"feePercent"`               // 热参数
+	SoloFeePercent *float64 `json:"soloFeePercent,omitempty"` // 热参数；solo 块费率，nil=与 feePercent 相同
+	MinPayout      string   `json:"minPayout"`                // 默认起付额（矿工可用 mp= 覆盖调高）
+	Confirmations  int64    `json:"confirmations"`            // 打款所需确认数（热参数；低于链成熟期=预打款）
+	IntervalSec    int      `json:"intervalSeconds"`
+	OrphanDebts    bool     `json:"orphanDebts"` // 预打款垫付孤块后是否追缴（R4）
 
 	FeeCollect    FeeCollectConfig    `json:"feeCollect"`
 	Consolidation ConsolidationConfig `json:"consolidation"`

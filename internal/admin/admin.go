@@ -187,13 +187,14 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	type coinStatus struct {
-		ID              string  `json:"id"`
-		ConnectedMiners int     `json:"connectedMiners"`
-		BlockHeight     uint64  `json:"blockHeight"`
-		PayoutsEnabled  bool    `json:"payoutsEnabled"`
-		Frozen          bool    `json:"frozen"`
-		NewConns        bool    `json:"newConnectionsEnabled"`
-		FeePercent      float64 `json:"feePercent"`
+		ID              string   `json:"id"`
+		ConnectedMiners int      `json:"connectedMiners"`
+		BlockHeight     uint64   `json:"blockHeight"`
+		PayoutsEnabled  bool     `json:"payoutsEnabled"`
+		Frozen          bool     `json:"frozen"`
+		NewConns        bool     `json:"newConnectionsEnabled"`
+		FeePercent      float64  `json:"feePercent"`
+		SoloFeePercent  *float64 `json:"soloFeePercent,omitempty"`
 	}
 	all := s.pools()
 	ids := make([]string, 0, len(all))
@@ -214,6 +215,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 			ID: id, ConnectedMiners: p.ConnectedMiners(), BlockHeight: p.Network().Height,
 			PayoutsEnabled: c.Payout.Enabled, Frozen: p.PayoutFrozen(),
 			NewConns: c.NewConnsEnabled, FeePercent: c.Payout.FeePercent,
+			SoloFeePercent: c.Payout.SoloFeePercent,
 		})
 	}
 	writeJSON(w, out)
@@ -248,11 +250,12 @@ func (s *Server) handlePayoutPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		FeePercent    *float64 `json:"feePercent"`
-		MinPayout     *string  `json:"minPayout"`
-		Confirmations *int64   `json:"confirmations"`
-		Enabled       *bool    `json:"enabled"`
-		FeeCollect    *struct {
+		FeePercent     *float64 `json:"feePercent"`
+		SoloFeePercent *float64 `json:"soloFeePercent"`
+		MinPayout      *string  `json:"minPayout"`
+		Confirmations  *int64   `json:"confirmations"`
+		Enabled        *bool    `json:"enabled"`
+		FeeCollect     *struct {
 			Enabled   *bool   `json:"enabled"`
 			MinAmount *string `json:"minAmount"`
 		} `json:"feeCollect"`
@@ -264,9 +267,16 @@ func (s *Server) handlePayoutPatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "feePercent 须在 0~100", http.StatusBadRequest)
 		return
 	}
+	if body.SoloFeePercent != nil && (*body.SoloFeePercent < 0 || *body.SoloFeePercent > 100) {
+		http.Error(w, "soloFeePercent 须在 0~100", http.StatusBadRequest)
+		return
+	}
 	next := p.Cfg().Payout
 	if body.FeePercent != nil {
 		next.FeePercent = *body.FeePercent
+	}
+	if body.SoloFeePercent != nil {
+		next.SoloFeePercent = body.SoloFeePercent
 	}
 	if body.MinPayout != nil {
 		next.MinPayout = *body.MinPayout

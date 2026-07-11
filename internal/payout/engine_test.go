@@ -10,6 +10,33 @@ import (
 	"github.com/scashcc/ntmpool/internal/core"
 )
 
+// TestFeeForSolo solo 块独立费率：配了用 solo 费率，没配回退 PPLNS 费率。
+func TestFeeForSolo(t *testing.T) {
+	one := 1.0
+	e := &Engine{cfg: Config{FeePercent: 3, SoloFeePercent: &one}}
+	if got := e.feeFor(core.FoundBlock{Solo: true}); got != 1 {
+		t.Fatalf("solo 块应用 solo 费率 1，得 %v", got)
+	}
+	if got := e.feeFor(core.FoundBlock{Solo: false}); got != 3 {
+		t.Fatalf("pplns 块应用 3，得 %v", got)
+	}
+	e2 := &Engine{cfg: Config{FeePercent: 3}}
+	if got := e2.feeFor(core.FoundBlock{Solo: true}); got != 3 {
+		t.Fatalf("未配 solo 费率应回退 3，得 %v", got)
+	}
+	// 热更新 + 非法值拒绝
+	half := 0.5
+	e2.SetSoloFeePercent(&half)
+	if got := e2.feeFor(core.FoundBlock{Solo: true}); got != 0.5 {
+		t.Fatalf("热更新后应 0.5，得 %v", got)
+	}
+	bad := 101.0
+	e2.SetSoloFeePercent(&bad)
+	if got := e2.feeFor(core.FoundBlock{Solo: true}); got != 0.5 {
+		t.Fatalf("非法值应被拒、保持 0.5，得 %v", got)
+	}
+}
+
 // fakeNode 可控的确认数 + 主链 hash 映射。
 type fakeNode struct {
 	conf     map[string]int64

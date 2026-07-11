@@ -157,7 +157,8 @@ type poolInfo struct {
 	Ports                map[string]portInfo   `json:"ports"`
 	PaymentProcessing    paymentProcessingInfo `json:"paymentProcessing"`
 	PoolFeePercent       float64               `json:"poolFeePercent"`
-	Address              string                `json:"address"` // 池地址链上公开，无需脱敏
+	SoloFeePercent       *float64              `json:"soloFeePercent,omitempty"` // 有 solo 端口且独立费率时才出现
+	Address              string                `json:"address"`                  // 池地址链上公开，无需脱敏
 	PoolStats            poolStatsInfo         `json:"poolStats"`
 	NetworkStats         networkStatsInfo      `json:"networkStats"`
 	TotalBlocks          int                   `json:"totalBlocks"`
@@ -293,6 +294,7 @@ func (s *Server) poolInfo(ctx context.Context, p Pool) poolInfo {
 			},
 		},
 		PoolFeePercent: cfg.Payout.FeePercent,
+		SoloFeePercent: cfg.Payout.SoloFeePercent,
 		Address:        cfg.PoolAddress,
 		PoolStats: poolStatsInfo{
 			ConnectedMiners:  p.ConnectedMiners(),

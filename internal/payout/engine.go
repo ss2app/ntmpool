@@ -45,11 +45,12 @@ type Batch struct {
 
 // Config 打款引擎配置（热参数子集在这里取快照）。
 type Config struct {
-	Coin       string
-	Decimals   int
-	FeePercent float64
-	MinPayout  float64
-	Maturity   int64 // 打款所需确认数（低于链成熟期 = 预打款）
+	Coin           string
+	Decimals       int
+	FeePercent     float64
+	SoloFeePercent *float64 // solo 块费率；nil = 与 FeePercent 相同
+	MinPayout      float64
+	Maturity       int64 // 打款所需确认数（低于链成熟期 = 预打款）
 
 	// 手续费自动归集（R9）：未归集费 ≥ FeeCollectMin 时在打款周期尾部自动
 	// 池钱包→FeeAddress（与打款共用每币锁，天然串行）。
@@ -137,6 +138,24 @@ func (e *Engine) SetFeeCollect(enabled bool, minAmount string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cfg.FeeCollectEnabled, e.cfg.FeeCollectMin = enabled, minAmount
+}
+
+// SetSoloFeePercent 热更新 solo 块费率（nil = 与 FeePercent 相同）。
+func (e *Engine) SetSoloFeePercent(p *float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if p != nil && (*p < 0 || *p > 100) {
+		return
+	}
+	e.cfg.SoloFeePercent = p
+}
+
+// feeFor 该块适用的费率：solo 块可配独立费率，未配则与 PPLNS 相同。
+func (e *Engine) feeFor(b core.FoundBlock) float64 {
+	if b.Solo && e.cfg.SoloFeePercent != nil {
+		return *e.cfg.SoloFeePercent
+	}
+	return e.cfg.FeePercent
 }
 
 // SetParams 热更新打款参数（R4：新 round 用新值，已入账的不追溯）。
@@ -266,7 +285,7 @@ func (e *Engine) classify(ctx context.Context) error {
 				"height": fmt.Sprint(b.Height), "ours": b.Hash, "mainchain": mainHash})
 			continue
 		}
-		if err := e.ledger.ConfirmBlock(ctx, b, e.cfg.FeePercent); err != nil {
+		if err := e.ledger.ConfirmBlock(ctx, b, e.feeFor(b)); err != nil {
 			log.Printf("[payout %s] 块 %d 入账失败: %v", e.cfg.Coin, b.Height, err)
 			continue
 		}
