@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"time"
@@ -40,15 +41,22 @@ type Notifier struct {
 }
 
 // Run 阻塞运行：连接→握手→订阅→读消息→发 TipEvent；断线退避重连，ctx 取消退出。
+// 状态翻转才记日志（首次失败/恢复各一条，不刷屏）——无声失败排查过一次就够了
+// （dragonx 官方 dragonxd 没编 ZMQ，conf 配了也不监听，靠这条日志一眼看穿）。
 func (z *Notifier) Run(ctx context.Context, ch chan<- core.TipEvent) error {
 	addr := strings.TrimPrefix(z.Endpoint, "tcp://")
 	backoff := time.Second
+	down := false
 	for ctx.Err() == nil {
-		err := z.session(ctx, addr, ch, &backoff)
+		err := z.session(ctx, addr, ch, &backoff, &down)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if err != nil {
+			if !down {
+				down = true
+				log.Printf("[%s] zmq 通道不可用（将静默退避重连）: %v", z.Coin, err)
+			}
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -63,7 +71,7 @@ func (z *Notifier) Run(ctx context.Context, ch chan<- core.TipEvent) error {
 }
 
 // session 一次连接的完整生命周期。首条消息到手即视为链路健康、重置退避。
-func (z *Notifier) session(ctx context.Context, addr string, ch chan<- core.TipEvent, backoff *time.Duration) error {
+func (z *Notifier) session(ctx context.Context, addr string, ch chan<- core.TipEvent, backoff *time.Duration, down *bool) error {
 	d := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -94,6 +102,10 @@ func (z *Notifier) session(ctx context.Context, addr string, ch chan<- core.TipE
 			continue
 		}
 		*backoff = time.Second
+		if *down {
+			*down = false
+			log.Printf("[%s] zmq 通道已恢复（%s）", z.Coin, z.Endpoint)
+		}
 		ev := core.TipEvent{Coin: z.Coin, Source: "zmq", At: time.Now()}
 		if len(parts) >= 2 {
 			ev.Hash = hex.EncodeToString(parts[1])
