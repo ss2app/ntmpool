@@ -526,7 +526,8 @@
             <div style="color:var(--muted);font-size:12.5px;margin:6px 0 2px">Windows</div>
             <div class="codeblock" id="cmd-win"></div>
             <div style="color:var(--muted);font-size:12.5px;margin:6px 0 2px">Linux / HiveOS</div>
-            <div class="codeblock" id="cmd-lin"></div></li>
+            <div class="codeblock" id="cmd-lin"></div>
+            <div class="hint" style="margin-top:8px"><b>${esc(t('conn_worker_hint_t'))}</b>${esc(t('conn_worker_hint'))}</div></li>
         </ol>
       </div>
       <div class="panel">
