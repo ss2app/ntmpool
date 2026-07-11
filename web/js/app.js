@@ -44,6 +44,28 @@
     const s = n >= 1000 ? n.toFixed(2) : n.toFixed(4);
     return s.replace(/\.?0+$/, '');
   }
+  // 金额显示（meta 感知）：binaryUnits 币种（midstate）用 1024 进制单位阶梯
+  // （1 kMDS=1024 MDS / 1 mMDS=2^20 MDS / 1 gMDS=2^30 MDS；API 十进制串
+  // ×amountScale = 链上最小单位数，块奖励 2^30 = 正好 1 gMDS）。其余币回落 fmtAmt+symbol。
+  function amtParts(v, meta) {
+    const sym = (meta && meta.symbol) || '';
+    const n = Number(v);
+    if (!isFinite(n)) return { n: '0', u: sym };
+    if (meta && meta.binaryUnits && meta.amountScale) {
+      let units = Math.round(n * meta.amountScale);
+      const neg = units < 0;
+      if (neg) units = -units;
+      const ladder = [[1073741824, 'g'], [1048576, 'm'], [1024, 'k'], [1, '']];
+      let step = ladder[3];
+      for (const s of ladder) { if (units >= s[0]) { step = s; break; } }
+      const val = units / step[0];
+      const txt = (Number.isInteger(val) ? String(val) : val.toFixed(val >= 100 ? 1 : 4)).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+      return { n: (neg ? '-' : '') + txt, u: step[1] + sym };
+    }
+    return { n: fmtAmt(n), u: sym };
+  }
+  const amtHTML = (v, meta) => { const a = amtParts(v, meta); return `<span>${esc(a.n)}</span><small>${esc(a.u)}</small>`; };
+  const amtText = (v, meta) => { const a = amtParts(v, meta); return `${a.n} ${a.u}`; };
   const fmtInt = (v) => (Number(v) || 0).toLocaleString('en-US');
   function fmtTime(iso) {
     const d = new Date(iso);
@@ -319,10 +341,10 @@
       [t('stat_height'), `<span>${fmtInt(ns.blockHeight)}</span>`],
       [t('stat_net_diff'), `<span>${esc(fmtBig(ns.networkDifficulty))}</span>`],
       [t('stat_blocks_found'), `<span>${fmtInt(p.totalBlocks)}</span>`, `${t('stat_confirmed')}: ${fmtInt(p.totalConfirmedBlocks)}`],
-      [t('stat_total_paid'), `<span>${esc(fmtAmt(p.totalPaid))}</span><small>${esc(sym)}</small>`],
+      [t('stat_total_paid'), amtHTML(p.totalPaid, meta)],
       [t('stat_fee'), `<span>${esc(String(p.poolFeePercent))}</span><small>%</small>`,
         `${t('stat_scheme')}: ${esc(pay.payoutScheme || 'PPLNS')}${p.soloFeePercent != null ? ` · SOLO ${p.soloFeePercent}%` : ''}`],
-      [t('stat_min_payout'), `<span>${esc(fmtAmt(pay.minimumPayment))}</span><small>${esc(sym)}</small>`],
+      [t(meta.directPayout ? 'stat_dust_threshold' : 'stat_min_payout'), amtHTML(pay.minimumPayment, meta)],
     ];
     body.innerHTML = `
       <div class="stat-strip">
@@ -358,7 +380,7 @@
               return `<tr>
                 <td class="mono">${fmtInt(b.blockHeight)}</td>
                 <td><span class="status ${esc(st)}">${esc(stLabel)}${prog}</span>${soloTag}</td>
-                <td class="num">${esc(fmtAmt(b.reward))} ${esc(sym)}</td>
+                <td class="num">${esc(amtText(b.reward, meta))}</td>
                 <td class="mono">${esc(b.miner || '—')}</td>
                 <td title="${esc(fmtTime(b.created))}">${esc(timeAgo(b.created))}</td>
                 <td>${shortHex(b.hash, true)}</td></tr>`;
@@ -373,7 +395,7 @@
               return `<tr>
                 <td title="${esc(fmtTime(x.created))}">${esc(timeAgo(x.created))}</td>
                 <td class="mono">${esc(x.address || '—')}</td>
-                <td class="num">${esc(fmtAmt(x.amount))} ${esc(sym)}</td>
+                <td class="num">${esc(amtText(x.amount, meta))}</td>
                 <td><span class="status ${esc(st)}">${esc(t('status_' + st) !== 'status_' + st ? t('status_' + st) : st)}</span></td>
                 <td>${shortHex(x.transactionConfirmationData, true)}</td></tr>`;
             }).join('')}
@@ -443,10 +465,10 @@
         box.innerHTML = `
           <div class="stat-strip">
             <div class="tile"><div class="k">${esc(t('lookup_cur_hashrate'))}</div><div class="v">${fmtHR(perf.hashrate)}</div></div>
-            <div class="tile"><div class="k">${esc(t('lookup_pending'))}</div><div class="v"><span>${esc(fmtAmt(d.pendingBalance))}</span><small>${esc(sym)}</small></div></div>
-            <div class="tile"><div class="k">${esc(t('lookup_paid'))}</div><div class="v"><span>${esc(fmtAmt(d.totalPaid))}</span><small>${esc(sym)}</small></div></div>
+            <div class="tile"><div class="k">${esc(t('lookup_pending'))}</div><div class="v">${amtHTML(d.pendingBalance, meta)}</div></div>
+            <div class="tile"><div class="k">${esc(t('lookup_paid'))}</div><div class="v">${amtHTML(d.totalPaid, meta)}</div></div>
             <div class="tile"><div class="k">${esc(t('lookup_last_pay'))}</div>
-              <div class="v"><span>${d.lastPaymentAmount != null ? esc(fmtAmt(d.lastPaymentAmount)) : esc(t('lookup_none_yet'))}</span>${d.lastPaymentAmount != null ? `<small>${esc(sym)}</small>` : ''}</div>
+              <div class="v">${d.lastPaymentAmount != null ? amtHTML(d.lastPaymentAmount, meta) : `<span>${esc(t('lookup_none_yet'))}</span>`}</div>
               ${d.lastPayment ? `<div class="hint">${esc(timeAgo(d.lastPayment))}${d.lastPaymentTxid ? ' · txid ' + esc(d.lastPaymentTxid.slice(0, 10)) + '…' : ''}</div>` : ''}</div>
           </div>
           <div class="panel" style="margin-top:6px"><h3>${esc(t('chart_miner_hashrate'))}</h3><div class="chart-box" id="miner-chart"></div></div>
@@ -487,7 +509,7 @@
                 const st = x.status || 'sent';
                 return `<div class="pay-card">
                   <div>
-                    <div class="pay-amt">${esc(fmtAmt(x.amount))}<small>${esc(sym)}</small></div>
+                    <div class="pay-amt">${amtHTML(x.amount, meta)}</div>
                     <div class="pay-sub"><span title="${esc(fmtTime(x.created))}">${esc(timeAgo(x.created))}</span><span class="status ${esc(st)}">${esc(t('status_' + st) !== 'status_' + st ? t('status_' + st) : st)}</span></div>
                   </div>
                   <div class="pay-tx">${shortHex(x.transactionConfirmationData, true)}</div>
@@ -572,8 +594,11 @@
           <ul style="margin:6px 0;padding-left:20px">
             <li>${zh ? `分配方式 <b>${esc(pay.payoutScheme || 'PPLNS')}</b>，池费率 <b>${pool ? esc(String(pool.poolFeePercent)) : '—'}%</b>` : `Reward scheme <b>${esc(pay.payoutScheme || 'PPLNS')}</b>, pool fee <b>${pool ? esc(String(pool.poolFeePercent)) : '—'}%</b>`}</li>
             ${pool && pool.soloFeePercent != null ? `<li>${zh ? `SOLO 端口费率 <b>${esc(String(pool.soloFeePercent))}%</b>（爆块奖励扣费后全归爆块者本人）` : `SOLO port fee <b>${esc(String(pool.soloFeePercent))}%</b> (block reward minus fee goes entirely to the finder)`}</li>` : ''}
-            <li>${zh ? `起付额 <b>${esc(fmtAmt(pay.minimumPayment))} ${esc(sym)}</b>，达到后自动打款到你的挖矿地址` : `Minimum payout <b>${esc(fmtAmt(pay.minimumPayment))} ${esc(sym)}</b>, paid automatically to your mining address`}</li>
-            <li>${zh ? `爆块 <b>${meta.confirmations || 10} 个确认</b>后计入余额` : `Blocks credit after <b>${meta.confirmations || 10} confirmations</b>`}</li>
+            ${meta.directPayout
+              ? `<li>${zh ? `<b>爆块即到账（coinbase 直付）</b>：奖励在区块内直接付到你的挖矿地址，无池端转账、无打款延迟，到账即可花` : `<b>Paid inside the block (coinbase direct-pay)</b>: rewards go straight to your mining address in the block itself — no pool-side transfers, spendable immediately`}</li>
+            <li>${zh ? `低于尘埃阈值 <b>${esc(amtText(pay.minimumPayment, meta))}</b> 的零头自动结转，下次爆块凑够随块付清` : `Amounts below the <b>${esc(amtText(pay.minimumPayment, meta))}</b> dust threshold carry over and are paid with a later block`}</li>`
+              : `<li>${zh ? `起付额 <b>${esc(amtText(pay.minimumPayment, meta))}</b>，达到后自动打款到你的挖矿地址` : `Minimum payout <b>${esc(amtText(pay.minimumPayment, meta))}</b>, paid automatically to your mining address`}</li>
+            <li>${zh ? `爆块 <b>${meta.confirmations || 10} 个确认</b>后计入余额` : `Blocks credit after <b>${meta.confirmations || 10} confirmations</b>`}</li>`}
             <li>${zh ? `NTMminer 当前 <b>0% 开发者抽水</b>` : `NTMminer currently has a <b>0% dev fee</b>`}</li>
           </ul>
         </div>

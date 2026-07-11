@@ -76,6 +76,11 @@ window.NTM_CONFIG = {
         { host: 'hk.tutuit.xyz', port: 3333 },
       ],
       ntmAlgoFlag: 'midstate',
+      // 金额单位制（二进制阶梯）：1 kMDS=1024 / 1 mMDS=2^20 / 1 gMDS=2^30 MDS；
+      // API 十进制串 ×1e9 = 链上最小单位 MDS 数（块奖励 2^30 = 正好 1 gMDS）
+      amountScale: 1e9,
+      binaryUnits: true,
+      directPayout: true, // coinbase 直付：结算文案与「起付额→尘埃阈值」按此切换
       addressPrefix: '',
       addressExample: 'c15363...(你的 64 位 hex midstate 地址)',
       xmrigCompatible: false, // midstate 是 NTMminer 专属线协议
