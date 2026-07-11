@@ -26,8 +26,10 @@ func buildFamily(ctx context.Context, cfg config.CoinConfig, decimals int, inst 
 		return buildDragonXFamily(ctx, cfg, decimals, inst)
 	case "btc09-http":
 		return buildBtc09Family(ctx, cfg, decimals, inst)
+	case "midstate-rpc":
+		return buildMidstateFamily(ctx, cfg, decimals, inst)
 	default:
-		return nil, errf("[%s] 未知适配器 %q（可选 bitcoin-rpc / cryptonote-rpc / custom-http / dragonx-rpc / btc09-http）", cfg.ID, cfg.Adapter)
+		return nil, errf("[%s] 未知适配器 %q（可选 bitcoin-rpc / cryptonote-rpc / custom-http / dragonx-rpc / btc09-http / midstate-rpc）", cfg.ID, cfg.Adapter)
 	}
 }
 

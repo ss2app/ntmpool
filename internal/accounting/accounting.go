@@ -55,6 +55,13 @@ type Ledger interface {
 	// RefundPayout 打款失败退回余额（仅当确证未广播）。
 	RefundPayout(ctx context.Context, coin string, outputs map[string]string, batchID int64) error
 
+	// DirectPlanInputs 直付分账（midstate coinbase 直付，docs/07 §6）的计划输入：
+	// PPLNS 窗口快照（windowWeight = pplnsN × 网络难度，与 ConfirmBlock 同口径）+
+	// 每地址可用结转 carry = balance − 在飞直付预留 − debts（floor 0，只含 >0 项，
+	// 十进制字符串）。在飞预留 = status∈{submitting,pending} 直付块的
+	// Σmax(paid−credit,0)，防同一笔 carry 被连续两个模板双付。
+	DirectPlanInputs(ctx context.Context, coin string, windowWeight float64) (weights map[string]float64, carry map[string]string, err error)
+
 	// Reconcile 守恒对账，delta 非 0 由调用方冻结打款并告警。
 	Reconcile(ctx context.Context, coin string) (delta string, err error)
 

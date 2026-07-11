@@ -369,4 +369,164 @@ func runLedgerConformance(t *testing.T, mk mkLedger) {
 			t.Fatalf("confirm 后不应有待确认块: %+v", pend)
 		}
 	})
+
+	// ---- 直付块（midstate coinbase 直付，docs/07 §6）----
+
+	t.Run("直付块入账与守恒", func(t *testing.T) {
+		// E=100，credit A=60 B=35（费=5）；A 实付 60，B 低于阈值实付 0（结转）。
+		l, coin := mk(t)
+		b := confBlock(coin, "d1", "A", "100.00000000", 300, 1.0, false)
+		b.Direct = []core.DirectCredit{
+			{Address: "A", Credit: "60.00000000", Paid: "60.00000000"},
+			{Address: "B", Credit: "35.00000000", Paid: "0.00000000"},
+		}
+		if err := l.RecordBlock(ctx, b, "raw"); err != nil {
+			t.Fatal(err)
+		}
+		// feePercent 传 99 证明被忽略（直付块费率在模板分账时已定死）
+		if err := l.ConfirmBlock(ctx, b, 99); err != nil {
+			t.Fatal(err)
+		}
+		snap, err := l.Snapshot(ctx, coin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snap.Balances["A"] != "0.00000000" && snap.Balances["A"] != "" {
+			t.Fatalf("A 已随块直付，余额应为 0: %s", snap.Balances["A"])
+		}
+		if snap.Balances["B"] != "35.00000000" {
+			t.Fatalf("B 尘埃应结转: %s", snap.Balances["B"])
+		}
+		if snap.TotalPaid != "60.00000000" {
+			t.Fatalf("已付应计 A 的直付: %s", snap.TotalPaid)
+		}
+		if snap.TotalFees != "5.00000000" {
+			t.Fatalf("费应=E−Σcredit: %s", snap.TotalFees)
+		}
+		assertDelta0(t, ctx, l, coin, "直付块确认后")
+		// 幂等
+		if err := l.ConfirmBlock(ctx, b, 99); err != nil {
+			t.Fatal(err)
+		}
+		snap2, _ := l.Snapshot(ctx, coin)
+		if snap2.TotalPaid != "60.00000000" || snap2.Balances["B"] != "35.00000000" {
+			t.Fatalf("重复 confirm 双份入账: paid=%s B=%s", snap2.TotalPaid, snap2.Balances["B"])
+		}
+		ms, ok, err := l.MinerSummary(ctx, coin, "A")
+		if err != nil || !ok {
+			t.Fatalf("A 应有会计记录: %v", err)
+		}
+		if ms.TotalPaid != "60.00000000" {
+			t.Fatalf("A 矿工自查已付: %s", ms.TotalPaid)
+		}
+	})
+
+	t.Run("直付块carry兑付与在飞预留", func(t *testing.T) {
+		// 第一块给 B 结转 35；第二块 credit B=10 且把 carry 一并实付（paid=45）。
+		l, coin := mk(t)
+		b1 := confBlock(coin, "d1", "A", "100.00000000", 300, 1.0, false)
+		b1.Direct = []core.DirectCredit{
+			{Address: "B", Credit: "35.00000000", Paid: "0.00000000"},
+		}
+		_ = l.RecordBlock(ctx, b1, "raw")
+		if err := l.ConfirmBlock(ctx, b1, 0); err != nil {
+			t.Fatal(err)
+		}
+		// 计划输入：B 的 carry 应可见
+		_, carry, err := l.DirectPlanInputs(ctx, coin, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if carry["B"] != "35.00000000" {
+			t.Fatalf("B carry 应为 35: %v", carry)
+		}
+		// 第二块（pending，paid>credit=carry 兑付在飞）
+		b2 := confBlock(coin, "d2", "B", "100.00000000", 301, 1.0, false)
+		b2.Direct = []core.DirectCredit{
+			{Address: "B", Credit: "10.00000000", Paid: "45.00000000"},
+		}
+		_ = l.RecordBlock(ctx, b2, "raw")
+		// 在飞预留：B 的 carry 不得再次可用（防双付）
+		_, carry2, err := l.DirectPlanInputs(ctx, coin, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if carry2["B"] != "" {
+			t.Fatalf("在飞预留应扣光 B 的 carry: %v", carry2)
+		}
+		if err := l.ConfirmBlock(ctx, b2, 0); err != nil {
+			t.Fatal(err)
+		}
+		snap, _ := l.Snapshot(ctx, coin)
+		if snap.Balances["B"] != "0.00000000" && snap.Balances["B"] != "" {
+			t.Fatalf("carry 兑付后 B 余额应为 0: %s", snap.Balances["B"])
+		}
+		if snap.TotalPaid != "45.00000000" {
+			t.Fatalf("已付: %s", snap.TotalPaid)
+		}
+		assertDelta0(t, ctx, l, coin, "carry 兑付后")
+	})
+
+	t.Run("直付块孤块回滚", func(t *testing.T) {
+		// 确认后孤块：coinbase 没上链=谁都没拿到，paid 退回、credit 反转、费出账。
+		l, coin := mk(t)
+		b := confBlock(coin, "d1", "A", "100.00000000", 300, 1.0, false)
+		b.Direct = []core.DirectCredit{
+			{Address: "A", Credit: "60.00000000", Paid: "60.00000000"},
+			{Address: "B", Credit: "35.00000000", Paid: "0.00000000"},
+		}
+		_ = l.RecordBlock(ctx, b, "raw")
+		_ = l.ConfirmBlock(ctx, b, 0)
+		if err := l.OrphanBlock(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+		snap, _ := l.Snapshot(ctx, coin)
+		for _, a := range []string{"A", "B"} {
+			if v := snap.Balances[a]; v != "" && v != "0.00000000" {
+				t.Fatalf("孤块回滚后 %s 余额应清零: %s", a, v)
+			}
+		}
+		if snap.TotalPaid != "0.00000000" {
+			t.Fatalf("孤块回滚后已付应清零: %s", snap.TotalPaid)
+		}
+		if snap.TotalFees != "0.00000000" {
+			t.Fatalf("孤块回滚后费应出账: %s", snap.TotalFees)
+		}
+		if snap.DebtsNet != "0.00000000" {
+			t.Fatalf("直付孤块不应产生 debts（coinbase 没上链）: %s", snap.DebtsNet)
+		}
+		assertDelta0(t, ctx, l, coin, "直付孤块回滚后")
+		// 未确认直付块孤块 = 无账务动作
+		b2 := confBlock(coin, "d2", "A", "100.00000000", 301, 1.0, false)
+		b2.Direct = []core.DirectCredit{{Address: "A", Credit: "60.00000000", Paid: "60.00000000"}}
+		_ = l.RecordBlock(ctx, b2, "raw")
+		if err := l.OrphanBlock(ctx, b2); err != nil {
+			t.Fatal(err)
+		}
+		snap2, _ := l.Snapshot(ctx, coin)
+		if snap2.TotalPaid != "0.00000000" {
+			t.Fatalf("未确认直付孤块不应有账务: %s", snap2.TotalPaid)
+		}
+		assertDelta0(t, ctx, l, coin, "未确认直付孤块后")
+	})
+
+	t.Run("直付空分账块全额归费", func(t *testing.T) {
+		// 窗口为空时 Direct=[]（非 nil）：绝不能走「全给爆块者」兜底——
+		// coinbase 全额进了费地址，账上必须同样全记费（账实一致）。
+		l, coin := mk(t)
+		b := confBlock(coin, "d1", "A", "100.00000000", 300, 1.0, false)
+		b.Direct = []core.DirectCredit{}
+		_ = l.RecordBlock(ctx, b, "raw")
+		if err := l.ConfirmBlock(ctx, b, 0); err != nil {
+			t.Fatal(err)
+		}
+		snap, _ := l.Snapshot(ctx, coin)
+		if snap.TotalFees != "100.00000000" {
+			t.Fatalf("空分账直付块应全额归费: %s", snap.TotalFees)
+		}
+		if v := snap.Balances["A"]; v != "" && v != "0.00000000" {
+			t.Fatalf("爆块者不应被虚记余额: %s", v)
+		}
+		assertDelta0(t, ctx, l, coin, "空分账直付块后")
+	})
 }

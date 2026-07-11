@@ -61,6 +61,15 @@ const (
 	BlockOrphaned  BlockStatus = "orphaned"
 )
 
+// DirectCredit 直付块（midstate model-a coinbase 直付，docs/07 §6）的一条分账：
+// Credit = 模板时按 PPLNS 窗口算好的应得；Paid = 随 coinbase 实付上链的金额
+// （含 carry 兑付，可大于 Credit；0 = 低于尘埃阈值本块结转）。金额十进制字符串。
+type DirectCredit struct {
+	Address string
+	Credit  string
+	Paid    string
+}
+
 // FoundBlock 记录池挖到的一个块。
 type FoundBlock struct {
 	Coin    string
@@ -74,6 +83,9 @@ type FoundBlock struct {
 	Status  BlockStatus
 	FoundAt time.Time
 	Solo    bool
+	// Direct 非 nil = 直付块：分账在模板时已定死并嵌进 coinbase（可为空切片=
+	// 全额归费侧）。ConfirmBlock 按记录快照入账，绝不重算窗口（账实一致铁律）。
+	Direct []DirectCredit
 }
 
 // NetworkDifficulty 该块的网络难度。

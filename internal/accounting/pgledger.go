@@ -167,14 +167,39 @@ func (l *PGLedger) RecordBlock(ctx context.Context, b core.FoundBlock, rawHex st
 	if _, err := l.parse(reward); err != nil {
 		return fmt.Errorf("块奖励金额非法: %w", err)
 	}
-	_, err := l.h.ExecContext(ctx, `
+	tx, err := l.h.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO blocks (poolid, blockheight, networkdifficulty, status, transactionconfirmationdata,
-		                    miner, worker, solo, reward, rawhex, effort, source, created)
-		VALUES ($1,$2,$3,'submitting',$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		                    miner, worker, solo, reward, rawhex, effort, source, created, direct)
+		VALUES ($1,$2,$3,'submitting',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (poolid, blockheight, type, transactionconfirmationdata) DO NOTHING`,
 		l.coin, int64(b.Height), b.NetDiff, b.Hash, b.Finder, b.Worker, b.Solo, reward,
-		nullIfEmpty(rawHex), b.Effort, l.instance, blockTime(b))
-	return err
+		nullIfEmpty(rawHex), b.Effort, l.instance, blockTime(b), b.Direct != nil); err != nil {
+		return err
+	}
+	// 直付块（docs/07 §6）：credit/paid 分账快照在 record 时定死（confirm 只应用）。
+	for _, dc := range b.Direct {
+		cSat, err := l.parse(dc.Credit)
+		if err != nil {
+			return fmt.Errorf("直付 credit 金额非法 %q: %w", dc.Credit, err)
+		}
+		pSat, err := l.parse(dc.Paid)
+		if err != nil {
+			return fmt.Errorf("直付 paid 金额非法 %q: %w", dc.Paid, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO block_credits (poolid, blockhash, address, amount, paid) VALUES ($1,$2,$3,$4,$5)
+			ON CONFLICT (poolid, blockhash, address)
+			DO UPDATE SET amount=EXCLUDED.amount, paid=EXCLUDED.paid, reversed=FALSE`,
+			l.coin, b.Hash, dc.Address, l.toStr(cSat), l.toStr(pSat)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (l *PGLedger) MarkBlockPending(ctx context.Context, _, hash string) error {
@@ -200,11 +225,24 @@ func (l *PGLedger) MarkBlockPending(ctx context.Context, _, hash string) error {
 }
 
 // UpdateBlockHash 意图 hash → 节点受理后的权威 hash（blob 链「意图先落库」补录，docs/05 场景B）。
+// block_credits 以 blockhash 为键（直付块 record 时已写行）→ 同步改。
 func (l *PGLedger) UpdateBlockHash(ctx context.Context, _, oldHash, newHash string) error {
-	_, err := l.h.ExecContext(ctx, `
+	tx, err := l.h.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE blocks SET transactionconfirmationdata=$3
-		WHERE poolid=$1 AND transactionconfirmationdata=$2`, l.coin, oldHash, newHash)
-	return err
+		WHERE poolid=$1 AND transactionconfirmationdata=$2`, l.coin, oldHash, newHash); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE block_credits SET blockhash=$3
+		WHERE poolid=$1 AND blockhash=$2`, l.coin, oldHash, newHash); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (l *PGLedger) PendingBlocks(ctx context.Context, _ string) ([]core.FoundBlock, error) {
@@ -239,9 +277,11 @@ func (l *PGLedger) ConfirmBlock(ctx context.Context, b core.FoundBlock, feePerce
 	defer tx.Rollback()
 
 	var status string
+	var direct bool
+	var blockID int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT status FROM blocks WHERE poolid=$1 AND transactionconfirmationdata=$2 FOR UPDATE`,
-		l.coin, b.Hash).Scan(&status)
+		SELECT status, direct, id FROM blocks WHERE poolid=$1 AND transactionconfirmationdata=$2 FOR UPDATE`,
+		l.coin, b.Hash).Scan(&status, &direct, &blockID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("块 %s 不存在", b.Hash)
 	}
@@ -256,6 +296,18 @@ func (l *PGLedger) ConfirmBlock(ctx context.Context, b core.FoundBlock, feePerce
 	if err != nil {
 		return err
 	}
+
+	// 直付块（docs/07 §6）：按 record 时快照入账（+credit，−paid），费=E−Σcredit，
+	// 忽略传入 feePercent。paid 走 usage='payment'（守恒式的已付项）+ payments 展示行
+	// （batchid = −blocks.id，与打款引擎批次号空间天然隔离），txid=块 hash=
+	// 「已随块直付」。不碰 debts 抵扣（carry 计划时已减掉 debts）。
+	if direct {
+		if err := l.confirmDirectTx(ctx, tx, b.Hash, blockID, rewardSat); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
 	feeSat := int64(float64(rewardSat) * feePercent / 100.0)
 	distributable := rewardSat - feeSat
 
@@ -311,6 +363,68 @@ func (l *PGLedger) ConfirmBlock(ctx context.Context, b core.FoundBlock, feePerce
 	return tx.Commit()
 }
 
+// confirmDirectTx 直付块入账（须在持有 blocks 行锁的事务内）。
+func (l *PGLedger) confirmDirectTx(ctx context.Context, tx *sql.Tx, hash string, blockID, rewardSat int64) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT address, amount::text, COALESCE(paid,0)::text FROM block_credits
+		WHERE poolid=$1 AND blockhash=$2 AND NOT reversed ORDER BY address`, l.coin, hash)
+	if err != nil {
+		return err
+	}
+	type dcRow struct {
+		addr string
+		cSat int64
+		pSat int64
+	}
+	var dcs []dcRow
+	for rows.Next() {
+		var a, cStr, pStr string
+		if err := rows.Scan(&a, &cStr, &pStr); err != nil {
+			rows.Close()
+			return err
+		}
+		cSat, err := l.parse(cStr)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		pSat, err := l.parse(pStr)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		dcs = append(dcs, dcRow{a, cSat, pSat})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	var sumCredit int64
+	for _, dc := range dcs {
+		sumCredit += dc.cSat
+		if err := l.addBalanceTx(ctx, tx, dc.addr, dc.cSat, "reward", "block:"+hash); err != nil {
+			return err
+		}
+		if dc.pSat > 0 {
+			if err := l.addBalanceTx(ctx, tx, dc.addr, -dc.pSat, "payment", "block:"+hash); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO payments (poolid, address, amount, batchid, transactionconfirmationdata, status, confirmations)
+				VALUES ($1,$2,$3,$4,$5,'confirmed',1)
+				ON CONFLICT (poolid, batchid, address) DO NOTHING`,
+				l.coin, dc.addr, l.toStr(dc.pSat), -blockID, hash); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE blocks SET status='confirmed', confirmationprogress=1, feeamount=$3
+		WHERE poolid=$1 AND transactionconfirmationdata=$2`, l.coin, hash, l.toStr(rewardSat-sumCredit))
+	return err
+}
+
 func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
 	tx, err := l.h.BeginTx(ctx, nil)
 	if err != nil {
@@ -319,9 +433,11 @@ func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
 	defer tx.Rollback()
 
 	var status string
+	var direct bool
+	var blockID int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT status FROM blocks WHERE poolid=$1 AND transactionconfirmationdata=$2 FOR UPDATE`,
-		l.coin, b.Hash).Scan(&status)
+		SELECT status, direct, id FROM blocks WHERE poolid=$1 AND transactionconfirmationdata=$2 FOR UPDATE`,
+		l.coin, b.Hash).Scan(&status, &direct, &blockID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("块 %s 不存在", b.Hash)
 	}
@@ -330,6 +446,51 @@ func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
 	}
 	if status == string(core.BlockOrphaned) {
 		return tx.Commit() // 幂等
+	}
+
+	// 已确认直付块回滚：coinbase 没上链=谁都没拿到——先退 paid（usage='payment_refund'
+	// 对冲守恒式已付项）+ 删 payments 展示行，再走下面的通用 credit 快照反转。
+	if status == string(core.BlockConfirmed) && direct {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT address, COALESCE(paid,0)::text FROM block_credits
+			WHERE poolid=$1 AND blockhash=$2 AND NOT reversed ORDER BY address`, l.coin, b.Hash)
+		if err != nil {
+			return err
+		}
+		type pr struct {
+			addr string
+			pSat int64
+		}
+		var prs []pr
+		for rows.Next() {
+			var a, pStr string
+			if err := rows.Scan(&a, &pStr); err != nil {
+				rows.Close()
+				return err
+			}
+			pSat, err := l.parse(pStr)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			prs = append(prs, pr{a, pSat})
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, p := range prs {
+			if p.pSat <= 0 {
+				continue
+			}
+			if err := l.addBalanceTx(ctx, tx, p.addr, p.pSat, "payment_refund", "block:"+b.Hash); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM payments WHERE poolid=$1 AND batchid=$2`, l.coin, -blockID); err != nil {
+			return err
+		}
 	}
 
 	if status == string(core.BlockConfirmed) {
@@ -483,6 +644,62 @@ func (l *PGLedger) RefundPayout(ctx context.Context, _ string, outputs map[strin
 		}
 	}
 	return tx.Commit()
+}
+
+// DirectPlanInputs 直付分账计划输入（docs/07 §6）：窗口快照 + 可用 carry。
+func (l *PGLedger) DirectPlanInputs(ctx context.Context, _ string, windowWeight float64) (map[string]float64, map[string]string, error) {
+	if err := l.FlushShares(ctx); err != nil {
+		return nil, nil, err
+	}
+	tx, err := l.h.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback()
+	weights, err := l.windowByWeightTx(ctx, tx, windowWeight)
+	if err != nil {
+		return nil, nil, err
+	}
+	// carry = balance − 在飞直付预留（pending/submitting 直付块 Σmax(paid−credit,0)）− debts
+	rows, err := tx.QueryContext(ctx, `
+		SELECT bal.address, bal.amount::text,
+		       COALESCE((SELECT SUM(GREATEST(bc.paid - bc.amount, 0)) FROM block_credits bc
+		                 JOIN blocks bl ON bl.poolid = bc.poolid AND bl.transactionconfirmationdata = bc.blockhash
+		                 WHERE bc.poolid = bal.poolid AND bc.address = bal.address
+		                   AND bc.paid IS NOT NULL AND bl.status IN ('submitting','pending')), 0)::text,
+		       COALESCE((SELECT SUM(d.remaining) FROM debts d
+		                 WHERE d.poolid = bal.poolid AND d.address = bal.address), 0)::text
+		FROM balances bal WHERE bal.poolid = $1 AND bal.amount > 0`, l.coin)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	carry := map[string]string{}
+	for rows.Next() {
+		var a, balStr, resStr, debtStr string
+		if err := rows.Scan(&a, &balStr, &resStr, &debtStr); err != nil {
+			return nil, nil, err
+		}
+		bal, err := l.parse(balStr)
+		if err != nil {
+			return nil, nil, err
+		}
+		res, err := l.parse(resStr)
+		if err != nil {
+			return nil, nil, err
+		}
+		debt, err := l.parse(debtStr)
+		if err != nil {
+			return nil, nil, err
+		}
+		if avail := bal - res - debt; avail > 0 {
+			carry[a] = l.toStr(avail)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return weights, carry, tx.Commit()
 }
 
 // ---- 对账与快照 ----

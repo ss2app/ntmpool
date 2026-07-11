@@ -24,6 +24,10 @@ func formatAmount(sat int64, decimals int) string {
 	return fmt.Sprintf("%s%d.%0*d", neg, sat/u, decimals, sat%u)
 }
 
+// FormatAmount / ParseAmount 导出口（midjob 直付分账等外部包与账本同一套换算）。
+func FormatAmount(sat int64, decimals int) string          { return formatAmount(sat, decimals) }
+func ParseAmount(s string, decimals int) (int64, error)    { return parseAmount(s, decimals) }
+
 // parseAmount 解析十进制字符串到聪。超出 decimals 的小数位截断（与入库精度一致）。
 func parseAmount(s string, decimals int) (int64, error) {
 	var whole, frac int64

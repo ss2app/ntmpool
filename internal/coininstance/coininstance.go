@@ -476,6 +476,10 @@ func (inst *Instance) UncollectedFees(ctx context.Context) (string, error) {
 
 // ApplyPayout 热更新打款参数（R4）：费率/起付额/确认数/开关/归集，立即生效不追溯。
 func (inst *Instance) ApplyPayout(p config.PayoutConfig) {
+	// 直付币（midstate）：费率/尘埃阈值同时下发作业管理器（模板分账用同一套热参数）
+	if sp, ok := inst.parts.jobs.(interface{ SetPayoutParams(float64, string) }); ok {
+		sp.SetPayoutParams(p.FeePercent, p.MinPayout)
+	}
 	inst.engine.SetParams(p.FeePercent, parseFloat(p.MinPayout), p.Confirmations)
 	inst.engine.SetSoloFeePercent(p.SoloFeePercent)
 	inst.engine.SetEnabled(inst.deps.Payouts && p.Enabled)

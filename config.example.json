@@ -49,6 +49,38 @@
       },
       "miningEnabled": true,
       "newConnectionsEnabled": true
+    },
+    {
+      "id": "midstate",
+      "symbol": "MDS",
+      "adapter": "midstate-rpc",
+      "algo": "midvdf",
+      "decimals": 9,
+      "nodes": [
+        { "url": "http://127.0.0.1:8545" }
+      ],
+      "poolAddress": "POOL_FEE_HEX64_ADDRESS_HERE",
+      "feeAddress": "",
+      "ports": [
+        {
+          "port": 3333, "mode": "pplns", "dialect": "midstate", "enabled": true,
+          "maxConns": 2000,
+          "vardiff": { "enabled": true, "startDiff": 32768, "minDiff": 16, "maxDiff": 281474976710656, "targetSeconds": 12 }
+        }
+      ],
+      "payout": {
+        "enabled": false,
+        "scheme": "pplns",
+        "pplnsFactor": 2.0,
+        "feePercent": 5.0,
+        "minPayout": "0.001",
+        "confirmations": 8,
+        "intervalSeconds": 60,
+        "orphanDebts": false,
+        "feeCollect": { "enabled": false, "minAmount": "" }
+      },
+      "miningEnabled": true,
+      "newConnectionsEnabled": true
     }
   ]
 }

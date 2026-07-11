@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS blocks (
     created      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (poolid, blockheight, type, transactionconfirmationdata)
 );
+-- 老库迁移（幂等）：v2026-07-11 midstate 直付块（coinbase 直付，docs/07 §6）标记。
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS direct BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS balances (
     poolid       TEXT        NOT NULL,
@@ -76,6 +78,9 @@ CREATE TABLE IF NOT EXISTS block_credits (
     reversed     BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (poolid, blockhash, address)
 );
+-- 老库迁移（幂等）：直付块的实付金额（RecordBlock 时随快照一起写；NULL=普通块行）。
+-- 在飞 carry 预留 = Σ GREATEST(paid-amount,0) over status∈(submitting,pending) 的直付块。
+ALTER TABLE block_credits ADD COLUMN IF NOT EXISTS paid NUMERIC NULL;
 
 -- 孤块追缴（bitcoin09 事故机制的产品化）：预打款垫付的块孤了 → 生成欠款，从未来收益抵扣。
 CREATE TABLE IF NOT EXISTS debts (

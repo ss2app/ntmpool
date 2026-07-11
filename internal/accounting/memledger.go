@@ -28,6 +28,11 @@ type memBlock struct {
 	credited bool
 	payouts  map[string]int64
 	feeSat   int64
+	// 直付块（midstate coinbase 直付，docs/07 §6）：RecordBlock 时定死的
+	// credit/paid 快照；confirm 按快照入账（+credit −paid），绝不重算窗口。
+	direct     bool
+	directCred map[string]int64 // 地址→应得（credit）
+	directPaid map[string]int64 // 地址→随 coinbase 实付（paid）
 }
 
 // MemLedger 单实例内存会计（M1 + 单元测试；生产多实例用 Postgres 实现）。
@@ -79,7 +84,25 @@ func (l *MemLedger) RecordBlock(_ context.Context, b core.FoundBlock, rawHex str
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	b.Status = core.BlockPending // 逻辑上 submitting，内存实现简化为 pending 前的占位
-	l.blocks = append(l.blocks, &memBlock{b: b, rawHex: rawHex})
+	mb := &memBlock{b: b, rawHex: rawHex}
+	if b.Direct != nil {
+		mb.direct = true
+		mb.directCred = map[string]int64{}
+		mb.directPaid = map[string]int64{}
+		for _, dc := range b.Direct {
+			c, err := l.parse(dc.Credit)
+			if err != nil {
+				return fmt.Errorf("直付 credit 金额非法 %q: %w", dc.Credit, err)
+			}
+			p, err := l.parse(dc.Paid)
+			if err != nil {
+				return fmt.Errorf("直付 paid 金额非法 %q: %w", dc.Paid, err)
+			}
+			mb.directCred[dc.Address] += c
+			mb.directPaid[dc.Address] += p
+		}
+	}
+	l.blocks = append(l.blocks, mb)
 	return nil
 }
 
@@ -158,6 +181,30 @@ func (l *MemLedger) ConfirmBlock(_ context.Context, b core.FoundBlock, feePercen
 	if err != nil {
 		return err
 	}
+
+	// 直付块：按 RecordBlock 快照入账（+credit −paid），费=E−Σcredit，
+	// 忽略传入 feePercent（费率已在模板分账时生效）。不碰 debts 抵扣——
+	// carry 计划时已减掉 debts（DirectPlanInputs），coinbase 无法扣款。
+	if mb.direct {
+		var sumCredit int64
+		for a, c := range mb.directCred {
+			l.balances[a] += c
+			sumCredit += c
+			if p := mb.directPaid[a]; p > 0 {
+				l.balances[a] -= p
+				l.totalPaid += p
+				l.paidOut += p
+				l.paidByAddr[a] += p
+			}
+		}
+		mb.credited = true
+		mb.feeSat = rewardSat - sumCredit
+		l.totalFees += mb.feeSat
+		mb.b.Status = core.BlockConfirmed
+		l.setBlockStatus(b.Hash, core.BlockConfirmed)
+		return nil
+	}
+
 	feeSat := int64(float64(rewardSat) * feePercent / 100.0)
 	distributable := rewardSat - feeSat
 
@@ -221,6 +268,35 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 	if mb.b.Status == core.BlockOrphaned {
 		return nil
 	}
+	// 直付块回滚：coinbase 没上链=谁都没拿到——先退回 paid（对冲 totalPaid），
+	// 再按 credit 快照反转余额（扣不动的记 debt，同普通块）。
+	if mb.credited && mb.direct {
+		for a, p := range mb.directPaid {
+			if p <= 0 {
+				continue
+			}
+			l.balances[a] += p
+			l.totalPaid -= p
+			l.paidOut -= p
+			l.paidByAddr[a] -= p
+		}
+		for a, c := range mb.directCred {
+			if l.balances[a] >= c {
+				l.balances[a] -= c
+			} else {
+				remain := c - l.balances[a]
+				l.balances[a] = 0
+				l.debts[a] += remain
+			}
+		}
+		l.totalFees -= mb.feeSat
+		mb.feeSat = 0
+		mb.credited = false
+		mb.b.Status = core.BlockOrphaned
+		l.setBlockStatus(b.Hash, core.BlockOrphaned)
+		return nil
+	}
+
 	// 若已入账（预打款垫付场景）：把已发的每地址金额转成 debts 追缴
 	if mb.credited {
 		for a, amt := range mb.payouts {
@@ -301,6 +377,34 @@ func (l *MemLedger) RefundPayout(_ context.Context, _ string, outputs map[string
 		l.paidByAddr[a] -= amt
 	}
 	return nil
+}
+
+// DirectPlanInputs 直付分账计划输入（docs/07 §6）：窗口快照 + 可用 carry。
+func (l *MemLedger) DirectPlanInputs(_ context.Context, _ string, windowWeight float64) (map[string]float64, map[string]string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	weights := l.windowByWeight(windowWeight)
+
+	// 在飞直付预留：未入账（pending 占位）直付块的 Σmax(paid−credit,0)
+	reserved := map[string]int64{}
+	for _, mb := range l.blocks {
+		if !mb.direct || mb.credited || mb.b.Status == core.BlockOrphaned {
+			continue
+		}
+		for a, p := range mb.directPaid {
+			if extra := p - mb.directCred[a]; extra > 0 {
+				reserved[a] += extra
+			}
+		}
+	}
+	carry := map[string]string{}
+	for a, bal := range l.balances {
+		avail := bal - reserved[a] - l.debts[a]
+		if avail > 0 {
+			carry[a] = l.toStr(avail)
+		}
+	}
+	return weights, carry, nil
 }
 
 func (l *MemLedger) Reconcile(_ context.Context, _ string) (string, error) {
