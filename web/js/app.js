@@ -131,9 +131,12 @@
 
   function coinMeta(id) { return CFG.coins[id] || null; }
   function coinLogo(id, meta, size) {
+    const s = size || 40;
+    if (meta && meta.logo) {
+      return `<span class="coin-logo" style="background:#fff;width:${s}px;height:${s}px"><img src="${esc(meta.logo)}" alt="${esc(meta.symbol || id)}" style="width:72%;height:72%;object-fit:contain"></span>`;
+    }
     const sym = meta ? meta.symbol : id.toUpperCase();
     const color = (meta && meta.color) || '#3987e5';
-    const s = size || 40;
     return `<span class="coin-logo" style="background:${esc(color)};width:${s}px;height:${s}px;font-size:${Math.round(s * 0.36)}px">${esc(sym.slice(0, 4))}</span>`;
   }
   function coinDesc(meta) { return lang === 'zh' ? meta.descZh : meta.descEn; }
@@ -211,7 +214,9 @@
             <div><div class="k">${esc(t('card_fee'))}</div><div class="v">${esc(String(p.poolFeePercent))}%</div></div>
             <div><div class="k">${esc(t('card_height'))}</div><div class="v">${fmtInt(ns.blockHeight)}</div></div>
           </div>
-          <div class="foot"><span class="chip">${esc(t('stat_scheme'))}: ${esc((p.paymentProcessing && p.paymentProcessing.payoutScheme) || 'PPLNS')}</span><span class="enter">${esc(t('card_enter'))}</span></div>
+          <div class="foot"><span>
+            <span class="chip">${esc((p.paymentProcessing && p.paymentProcessing.payoutScheme) || 'PPLNS')} ${esc(String(p.poolFeePercent))}%</span>${Object.values(p.ports || {}).some((x) => x && x.solo) ? ` <span class="chip">SOLO ${esc(String(p.soloFeePercent != null ? p.soloFeePercent : p.poolFeePercent))}%</span>` : ''}
+          </span><span class="enter">${esc(t('card_enter'))}</span></div>
         </a>`;
     }
     html += `

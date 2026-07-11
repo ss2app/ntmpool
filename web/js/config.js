@@ -18,6 +18,7 @@ window.NTM_CONFIG = {
       name: 'DragonX',
       algo: 'rx/dragonx',
       color: '#e34948',
+      logo: '/img/dragonx.png',
       hashUnit: 'H/s',
       // 矿工公网入口（不暴露矿池真实 IP）
       stratum: [
