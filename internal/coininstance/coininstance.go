@@ -147,6 +147,16 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 		hrCfg.Multiplier = float64(1<<32) / float64(0xffff)
 	}
 	inst.tracker = hashrate.New(hrCfg)
+	// PG 模式：从 shares 表回放最近 24h，重建算力曲线/即时窗口——进程重启后
+	// /performance 曲线不再清零（share 明细本就持久化，回放=真实数据非估算）。
+	// 必须在端口开始收 share 之前做完，避免与实时 Record 重叠计数。
+	if deps.DB != nil {
+		if n, err := replayShareHistory(ctx, deps.DB, cfg.ID, inst.tracker); err != nil {
+			log.Printf("[%s] 算力曲线回放失败（不影响运行，曲线随新 share 重新积累）: %v", cfg.ID, err)
+		} else if n > 0 {
+			log.Printf("[%s] 算力曲线已从 PG 回放重建：24h 内 %d 条 share", cfg.ID, n)
+		}
+	}
 
 	// 链家族选型：节点适配器 × 方言 × 作业管理器
 	parts, err := buildFamily(ctx, cfg, decimals, inst)
