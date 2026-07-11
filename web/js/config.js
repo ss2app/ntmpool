@@ -24,6 +24,7 @@ window.NTM_CONFIG = {
         { host: 'hk.dragonx.cc', port: 3333 },
         { host: 'hk.dragonx.cc', port: 4444 },
         { host: 'hk.dragonx.cc', port: 5555 },
+        { host: 'hk.dragonx.cc', port: 7777, mode: 'solo' },
       ],
       ntmAlgoFlag: 'rx/dragonx',
       addressPrefix: 'zs1',
