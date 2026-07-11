@@ -142,6 +142,10 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	if cfg.Adapter == "custom-http" || cfg.Adapter == "cryptonote-rpc" || cfg.Adapter == "dragonx-rpc" {
 		hrCfg.Multiplier = 1
 	}
+	if cfg.Adapter == "btc09-http" {
+		// 09C 难度标尺 = maxTarget(0x1f00ffff)：难度 1 = 2^32/0xffff ≈ 65537 哈希
+		hrCfg.Multiplier = float64(1<<32) / float64(0xffff)
+	}
 	inst.tracker = hashrate.New(hrCfg)
 
 	// 链家族选型：节点适配器 × 方言 × 作业管理器
