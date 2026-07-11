@@ -297,7 +297,8 @@
       [t('stat_net_diff'), `<span>${esc(fmtBig(ns.networkDifficulty))}</span>`],
       [t('stat_blocks_found'), `<span>${fmtInt(p.totalBlocks)}</span>`, `${t('stat_confirmed')}: ${fmtInt(p.totalConfirmedBlocks)}`],
       [t('stat_total_paid'), `<span>${esc(fmtAmt(p.totalPaid))}</span><small>${esc(sym)}</small>`],
-      [t('stat_fee'), `<span>${esc(String(p.poolFeePercent))}</span><small>%</small>`, `${t('stat_scheme')}: ${esc(pay.payoutScheme || 'PPLNS')}`],
+      [t('stat_fee'), `<span>${esc(String(p.poolFeePercent))}</span><small>%</small>`,
+        `${t('stat_scheme')}: ${esc(pay.payoutScheme || 'PPLNS')}${p.soloFeePercent != null ? ` · SOLO ${p.soloFeePercent}%` : ''}`],
       [t('stat_min_payout'), `<span>${esc(fmtAmt(pay.minimumPayment))}</span><small>${esc(sym)}</small>`],
     ];
     body.innerHTML = `
@@ -330,9 +331,10 @@
               const st = b.status || 'pending';
               const stLabel = t('status_' + st) || st;
               const prog = st === 'pending' ? ` ${Math.round((b.confirmationProgress || 0) * 100)}%` : '';
+              const soloTag = b.solo ? ' <span class="chip" style="font-size:11px;padding:1px 7px">SOLO</span>' : '';
               return `<tr>
                 <td class="mono">${fmtInt(b.blockHeight)}</td>
-                <td><span class="status ${esc(st)}">${esc(stLabel)}${prog}</span></td>
+                <td><span class="status ${esc(st)}">${esc(stLabel)}${prog}</span>${soloTag}</td>
                 <td class="num">${esc(fmtAmt(b.reward))} ${esc(sym)}</td>
                 <td class="mono">${esc(b.miner || '—')}</td>
                 <td title="${esc(fmtTime(b.created))}">${esc(timeAgo(b.created))}</td>
@@ -493,9 +495,10 @@
       <div class="panel">
         <h3>${esc(t('conn_endpoints_t'))}</h3>
         <div class="tbl-wrap"><table class="tbl">
-          <tr><th>${esc(t('conn_endpoint_col'))}</th><th>${esc(t('conn_port_col'))}</th><th>${esc(t('conn_diff_col'))}</th></tr>
-          ${(meta.stratum || []).map((s) => `<tr><td class="mono">${esc(s.host)}</td><td class="mono">${s.port}</td><td>${esc(t('conn_vardiff'))}</td></tr>`).join('')}
+          <tr><th>${esc(t('conn_endpoint_col'))}</th><th>${esc(t('conn_port_col'))}</th><th>${esc(t('conn_mode_col'))}</th><th>${esc(t('conn_diff_col'))}</th></tr>
+          ${(meta.stratum || []).map((s) => `<tr><td class="mono">${esc(s.host)}</td><td class="mono">${s.port}</td><td><span class="chip" style="font-size:11px;padding:1px 8px">${esc((s.mode || 'PPLNS').toUpperCase())}</span></td><td>${esc(t('conn_vardiff'))}</td></tr>`).join('')}
         </table></div>
+        ${(meta.stratum || []).some((s) => (s.mode || '').toLowerCase() === 'solo') ? `<div class="note" style="margin-top:10px">${esc(t('conn_solo_note'))}</div>` : ''}
       </div>
       ${meta.xmrigCompatible ? `
       <div class="panel">
@@ -508,6 +511,7 @@
         <div class="note" style="font-size:14px;color:var(--ink-2)">
           <ul style="margin:6px 0;padding-left:20px">
             <li>${zh ? `分配方式 <b>${esc(pay.payoutScheme || 'PPLNS')}</b>，池费率 <b>${pool ? esc(String(pool.poolFeePercent)) : '—'}%</b>` : `Reward scheme <b>${esc(pay.payoutScheme || 'PPLNS')}</b>, pool fee <b>${pool ? esc(String(pool.poolFeePercent)) : '—'}%</b>`}</li>
+            ${pool && pool.soloFeePercent != null ? `<li>${zh ? `SOLO 端口费率 <b>${esc(String(pool.soloFeePercent))}%</b>（爆块奖励扣费后全归爆块者本人）` : `SOLO port fee <b>${esc(String(pool.soloFeePercent))}%</b> (block reward minus fee goes entirely to the finder)`}</li>` : ''}
             <li>${zh ? `起付额 <b>${esc(fmtAmt(pay.minimumPayment))} ${esc(sym)}</b>，达到后自动打款到你的挖矿地址` : `Minimum payout <b>${esc(fmtAmt(pay.minimumPayment))} ${esc(sym)}</b>, paid automatically to your mining address`}</li>
             <li>${zh ? `爆块 <b>${meta.confirmations || 10} 个确认</b>后计入余额` : `Blocks credit after <b>${meta.confirmations || 10} confirmations</b>`}</li>
             <li>${zh ? `NTMminer 当前 <b>0% 开发者抽水</b>` : `NTMminer currently has a <b>0% dev fee</b>`}</li>
