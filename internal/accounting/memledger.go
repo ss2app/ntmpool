@@ -17,6 +17,7 @@ type memShare struct {
 	addr   string
 	weight float64
 	at     time.Time
+	solo   bool // solo 端口的 share：只作记录，绝不进 PPLNS 窗口（防稀释 PPLNS 矿工分账）
 }
 
 type memBlock struct {
@@ -70,7 +71,7 @@ func (l *MemLedger) parse(s string) (int64, error) { return parseAmount(s, l.dec
 func (l *MemLedger) RecordShare(_ context.Context, s core.Share, weight float64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.shares = append(l.shares, memShare{addr: s.Address, weight: weight, at: s.At})
+	l.shares = append(l.shares, memShare{addr: s.Address, weight: weight, at: s.At, solo: s.Solo})
 	return nil
 }
 
@@ -130,6 +131,9 @@ func (l *MemLedger) windowByWeight(windowWeight float64) map[string]float64 {
 	perAddr := map[string]float64{}
 	for i := len(l.shares) - 1; i >= 0; i-- {
 		s := l.shares[i]
+		if s.solo {
+			continue // solo share 不参与 PPLNS 分账，也不占窗口容量
+		}
 		perAddr[s.addr] += s.weight
 		acc += s.weight
 		if acc >= windowWeight {

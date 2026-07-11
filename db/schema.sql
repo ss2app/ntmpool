@@ -14,10 +14,13 @@ CREATE TABLE IF NOT EXISTS shares (
     useragent    TEXT        NULL,
     ipaddress    TEXT        NOT NULL,       -- PROXY protocol 还原的真实 IP
     source       TEXT        NULL,           -- 实例 ID（多服务器）
+    solo         BOOLEAN     NOT NULL DEFAULT FALSE, -- solo 端口 share：只记录不进 PPLNS 窗口
     created      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_shares_pool_created ON shares(poolid, created);
 CREATE INDEX IF NOT EXISTS idx_shares_pool_miner ON shares(poolid, miner, created);
+-- 老库迁移（幂等）：v2026-07-11 solo 混跑修复前建的 shares 表没有 solo 列
+ALTER TABLE shares ADD COLUMN IF NOT EXISTS solo BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS blocks (
     id           BIGSERIAL PRIMARY KEY,

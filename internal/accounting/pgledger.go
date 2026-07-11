@@ -121,17 +121,17 @@ func (l *PGLedger) insertShares(ctx context.Context, buf []core.Share, wts []flo
 			end = len(buf)
 		}
 		var sb strings.Builder
-		sb.WriteString("INSERT INTO shares (poolid, blockheight, difficulty, miner, worker, useragent, ipaddress, source, created) VALUES ")
-		args := make([]any, 0, (end-start)*9)
+		sb.WriteString("INSERT INTO shares (poolid, blockheight, difficulty, miner, worker, useragent, ipaddress, source, solo, created) VALUES ")
+		args := make([]any, 0, (end-start)*10)
 		for i := start; i < end; i++ {
 			if i > start {
 				sb.WriteByte(',')
 			}
 			base := len(args)
-			fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
-				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9)
+			fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10)
 			s := buf[i]
-			args = append(args, l.coin, int64(0), wts[i], s.Address, s.Worker, s.UserAgent, s.RemoteIP, l.instance, s.At.UTC())
+			args = append(args, l.coin, int64(0), wts[i], s.Address, s.Worker, s.UserAgent, s.RemoteIP, l.instance, s.Solo, s.At.UTC())
 		}
 		if _, err := l.h.ExecContext(ctx, sb.String(), args...); err != nil {
 			return err
@@ -659,7 +659,7 @@ func (l *PGLedger) MinerSummary(ctx context.Context, _, addr string) (MinerSumma
 // windowByWeightTx 从末尾（id DESC）回溯累加权重到 windowWeight（MemLedger.windowByWeight 同义）。
 func (l *PGLedger) windowByWeightTx(ctx context.Context, tx *sql.Tx, windowWeight float64) (map[string]float64, error) {
 	rows, err := tx.QueryContext(ctx,
-		`SELECT miner, difficulty FROM shares WHERE poolid=$1 ORDER BY id DESC`, l.coin)
+		`SELECT miner, difficulty FROM shares WHERE poolid=$1 AND NOT solo ORDER BY id DESC`, l.coin)
 	if err != nil {
 		return nil, err
 	}

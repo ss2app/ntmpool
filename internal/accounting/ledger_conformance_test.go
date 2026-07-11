@@ -148,6 +148,45 @@ func runLedgerConformance(t *testing.T, mk mkLedger) {
 		}
 	})
 
+	t.Run("SOLO份额不进PPLNS窗口", func(t *testing.T) {
+		// 混跑场景：同一币同时开 pplns 与 solo 端口。solo 矿工 C 的 share
+		// 若混进 PPLNS 窗口，会稀释 PPLNS 矿工分账且 C 白拿分成（自己 solo 爆块却独吞）。
+		l, coin := mk(t)
+		now := time.Now()
+		for i := 0; i < 5; i++ {
+			s := confShare(coin, "C", now)
+			s.Solo = true
+			_ = l.RecordShare(ctx, s, 1000) // C 大权重 solo share
+		}
+		_ = l.RecordShare(ctx, confShare(coin, "A", now), 1) // A 在 pplns 端口 1 份
+		// pplns 块：窗口远大于全部权重，若 solo 混入则 C 分走 ~99.98%
+		b := confBlock(coin, "h1", "A", "50.00000000", 100, 1e6, false)
+		_ = l.RecordBlock(ctx, b, "raw")
+		if err := l.ConfirmBlock(ctx, b, 0); err != nil {
+			t.Fatal(err)
+		}
+		snap, _ := l.Snapshot(ctx, coin)
+		if snap.Balances["A"] != "50.00000000" {
+			t.Fatalf("PPLNS 块应全归 A（solo share 不得进窗口）: %+v", snap.Balances)
+		}
+		if v, ok := snap.Balances["C"]; ok && v != "0.00000000" {
+			t.Fatalf("solo 矿工 C 不应分到 PPLNS 块: %s", v)
+		}
+		assertDelta0(t, ctx, l, coin, "solo/pplns 混跑")
+
+		// 反向：C 的 solo 爆块仍全归 C，A 不受影响
+		b2 := confBlock(coin, "h2", "C", "50.00000000", 101, 1e6, true)
+		_ = l.RecordBlock(ctx, b2, "raw")
+		if err := l.ConfirmBlock(ctx, b2, 0); err != nil {
+			t.Fatal(err)
+		}
+		snap2, _ := l.Snapshot(ctx, coin)
+		if snap2.Balances["C"] != "50.00000000" || snap2.Balances["A"] != "50.00000000" {
+			t.Fatalf("solo 爆块应全归 C 且不动 A: %+v", snap2.Balances)
+		}
+		assertDelta0(t, ctx, l, coin, "混跑双向")
+	})
+
 	t.Run("孤块追缴闭环", func(t *testing.T) {
 		l, coin := mk(t)
 		_ = l.RecordShare(ctx, confShare(coin, "A", time.Now()), 1)
