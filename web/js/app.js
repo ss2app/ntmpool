@@ -17,19 +17,22 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-  const HR_UNITS = ['H/s', 'KH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s'];
-  function fmtHR(v) {
+  // 算力单位：基础单位取 meta.hashUnit（默认 'H/s'；midstate='ext/s'，
+  // 1 ext = 1,000,000 次 BLAKE3，标成 H/s 语义差 1e6），前缀 1000 进制。
+  const HR_PREFIX = ['', 'K', 'M', 'G', 'T', 'P'];
+  function hrParts(v, unit) {
     v = Number(v) || 0;
     let i = 0;
-    while (v >= 1000 && i < HR_UNITS.length - 1) { v /= 1000; i++; }
-    const digits = v >= 100 ? 1 : 2;
-    return `<span>${v.toFixed(digits)}</span><small>${HR_UNITS[i]}</small>`;
+    while (v >= 1000 && i < HR_PREFIX.length - 1) { v /= 1000; i++; }
+    return { n: v.toFixed(v >= 100 ? 1 : 2), u: HR_PREFIX[i] + (unit || 'H/s') };
   }
-  function fmtHRText(v) {
-    v = Number(v) || 0;
-    let i = 0;
-    while (v >= 1000 && i < HR_UNITS.length - 1) { v /= 1000; i++; }
-    return `${v.toFixed(v >= 100 ? 1 : 2)} ${HR_UNITS[i]}`;
+  function fmtHR(v, unit) {
+    const a = hrParts(v, unit);
+    return `<span>${a.n}</span><small>${a.u}</small>`;
+  }
+  function fmtHRText(v, unit) {
+    const a = hrParts(v, unit);
+    return `${a.n} ${a.u}`;
   }
   function fmtBig(v) {
     v = Number(v) || 0;
@@ -122,7 +125,7 @@
   }
 
   // ---------- charts ----------
-  function hashrateChart(elId, samples, seriesName, color) {
+  function hashrateChart(elId, samples, seriesName, color, hrUnit) {
     let pts = (samples || []).map((s) => [new Date(s.created).getTime(), Math.round(s.hashrate || s.poolHashrate || 0)]);
     // 丢掉当前未采满的 10 分钟桶（否则曲线末尾会假跌到 0）
     const BUCKET = 10 * 60 * 1000;
@@ -146,8 +149,8 @@
       markers: { size: 0, hover: { size: 4 } },
       xaxis: { type: 'datetime', labels: { datetimeUTC: false, style: { colors: '#898781' } },
         axisBorder: { color: '#383835' }, axisTicks: { color: '#383835' }, tooltip: { enabled: false } },
-      yaxis: { labels: { formatter: (v) => fmtHRText(v), style: { colors: '#898781' } }, min: 0 },
-      tooltip: { theme: 'dark', x: { format: 'MM-dd HH:mm' }, y: { formatter: (v) => fmtHRText(v) } },
+      yaxis: { labels: { formatter: (v) => fmtHRText(v, hrUnit), style: { colors: '#898781' } }, min: 0 },
+      tooltip: { theme: 'dark', x: { format: 'MM-dd HH:mm' }, y: { formatter: (v) => fmtHRText(v, hrUnit) } },
     });
     chart.render();
     state.charts.push(chart);
@@ -248,7 +251,7 @@
             <span class="chip live" style="margin-left:auto">${esc(t('live'))}</span>
           </div>
           <div class="grid">
-            <div><div class="k">${esc(t('card_hashrate'))}</div><div class="v">${fmtHR(ps.poolHashrate)}</div></div>
+            <div><div class="k">${esc(t('card_hashrate'))}</div><div class="v">${fmtHR(ps.poolHashrate, meta && meta.hashUnit)}</div></div>
             <div><div class="k">${esc(t('card_miners_rigs'))}</div><div class="v">${fmtInt(ps.connectedMiners)}<span style="color:var(--muted);font-weight:500"> / ${fmtInt(ps.connectedWorkers)}</span></div></div>
             <div><div class="k">${esc(t('card_fee'))}</div><div class="v">${esc(String(p.poolFeePercent))}%</div></div>
             <div><div class="k">${esc(t('card_height'))}</div><div class="v">${fmtInt(ns.blockHeight)}</div></div>
@@ -333,8 +336,8 @@
     const share = ns.networkHashrate > 0 ? (ps.poolHashrate / ns.networkHashrate * 100) : 0;
     const sym = (p.coin && p.coin.symbol) || meta.symbol || '';
     const tiles = [
-      [t('stat_pool_hashrate'), fmtHR(ps.poolHashrate)],
-      [t('stat_net_hashrate'), fmtHR(ns.networkHashrate)],
+      [t('stat_pool_hashrate'), fmtHR(ps.poolHashrate, meta.hashUnit)],
+      [t('stat_net_hashrate'), fmtHR(ns.networkHashrate, meta.hashUnit)],
       [t('stat_pool_share'), `<span>${share.toFixed(2)}</span><small>%</small>`],
       [t('stat_miners_online'), `<span>${fmtInt(ps.connectedMiners)}</span>`],
       [t('stat_rigs_online'), `<span>${fmtInt(ps.connectedWorkers)}</span>`],
@@ -355,7 +358,7 @@
         <div class="chart-box" id="pool-chart"></div>
       </div>
       ${coinMeta(coinId) ? `<div class="panel"><h3>${esc(t('coin_about'))} ${esc(meta.name)}</h3><div class="note" style="font-size:14px;color:var(--ink-2)">${esc(coinDesc(meta))}</div></div>` : ''}`;
-    hashrateChart('pool-chart', (perfR.data && perfR.data.stats) || [], t('stat_pool_hashrate'), '#3987e5');
+    hashrateChart('pool-chart', (perfR.data && perfR.data.stats) || [], t('stat_pool_hashrate'), '#3987e5', meta.hashUnit);
   }
 
   async function tabPaged(coinId, body, kind) {
@@ -430,7 +433,7 @@
           <tr><th>${esc(t('col_rank'))}</th><th>${esc(t('col_miner'))}</th><th class="num">${esc(t('col_hashrate'))}</th><th class="num">${esc(t('col_shares'))}</th></tr>
           ${rows.map((m, i) => `<tr>
             <td>${i + 1}</td><td class="mono">${esc(m.miner)}</td>
-            <td class="num">${esc(fmtHRText(m.hashrate))}</td>
+            <td class="num">${esc(fmtHRText(m.hashrate, meta.hashUnit))}</td>
             <td class="num">${(Number(m.sharesPerSecond) || 0).toFixed(3)}</td></tr>`).join('')}
         </table></div>` : `<div class="chart-empty">${esc(t('empty_miners'))}</div>`}
         <div class="note" style="margin-top:10px">${lang === 'zh' ? '地址已脱敏显示；在「我的矿机」输入完整地址可查看自己的详细数据。' : 'Addresses are masked. Use “My rigs” with your full address to see your own details.'}</div>
@@ -464,7 +467,7 @@
         const workers = perf.workers || {};
         box.innerHTML = `
           <div class="stat-strip">
-            <div class="tile"><div class="k">${esc(t('lookup_cur_hashrate'))}</div><div class="v">${fmtHR(perf.hashrate)}</div></div>
+            <div class="tile"><div class="k">${esc(t('lookup_cur_hashrate'))}</div><div class="v">${fmtHR(perf.hashrate, meta.hashUnit)}</div></div>
             <div class="tile"><div class="k">${esc(t('lookup_pending'))}</div><div class="v">${amtHTML(d.pendingBalance, meta)}</div></div>
             <div class="tile"><div class="k">${esc(t('lookup_paid'))}</div><div class="v">${amtHTML(d.totalPaid, meta)}</div></div>
             <div class="tile"><div class="k">${esc(t('lookup_last_pay'))}</div>
@@ -483,7 +486,7 @@
             const row = ([w, x]) => `<div class="wk-row">
                 <span class="wk-dot"></span>
                 <span class="wk-name" title="${esc(w)}">${esc(w || 'default')}</span>
-                <span class="wk-hr">${esc(fmtHRText(x.hashrate))}</span>
+                <span class="wk-hr">${esc(fmtHRText(x.hashrate, meta.hashUnit))}</span>
                 <span class="wk-sub">${(Number(x.sharesPerSecond) || 0).toFixed(3)}/s</span>
                 <span class="wk-ago"${x.lastSeen ? ` title="${esc(fmtTime(x.lastSeen))}"` : ''}>${x.lastSeen ? esc(timeAgo(x.lastSeen)) : '—'}</span>
               </div>`;
@@ -517,7 +520,7 @@
               }).join('')}
             </div>` : `<div class="chart-empty">${esc(t('empty_payments'))}</div>`}
           </div>`;
-        hashrateChart('miner-chart', d.performanceSamples || [], t('lookup_cur_hashrate'), '#199e70');
+        hashrateChart('miner-chart', d.performanceSamples || [], t('lookup_cur_hashrate'), '#199e70', meta.hashUnit);
         bindCopy(box);
       } catch (e) {
         box.innerHTML = `<div class="err-box">${esc(e.status === 429 ? t('lookup_err_rate') : t('lookup_err_notfound'))}</div>`;
