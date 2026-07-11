@@ -133,6 +133,7 @@ type Snapshot struct {
 	SharesPerSecond float64
 	Miners          int
 	Workers         int
+	LastSeen        time.Time // 该口径最近一条 share 时间（池级/种子回灌为零值）
 }
 
 // MinerSnapshot 单矿工即时快照（Workers 按 worker 名拆分）。
@@ -185,6 +186,9 @@ func (t *Tracker) Miners(now time.Time) []MinerSnapshot {
 		ws := m.Workers[r.worker]
 		ws.Hashrate += r.diff
 		ws.SharesPerSecond++
+		if r.at.After(ws.LastSeen) {
+			ws.LastSeen = r.at
+		}
 		m.Workers[r.worker] = ws
 	}
 	w := t.windowSec()
@@ -243,6 +247,85 @@ func (t *Tracker) PoolSamples(now time.Time) []Sample {
 	sort.Slice(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })
 	return out
 }
+
+// SeedBucket 从持久化快照（minerstats 行）回灌一个曲线桶——启动恢复用。
+// 只动 buckets 不动即时窗口；hashrate/sps 按本包口径逆换算回 Σdiff/条数，
+// 与实时 Record 累计完全同构（曲线跨重启无缝）。
+func (t *Tracker) SeedBucket(start time.Time, miner, worker string, hashrate, sharesPerSecond float64) {
+	if worker == "" {
+		worker = "default"
+	}
+	sec := t.cfg.BucketSize.Seconds()
+	diff := hashrate * sec / t.cfg.Multiplier
+	shares := int64(sharesPerSecond*sec + 0.5)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	bs := start.Truncate(t.cfg.BucketSize)
+	b := t.buckets[bs.Unix()]
+	if b == nil {
+		b = &bucket{start: bs, miners: map[string]map[string]*workerAgg{}}
+		t.buckets[bs.Unix()] = b
+	}
+	b.sumDiff += diff
+	b.shares += shares
+	mw := b.miners[miner]
+	if mw == nil {
+		mw = map[string]*workerAgg{}
+		b.miners[miner] = mw
+	}
+	wa := mw[worker]
+	if wa == nil {
+		wa = &workerAgg{}
+		mw[worker] = wa
+	}
+	wa.sumDiff += diff
+	wa.shares += shares
+}
+
+// SeedRecent 只回灌即时滚动窗口（不动 buckets）——启动恢复时用于「已被
+// SeedBucket 覆盖的时间段」内属于即时窗口的 share，避免桶被双计。
+func (t *Tracker) SeedRecent(addr, worker string, diff float64, at time.Time) {
+	if worker == "" {
+		worker = "default"
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.recent = append(t.recent, shareRec{addr: addr, worker: worker, diff: diff, at: at})
+}
+
+// CompletedBucket 导出指定起点的桶（池级样点 + per-矿工 per-worker 明细，
+// 已换算成 hashrate 口径）——持久化写库用。ok=false 表示该桶无数据。
+func (t *Tracker) CompletedBucket(start time.Time) (Sample, map[string]map[string]Snapshot, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sec := t.cfg.BucketSize.Seconds()
+	b := t.buckets[start.Truncate(t.cfg.BucketSize).Unix()]
+	if b == nil {
+		return Sample{}, nil, false
+	}
+	s := Sample{
+		Created:         b.start,
+		Hashrate:        b.sumDiff * t.cfg.Multiplier / sec,
+		SharesPerSecond: float64(b.shares) / sec,
+	}
+	miners := make(map[string]map[string]Snapshot, len(b.miners))
+	for addr, mw := range b.miners {
+		ws := make(map[string]Snapshot, len(mw))
+		for name, wa := range mw {
+			ws[name] = Snapshot{
+				Hashrate:        wa.sumDiff * t.cfg.Multiplier / sec,
+				SharesPerSecond: float64(wa.shares) / sec,
+			}
+		}
+		miners[addr] = ws
+	}
+	return s, miners, true
+}
+
+// BucketSize / Window / Retain 暴露已填充的配置（持久化对齐与启动恢复用）。
+func (t *Tracker) BucketSize() time.Duration { return t.cfg.BucketSize }
+func (t *Tracker) Window() time.Duration     { return t.cfg.Window }
+func (t *Tracker) Retain() time.Duration     { return t.cfg.Retain }
 
 // MinerSamples 单矿工 24h 曲线（含 per-worker 拆分，miningcore performanceSamples 形状）。
 func (t *Tracker) MinerSamples(addr string, now time.Time) []Sample {

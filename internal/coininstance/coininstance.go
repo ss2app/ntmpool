@@ -147,14 +147,30 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 		hrCfg.Multiplier = float64(1<<32) / float64(0xffff)
 	}
 	inst.tracker = hashrate.New(hrCfg)
-	// PG 模式：从 shares 表回放最近 24h，重建算力曲线/即时窗口——进程重启后
-	// /performance 曲线不再清零（share 明细本就持久化，回放=真实数据非估算）。
-	// 必须在端口开始收 share 之前做完，避免与实时 Record 重叠计数。
+	// PG 模式：重启曲线恢复（必须在端口收 share 前做完，避免与实时 Record 重叠计数）。
+	// 两级：①minerstats 快照种子回灌（O(矿工×144) 恒定，与 shares 保留策略解耦）
+	//      ②shares 回放补「种子之后的增量段」+「即时窗口段」（真实明细非估算）。
+	// 首次部署 minerstats 为空 → 自动退回全量 24h shares 回放（原 9b24044 行为）。
 	if deps.DB != nil {
-		if n, err := replayShareHistory(ctx, deps.DB, cfg.ID, inst.tracker); err != nil {
+		now := time.Now()
+		since := now.Add(-inst.tracker.Retain())
+		bucketsFrom := since // 默认全量回放（无种子）
+		if last, n, err := seedFromStats(ctx, deps.DB, cfg.ID, inst.tracker); err != nil {
+			log.Printf("[%s] 算力快照种子回灌失败（退回全量 shares 回放）: %v", cfg.ID, err)
+		} else if n > 0 {
+			// 种子桶覆盖到 last+bucket；shares 回放桶段从这之后开始（避免双计），
+			// 但即时窗口（默认 10min）要完整 → since 取两者更早者，早段只灌即时窗口。
+			bucketsFrom = last.Add(inst.tracker.BucketSize())
+			since = bucketsFrom
+			if w := now.Add(-inst.tracker.Window()); w.Before(since) {
+				since = w
+			}
+			log.Printf("[%s] 算力曲线已从 minerstats 种子回灌：24h 内 %d 行快照", cfg.ID, n)
+		}
+		if n, err := replayShareHistory(ctx, deps.DB, cfg.ID, inst.tracker, since, bucketsFrom); err != nil {
 			log.Printf("[%s] 算力曲线回放失败（不影响运行，曲线随新 share 重新积累）: %v", cfg.ID, err)
 		} else if n > 0 {
-			log.Printf("[%s] 算力曲线已从 PG 回放重建：24h 内 %d 条 share", cfg.ID, n)
+			log.Printf("[%s] 算力曲线已从 PG 回放补齐：%d 条 share", cfg.ID, n)
 		}
 	}
 
@@ -247,6 +263,15 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	}
 
 	inst.startLoops(ctx)
+	// 算力桶持久化（poolstats/minerstats 快照，桶翻转写库）——parts 已装配，
+	// Network() 可用；PG 模式才有落点。
+	if deps.DB != nil {
+		inst.wg.Add(1)
+		go func() {
+			defer inst.wg.Done()
+			inst.runStatsPersist(ctx, deps.DB)
+		}()
+	}
 	// 恢复扫描（崩溃恢复；内存实现无持久化，Postgres 实现时真正生效）
 	_ = inst.engine.Recover(ctx)
 	return inst, nil

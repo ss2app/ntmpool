@@ -452,13 +452,27 @@
           <div class="panel" style="margin-top:6px"><h3>${esc(t('chart_miner_hashrate'))}</h3><div class="chart-box" id="miner-chart"></div></div>
           <div class="panel"><h3>${esc(t('lookup_workers'))}</h3>
             <div class="tbl-wrap"><table class="tbl">
-              <tr><th>${esc(t('col_worker'))}</th><th class="num">${esc(t('col_hashrate'))}</th><th class="num">${esc(t('col_shares'))}</th></tr>
-              ${Object.keys(workers).length ? Object.entries(workers).map(([w, x]) => `<tr>
+              <tr><th>${esc(t('col_worker'))}</th><th class="num">${esc(t('col_hashrate'))}</th><th class="num">${esc(t('col_shares'))}</th><th>${esc(t('col_lastshare'))}</th></tr>
+              ${Object.keys(workers).length ? Object.entries(workers).sort((a, b) => a[0].localeCompare(b[0])).map(([w, x]) => `<tr>
                 <td class="mono">${esc(w || 'default')}</td>
                 <td class="num">${esc(fmtHRText(x.hashrate))}</td>
-                <td class="num">${(Number(x.sharesPerSecond) || 0).toFixed(3)}</td></tr>`).join('')
-              : `<tr><td colspan="3" style="color:var(--muted)">${esc(t('empty_miners'))}</td></tr>`}
+                <td class="num">${(Number(x.sharesPerSecond) || 0).toFixed(3)}</td>
+                <td${x.lastSeen ? ` title="${esc(fmtTime(x.lastSeen))}"` : ''}>${x.lastSeen ? esc(timeAgo(x.lastSeen)) : '—'}</td></tr>`).join('')
+              : `<tr><td colspan="4" style="color:var(--muted)">${esc(t('empty_miners'))}</td></tr>`}
             </table></div>
+          </div>
+          <div class="panel"><h3>${esc(t('lookup_payments'))}</h3>
+            ${(d.recentPayments || []).length ? `<div class="tbl-wrap"><table class="tbl">
+              <tr><th>${esc(t('col_time'))}</th><th class="num">${esc(t('col_amount'))}</th><th>${esc(t('col_status'))}</th><th>${esc(t('col_txid'))}</th></tr>
+              ${d.recentPayments.map((x) => {
+                const st = x.status || 'sent';
+                return `<tr>
+                  <td title="${esc(fmtTime(x.created))}">${esc(timeAgo(x.created))}</td>
+                  <td class="num">${esc(fmtAmt(x.amount))} ${esc(sym)}</td>
+                  <td><span class="status ${esc(st)}">${esc(t('status_' + st) !== 'status_' + st ? t('status_' + st) : st)}</span></td>
+                  <td>${shortHex(x.transactionConfirmationData, true)}</td></tr>`;
+              }).join('')}
+            </table></div>` : `<div class="chart-empty">${esc(t('empty_payments'))}</div>`}
           </div>`;
         hashrateChart('miner-chart', d.performanceSamples || [], t('lookup_cur_hashrate'), '#199e70');
       } catch (e) {

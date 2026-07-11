@@ -115,3 +115,69 @@ func TestDefaultWorker(t *testing.T) {
 		t.Fatalf("空 worker 应归 default: %+v", m.Workers)
 	}
 }
+
+// SeedBucket 逆换算回灌与实时 Record 同构：种子桶 → CompletedBucket/Samples 读回一致。
+func TestSeedBucketRoundTrip(t *testing.T) {
+	// 实时路径：一个桶里 6 条 diff=2048
+	live := New(Config{})
+	for i := 0; i < 6; i++ {
+		live.Record("addrA", "rig1", 2048, t0.Add(time.Duration(i)*time.Minute))
+	}
+	s, miners, ok := live.CompletedBucket(t0)
+	if !ok {
+		t.Fatal("live CompletedBucket 无数据")
+	}
+	// 种子路径：把导出的 hashrate/sps 回灌进新 tracker
+	seeded := New(Config{})
+	for addr, ws := range miners {
+		for name, w := range ws {
+			seeded.SeedBucket(t0, addr, name, w.Hashrate, w.SharesPerSecond)
+		}
+	}
+	s2, miners2, ok := seeded.CompletedBucket(t0)
+	if !ok {
+		t.Fatal("seeded CompletedBucket 无数据")
+	}
+	if !approx(s2.Hashrate, s.Hashrate) || !approx(s2.SharesPerSecond, s.SharesPerSecond) {
+		t.Fatalf("池级不同构: live=(%v,%v) seeded=(%v,%v)",
+			s.Hashrate, s.SharesPerSecond, s2.Hashrate, s2.SharesPerSecond)
+	}
+	if !approx(miners2["addrA"]["rig1"].Hashrate, miners["addrA"]["rig1"].Hashrate) {
+		t.Fatalf("矿工级不同构")
+	}
+	// 曲线读回：MinerSamples 也要看到种子桶
+	ms := seeded.MinerSamples("addrA", t0.Add(11*time.Minute))
+	if len(ms) == 0 || !approx(ms[0].Hashrate, s.Hashrate) {
+		t.Fatalf("MinerSamples 读不到种子桶: %+v", ms)
+	}
+}
+
+// SeedRecent 只进即时窗口，不碰曲线桶（回放防双计的关键语义）。
+func TestSeedRecentOnlyWindow(t *testing.T) {
+	tr := New(Config{})
+	tr.SeedRecent("addrA", "rig1", 4096, t0)
+	if snap := tr.Pool(t0.Add(time.Minute)); snap.Hashrate == 0 {
+		t.Fatal("SeedRecent 未进即时窗口")
+	}
+	if _, _, ok := tr.CompletedBucket(t0); ok {
+		t.Fatal("SeedRecent 不应写曲线桶")
+	}
+}
+
+// LastSeen：per-worker 最近提交时间。
+func TestWorkerLastSeen(t *testing.T) {
+	tr := New(Config{})
+	tr.Record("addrA", "rig1", 100, t0)
+	tr.Record("addrA", "rig1", 100, t0.Add(3*time.Minute))
+	tr.Record("addrA", "rig2", 100, t0.Add(1*time.Minute))
+	m, ok := tr.Miner("addrA", t0.Add(4*time.Minute))
+	if !ok {
+		t.Fatal("Miner 不存在")
+	}
+	if got := m.Workers["rig1"].LastSeen; !got.Equal(t0.Add(3 * time.Minute)) {
+		t.Fatalf("rig1 LastSeen=%v", got)
+	}
+	if got := m.Workers["rig2"].LastSeen; !got.Equal(t0.Add(1 * time.Minute)) {
+		t.Fatalf("rig2 LastSeen=%v", got)
+	}
+}

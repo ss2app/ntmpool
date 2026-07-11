@@ -202,6 +202,7 @@ type minerRow struct {
 type workerPerf struct {
 	Hashrate        float64 `json:"hashrate"`
 	SharesPerSecond float64 `json:"sharesPerSecond"`
+	LastSeen        string  `json:"lastSeen,omitempty"` // 该矿机最近一条 share 时间（即时快照才有）
 }
 
 type perfSample struct {
@@ -219,6 +220,7 @@ type minerDetail struct {
 	LastPaymentTxid    string          `json:"lastPaymentTxid,omitempty"`
 	LastPaymentAmount  json.RawMessage `json:"lastPaymentAmount,omitempty"`
 	LastPaymentStatus  string          `json:"lastPaymentStatus,omitempty"`
+	RecentPayments     []paymentInfo   `json:"recentPayments,omitempty"` // 最近 N 笔（自查：不脱敏自己的地址）
 	Performance        *perfSample     `json:"performance,omitempty"`
 	PerformanceSamples []perfSample    `json:"performanceSamples"`
 }
@@ -484,7 +486,11 @@ func (s *Server) handleMinerDetail(w http.ResponseWriter, r *http.Request) {
 			Workers:         map[string]workerPerf{},
 		}
 		for name, ws := range hr.Workers {
-			perf.Workers[name] = workerPerf{Hashrate: ws.Hashrate, SharesPerSecond: ws.SharesPerSecond}
+			wp := workerPerf{Hashrate: ws.Hashrate, SharesPerSecond: ws.SharesPerSecond}
+			if !ws.LastSeen.IsZero() {
+				wp.LastSeen = ws.LastSeen.UTC().Format(time.RFC3339)
+			}
+			perf.Workers[name] = wp
 		}
 		d.Performance = &perf
 	}
@@ -500,13 +506,17 @@ func (s *Server) handleMinerDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		d.PerformanceSamples = append(d.PerformanceSamples, ps)
 	}
-	// 最近一笔打款（自查看全量，不脱敏自己的数据）
+	// 最近打款（自查看全量，不脱敏自己的数据）：首笔平铺（向后兼容）+ 最近 10 笔列表
 	if pays := flattenPayments(p, s.masker, addr); len(pays) > 0 {
 		last := pays[0]
 		d.LastPayment = last.Created
 		d.LastPaymentTxid = last.TransactionConfirmationData
 		d.LastPaymentAmount = last.Amount
 		d.LastPaymentStatus = last.Status
+		if len(pays) > 10 {
+			pays = pays[:10]
+		}
+		d.RecentPayments = pays
 	}
 	writeJSON(w, d)
 }

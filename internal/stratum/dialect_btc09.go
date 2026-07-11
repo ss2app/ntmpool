@@ -224,6 +224,27 @@ func (c *btc09Conn) dispatch(ctx context.Context, msg *btc09Req) error {
 	}
 }
 
+// parseBtc09Login 地址/矿机名归一：
+//   - NTMminer ≤v1.13 没设 --worker 时把 worker 硬编码成 "ntmminer" 发上来
+//     （nm_stratum.c btc09_connect_login 兜底）——视同未设置；
+//   - 地址可带 ".worker" 后缀（老池同款；矿工改 -u 钱包.矿机名 即可命名，不用换锄头）；
+//   - 都没有 → "default"。
+func parseBtc09Login(addr, worker string) (string, string) {
+	if strings.EqualFold(worker, "ntmminer") {
+		worker = ""
+	}
+	if i := strings.IndexByte(addr, '.'); i >= 0 {
+		if worker == "" {
+			worker = addr[i+1:]
+		}
+		addr = addr[:i]
+	}
+	if worker == "" {
+		worker = "default"
+	}
+	return addr, worker
+}
+
 func (c *btc09Conn) onLogin(msg *btc09Req) error {
 	var p btc09LoginParams
 	_ = json.Unmarshal(msg.Params, &p)
@@ -231,20 +252,10 @@ func (c *btc09Conn) onLogin(msg *btc09Req) error {
 	if addr == "" {
 		addr = p.Login
 	}
-	// 地址可带 ".worker" 后缀（老池同款）
-	if i := strings.IndexByte(addr, '.'); i >= 0 {
-		if p.Worker == "" {
-			p.Worker = addr[i+1:]
-		}
-		addr = addr[:i]
-	}
+	addr, worker := parseBtc09Login(addr, p.Worker)
 	if err := c.d.handler.ValidateAddress(addr); err != nil {
 		_ = c.replyErr(msg.ID, "invalid 09C address")
 		return fmt.Errorf("[%s] 非法登录地址 %q: %w", c.d.coinID, addr, err)
-	}
-	worker := p.Worker
-	if worker == "" {
-		worker = "default"
 	}
 
 	c.mu.Lock()

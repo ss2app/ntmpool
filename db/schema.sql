@@ -146,6 +146,8 @@ CREATE TABLE IF NOT EXISTS minerstats (
     created      TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_minerstats_pool_miner ON minerstats(poolid, miner, created);
+-- 桶持久化幂等写（statspersist：ON CONFLICT DO NOTHING 的冲突目标）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_minerstats_bucket ON minerstats(poolid, miner, worker, created);
 
 CREATE TABLE IF NOT EXISTS poolstats (
     poolid       TEXT        NOT NULL,
@@ -158,6 +160,7 @@ CREATE TABLE IF NOT EXISTS poolstats (
     created      TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_poolstats_pool ON poolstats(poolid, created);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_poolstats_bucket ON poolstats(poolid, created);
 
 -- 多实例注册表（多服务器横向扩展，R14.2）
 CREATE TABLE IF NOT EXISTS instances (
