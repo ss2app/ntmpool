@@ -337,8 +337,12 @@
     const sym = (p.coin && p.coin.symbol) || meta.symbol || '';
     const tiles = [
       [t('stat_pool_hashrate'), fmtHR(ps.poolHashrate, meta.hashUnit)],
-      [t('stat_net_hashrate'), fmtHR(ns.networkHashrate, meta.hashUnit)],
-      [t('stat_pool_share'), `<span>${share.toFixed(2)}</span><small>%</small>`],
+      // 链无全网算力真值口径（如 midstate）时 API 不给数——隐藏而不是显 0.00
+      //（矿池网页只放真实数据铁律：绝不用难度反推冒充全网算力）
+      ...(ns.networkHashrate > 0 ? [
+        [t('stat_net_hashrate'), fmtHR(ns.networkHashrate, meta.hashUnit)],
+        [t('stat_pool_share'), `<span>${share.toFixed(2)}</span><small>%</small>`],
+      ] : []),
       [t('stat_miners_online'), `<span>${fmtInt(ps.connectedMiners)}</span>`],
       [t('stat_rigs_online'), `<span>${fmtInt(ps.connectedWorkers)}</span>`],
       [t('stat_height'), `<span>${fmtInt(ns.blockHeight)}</span>`],
