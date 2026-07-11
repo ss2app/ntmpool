@@ -36,7 +36,7 @@ func (f *fakePool) Cfg() config.CoinConfig        { return f.cfg }
 func (f *fakePool) Ledger() accounting.Ledger     { return f.ledger }
 func (f *fakePool) Hashrate() *hashrate.Tracker   { return f.tracker }
 func (f *fakePool) Batches() payout.BatchStore    { return f.batches }
-func (f *fakePool) ConnectedMiners() int          { return f.conns }
+func (f *fakePool) Connections() int              { return f.conns }
 func (f *fakePool) Network() core.NetworkSnapshot { return f.net }
 
 func newFakePool(t *testing.T) *fakePool {
@@ -86,7 +86,7 @@ func newFakePool(t *testing.T) *fakePool {
 		},
 		ledger: l, tracker: tr, batches: bs,
 		net:   core.NetworkSnapshot{Height: 150, Difficulty: 2000, HashPS: 1.5e9},
-		conns: 2,
+		conns: 5, // 5 条连接（矿机）；tracker 里 2 个地址（矿工）——钉死两个口径分离
 	}
 }
 
@@ -151,7 +151,8 @@ func TestPoolsShape(t *testing.T) {
 			} `json:"coin"`
 			Ports     map[string]json.RawMessage `json:"ports"`
 			PoolStats struct {
-				ConnectedMiners int     `json:"connectedMiners"`
+				ConnectedMiners  int     `json:"connectedMiners"`
+				ConnectedWorkers int     `json:"connectedWorkers"`
 				PoolHashrate    float64 `json:"poolHashrate"`
 			} `json:"poolStats"`
 			NetworkStats struct {
@@ -179,7 +180,7 @@ func TestPoolsShape(t *testing.T) {
 	if _, ok := p.Ports["3333"]; !ok {
 		t.Fatalf("ports 应含 3333: %v", p.Ports)
 	}
-	if p.PoolStats.ConnectedMiners != 2 || p.PoolStats.PoolHashrate <= 0 {
+	if p.PoolStats.ConnectedMiners != 2 || p.PoolStats.ConnectedWorkers != 5 || p.PoolStats.PoolHashrate <= 0 {
 		t.Fatalf("poolStats 错: %+v", p.PoolStats)
 	}
 	if p.NetworkStats.BlockHeight != 150 || p.NetworkStats.NetworkHashrate != 1.5e9 {

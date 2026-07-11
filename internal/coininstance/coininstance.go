@@ -394,7 +394,8 @@ func (inst *Instance) Hashrate() *hashrate.Tracker { return inst.tracker }
 func (inst *Instance) Batches() payout.BatchStore { return inst.batches }
 
 // ConnectedMiners 当前 stratum 在连数。
-func (inst *Instance) ConnectedMiners() int { return inst.parts.connCount() }
+// Connections 当前在线 stratum 连接数（≈矿机数：NTMminer/xmrig 每台机器一条连接）。
+func (inst *Instance) Connections() int { return inst.parts.connCount() }
 
 // Network 链上状态缓存快照（高度/难度来自当前 job，HashPS 来自真值口径缓存）。
 func (inst *Instance) Network() core.NetworkSnapshot {

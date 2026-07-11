@@ -35,7 +35,7 @@ type Pool interface {
 	Ledger() accounting.Ledger
 	Hashrate() *hashrate.Tracker
 	Batches() payout.BatchStore
-	ConnectedMiners() int
+	Connections() int
 	Network() core.NetworkSnapshot
 }
 
@@ -297,8 +297,11 @@ func (s *Server) poolInfo(ctx context.Context, p Pool) poolInfo {
 		SoloFeePercent: cfg.Payout.SoloFeePercent,
 		Address:        cfg.PoolAddress,
 		PoolStats: poolStatsInfo{
-			ConnectedMiners:  p.ConnectedMiners(),
-			ConnectedWorkers: hr.Workers,
+			// 口径（2026-07-11 语义修正）：connectedMiners=滚动窗口内去重矿工地址数
+			// （「几个矿工」）；connectedWorkers=在线 stratum 连接数（「几台矿机」——
+			// NTMminer/xmrig 每台机器一条连接）。旧版把连接数当矿工数：1 人 5 机显示 5 矿工。
+			ConnectedMiners:  hr.Miners,
+			ConnectedWorkers: p.Connections(),
 			PoolHashrate:     hr.Hashrate,
 			SharesPerSecond:  hr.SharesPerSecond,
 		},

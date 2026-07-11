@@ -227,7 +227,7 @@
           </div>
           <div class="grid">
             <div><div class="k">${esc(t('card_hashrate'))}</div><div class="v">${fmtHR(ps.poolHashrate)}</div></div>
-            <div><div class="k">${esc(t('card_miners'))}</div><div class="v">${fmtInt(ps.connectedMiners)}</div></div>
+            <div><div class="k">${esc(t('card_miners_rigs'))}</div><div class="v">${fmtInt(ps.connectedMiners)}<span style="color:var(--muted);font-weight:500"> / ${fmtInt(ps.connectedWorkers)}</span></div></div>
             <div><div class="k">${esc(t('card_fee'))}</div><div class="v">${esc(String(p.poolFeePercent))}%</div></div>
             <div><div class="k">${esc(t('card_height'))}</div><div class="v">${fmtInt(ns.blockHeight)}</div></div>
           </div>
@@ -315,6 +315,7 @@
       [t('stat_net_hashrate'), fmtHR(ns.networkHashrate)],
       [t('stat_pool_share'), `<span>${share.toFixed(2)}</span><small>%</small>`],
       [t('stat_miners_online'), `<span>${fmtInt(ps.connectedMiners)}</span>`],
+      [t('stat_rigs_online'), `<span>${fmtInt(ps.connectedWorkers)}</span>`],
       [t('stat_height'), `<span>${fmtInt(ns.blockHeight)}</span>`],
       [t('stat_net_diff'), `<span>${esc(fmtBig(ns.networkDifficulty))}</span>`],
       [t('stat_blocks_found'), `<span>${fmtInt(p.totalBlocks)}</span>`, `${t('stat_confirmed')}: ${fmtInt(p.totalConfirmedBlocks)}`],

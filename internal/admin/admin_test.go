@@ -74,7 +74,7 @@ func (f *fakeCoin) FeeCollect(_ context.Context, amount string) (string, error) 
 	return "collecttx", nil
 }
 func (f *fakeCoin) UncollectedFees(context.Context) (string, error) { return "1.50000000", nil }
-func (f *fakeCoin) ConnectedMiners() int                            { return 3 }
+func (f *fakeCoin) Connections() int                            { return 3 }
 func (f *fakeCoin) Network() core.NetworkSnapshot                   { return core.NetworkSnapshot{Height: 42} }
 
 type strErr string

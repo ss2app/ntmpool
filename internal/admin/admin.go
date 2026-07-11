@@ -44,7 +44,7 @@ type CoinControl interface {
 	FeeSweep(ctx context.Context, coldAddress, amount string) (txid string, err error)
 	FeeCollect(ctx context.Context, amount string) (txid string, err error)
 	UncollectedFees(ctx context.Context) (string, error)
-	ConnectedMiners() int
+	Connections() int
 	Network() core.NetworkSnapshot
 }
 
@@ -212,7 +212,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		p := all[id]
 		c := p.Cfg()
 		out.Coins = append(out.Coins, coinStatus{
-			ID: id, ConnectedMiners: p.ConnectedMiners(), BlockHeight: p.Network().Height,
+			ID: id, ConnectedMiners: p.Connections(), BlockHeight: p.Network().Height,
 			PayoutsEnabled: c.Payout.Enabled, Frozen: p.PayoutFrozen(),
 			NewConns: c.NewConnsEnabled, FeePercent: c.Payout.FeePercent,
 			SoloFeePercent: c.Payout.SoloFeePercent,
