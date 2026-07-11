@@ -64,5 +64,28 @@ window.NTM_CONFIG = {
       descEn: 'Bitcoin 09 (09C) is a clean-room Go rewrite of Bitcoin with one change: PoW is Argon2id at 64 MiB per hash — memory-hard, CPU-only, ASIC/GPU hostile. 21M cap, 50-coin subsidy, 10-minute blocks, halving every 210,000 blocks.',
       descZh: 'Bitcoin 09（09C）是 Bitcoin 的 clean-room Go 重写，只改一处：PoW 换成 64 MiB Argon2id —— 内存硬、CPU 专属、天然抗 ASIC/GPU。2100 万上限、50 币补贴、10 分钟出块、每 21 万块减半，经济模型与比特币逐条一致。',
     },
+    midstate: {
+      symbol: 'MDS',
+      name: 'Midstate',
+      algo: 'BLAKE3 VDF',
+      color: '#4fd1c5',
+      hashUnit: 'ext/s', // 1 ext = 1,000,000 次 BLAKE3（VDF 全量），与 NTMminer 显示同口径
+      // 独立 NTMPool 实例：前端经 /api-mds 反代（nginx→隧道→池 4411）
+      apiBase: '/api-mds',
+      stratum: [
+        { host: 'hk.tutuit.xyz', port: 3333 },
+      ],
+      ntmAlgoFlag: 'midstate',
+      addressPrefix: '',
+      addressExample: 'c15363...(你的 64 位 hex midstate 地址)',
+      xmrigCompatible: false, // midstate 是 NTMminer 专属线协议
+      confirmations: 8,
+      links: {
+        site: 'https://github.com/ciphernom/midstate',
+        git: 'https://github.com/ciphernom/midstate',
+      },
+      descEn: 'Midstate (MDS) is a post-quantum chain (WOTS/MSS signatures) with an iterated-BLAKE3 sequential PoW — GPU friendly. This pool pays out directly inside the block: each block\'s coinbase is split to miner addresses at template time (PPLNS), so rewards arrive the moment a block is found — no pool-side transfers, no payout delay. MDS has no coinbase maturity: coins are spendable immediately.',
+      descZh: 'Midstate（MDS）是后量子签名链（WOTS/MSS），PoW 为迭代 BLAKE3 顺序哈希 —— GPU 友好。本池采用 coinbase 直付：模板构建时就按 PPLNS 把块奖励拆分直接付到矿工地址，「爆块即到账」—— 无池端转账、无打款延迟；且 MDS 无 coinbase 成熟期，到账即可花。',
+    },
   },
 };
