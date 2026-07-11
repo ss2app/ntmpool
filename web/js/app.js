@@ -133,7 +133,7 @@
   function coinLogo(id, meta, size) {
     const s = size || 40;
     if (meta && meta.logo) {
-      return `<span class="coin-logo" style="background:#fff;width:${s}px;height:${s}px"><img src="${esc(meta.logo)}" alt="${esc(meta.symbol || id)}" style="width:72%;height:72%;object-fit:contain"></span>`;
+      return `<span class="coin-logo" style="background:#0d0d0d;border:1px solid rgba(255,255,255,0.10);width:${s}px;height:${s}px"><img src="${esc(meta.logo)}" alt="${esc(meta.symbol || id)}" style="width:72%;height:72%;object-fit:contain"></span>`;
     }
     const sym = meta ? meta.symbol : id.toUpperCase();
     const color = (meta && meta.color) || '#3987e5';
