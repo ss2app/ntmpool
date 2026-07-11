@@ -103,7 +103,15 @@
   （payout/fee_collect/fee_sweep 分开计）；admin 单币视图新增 `uncollectedFees` 字段。
 - opid 落库 + Recover 按 opid 归位 txid（闭合 z_sendmany crash 窗口）。
 - z_sendmany 分页（当前 >45 收款人 fail-fast；真矿工多了再做）。
-- ZMQ 新块通知（沿用轮询先跑通）。
+- ~~ZMQ 新块通知~~ ✅2026-07-11 孤块率修复三件套（commits 7a46bb9/0a4442e，生产已部署验证）：
+  ①**GBT longpoll**（`dragonxrpc.LongPollNotifier`，挂等请求链头一动即回，比 ZMQ 少一次拉取 RTT；
+  节点不支持时哨兵退出防忙轮询）——生产实测真实新块逐块「新块推送(longpoll)→模板已即时刷新」，
+  节点重启断连自愈；②**纯 Go ZMQ**（`internal/zmqsub` 手写 ZMTP 3.0 SUB 零依赖，nodes[].zmq 配置即挂，
+  家族无关）——⚠dragonxd 官方 release **未编 ZMQ**（strings 零 zmq 符号，conf 配 zmqpub 也不监听），
+  该通道对 dragonx 静默待命，对其他币/换二进制后即用；③**节点入站 P2P**（listen=1+maxconnections=64+
+  externalip+compose 映射 21768，公网可达实测）——出站硬上限 ~8 导致仅 7 peer 收块/传块都慢，
+  是孤块的另一半根因。coininstance 落地 docs/02 Notifier 谱系：多通道并存 (Height,Hash) 去重取最先，
+  2s 轮询兜底永远保留。
 - ~~epoch 订正~~ ✅2026-07-10 CI 真链 KAT 绿后已订正 spec §3（1024/64 钉死）。
 - ~~max(powDiff,rxDiff) 双接受~~ ✅已实现（用户确认矿工现役默认 drg-xmrig，legacy 兼容顺手做了）。
 - ~~stale 洪峰~~ ✅已修（JobKey 高度去重，49%→0%，commit 9af48b4；沉淀 pitfall
