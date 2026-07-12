@@ -53,6 +53,11 @@ fi
 # ---------- DOCKER-USER（容器映射端口） ----------
 # 保证链存在（docker 未起时也不报错；docker 起来会直接使用既有链）
 iptables -N DOCKER-USER 2>/dev/null || true
+# ★禁一切容器拨本机公网 IP —— NAT 发卡回环会「自打自 DDoS」：
+#   07-12 事故根因 = btc09-poolnode 从 peer gossip 学到 103.80.18.140:9009 拨了回去，
+#   与内网桥连接形成双连接无限回声，135Mbps 对称流量把 IP 打到被机房 null-route。
+iptables -C DOCKER-USER -d 103.80.18.140/32 -m comment --comment ntm-fw-no-hairpin -j DROP 2>/dev/null || \
+  iptables -I DOCKER-USER 1 -d 103.80.18.140/32 -m comment --comment ntm-fw-no-hairpin -j DROP
 # 旧 midstate fork 池 web :8000 —— 只认 209/161，其余丢（P2P 端口不动，保持公网）
 iptables -C DOCKER-USER -s $FWD209 -p tcp --dport 8000 -m comment --comment ntm-fw-8000 -j RETURN 2>/dev/null || \
   iptables -I DOCKER-USER 1 -s $FWD209 -p tcp --dport 8000 -m comment --comment ntm-fw-8000 -j RETURN
