@@ -260,3 +260,40 @@ footer a { color: var(--ink-2); }
 .pay-amt small { font-size: 12px; color: var(--ink-2); font-weight: 600; margin-left: 4px; }
 .pay-sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; display: flex; align-items: center; gap: 8px; }
 .pay-tx { display: flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; font-size: 13px; white-space: nowrap; }
+
+/* ---------- download + tutorial page ---------- */
+.dl-page { padding-top: 28px; }
+.dl-hero { padding: 8px 0 20px; }
+.dl-hero h1 { font-size: 30px; margin: 0 0 8px; letter-spacing: -0.5px; }
+.dl-hero p.sub { color: var(--ink-2); font-size: 16px; max-width: 720px; margin: 0; }
+.dl-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.dlcard { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.dlcard.building { opacity: 0.6; }
+.dlcard-top { display: flex; align-items: center; gap: 12px; }
+.dlcard .os-ic { width: 34px; height: 34px; color: var(--ink-2); flex: none; display: flex; align-items: center; justify-content: center; }
+.dlcard .os-ic svg { width: 30px; height: 30px; }
+.dlcard .os { font-weight: 700; font-size: 16px; }
+.dlcard .fn { color: var(--muted); font-size: 12.5px; }
+.dlcard-note { color: var(--ink-2); font-size: 13px; line-height: 1.5; flex: 1; }
+.dlcard-btn { justify-content: center; }
+.dlcard .sha { border-top: 1px solid var(--grid); padding-top: 10px; }
+.dlcard .sha-l { display: block; color: var(--muted); font-size: 11.5px; margin-bottom: 3px; }
+.dlcard .sha-v { font-family: var(--mono); font-size: 10.5px; color: var(--ink-2); word-break: break-all; line-height: 1.4; }
+.pgroup { font-size: 14px; color: var(--series-1); margin: 18px 0 8px; font-weight: 700; }
+table.tbl.params td { white-space: normal; vertical-align: top; line-height: 1.5; }
+table.tbl.params td:first-child { white-space: nowrap; width: 1%; padding-right: 20px; }
+.tbl .pflag { font-family: var(--mono); font-size: 12.5px; color: var(--ink); font-weight: 600; }
+.tbl .req { font-family: var(--font); font-size: 10.5px; font-weight: 700; color: var(--warning); background: rgba(250, 178, 25, 0.12); border-radius: 5px; padding: 1px 6px; margin-left: 4px; }
+table.tbl.params .mono { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+table.tbl.cheatsheet td { white-space: normal; vertical-align: middle; }
+table.tbl.cheatsheet td:nth-child(3) { min-width: 340px; }
+.codeblock.cs { margin: 0; font-size: 12.5px; padding: 10px 46px 10px 12px; }
+.fnotes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.fnote { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.fnote-t { font-weight: 700; font-size: 14px; margin-bottom: 5px; }
+.fnote-d { color: var(--ink-2); font-size: 13px; line-height: 1.55; }
+#nav-dl-btn svg { width: 15px; height: 15px; }
+@media (max-width: 640px) {
+  .dl-hero h1 { font-size: 24px; }
+  #nav-dl-btn { display: none; }
+}

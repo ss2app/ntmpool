@@ -175,7 +175,14 @@
   // ---------- nav ----------
   function renderNav() {
     $('#nav-home').textContent = t('nav_home');
+    const nd = $('#nav-download'); if (nd) nd.textContent = t('nav_download');
+    const nb = $('#nav-dl-btn-t'); if (nb) nb.textContent = t('nav_dl_btn');
+    const fd = $('#foot-dl'); if (fd) fd.textContent = t('nav_dl_btn');
     $('#lang-btn').textContent = lang === 'zh' ? 'EN' : '中文';
+    // 高亮当前导航
+    const path = location.pathname.replace(/\/+$/, '') || '/';
+    const home = $('#nav-home'); if (home) home.classList.toggle('active', path === '/' || path === '/index.html');
+    if (nd) nd.classList.toggle('active', path === '/download');
   }
 
   // ---------- home ----------
@@ -184,13 +191,10 @@
     const app = $('#app');
     app.innerHTML = `
       <section class="hero wrap">
-        <a class="gh-banner" href="${esc(CFG.brand.githubMiner)}" target="_blank" rel="noopener">
-          ${GH_ICON}<span>${esc(t('gh_banner'))}</span><span class="url">${esc(CFG.brand.githubMinerLabel)}</span>
-        </a>
         <h1>${esc(t('hero_title_pre'))} <span class="expansion">· ${esc(CFG.brand.expansionEn)}</span><br>${esc(t('hero_title_post'))}</h1>
         <p class="sub">${esc(t('hero_sub'))}</p>
         <div class="hero-cta">
-          <a class="btn primary" href="${esc(CFG.brand.githubMiner)}/releases/latest" target="_blank" rel="noopener">${DL_ICON}${esc(t('hero_cta_download'))}</a>
+          <a class="btn primary" href="/download" data-nav>${DL_ICON}${esc(t('hero_cta_download'))}</a>
           <a class="btn" href="/dragonx" data-nav>${esc(t('hero_cta_start'))}</a>
         </div>
         <div class="stat-strip" id="home-strip">
@@ -269,6 +273,138 @@
         </div>
       </div>`;
     cards.innerHTML = html;
+  }
+
+  // ---------- download + tutorial page ----------
+  const OS_ICON = {
+    win: '<svg viewBox="0 0 88 88"><path fill="currentColor" d="M0 12.4 36 7.5v34.3H0zM40 6.9 88 0v41.8H40zM0 45.9h36v34.3L0 75.4zM40 46.2h48V88l-48-6.6z"/></svg>',
+    linux: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2c-2 0-3.2 1.7-3.2 3.8 0 1.3.2 2 .2 3.2 0 1-.7 1.8-1.5 3C6 17 4.4 18.6 4.4 20c0 1.3 1 1.7 2.4 2 1.5.3 2.2 1 3.3 1s1.6-.6 3-1c1-.3 2.5-.4 2.5-1.7 0-1.3-1.6-2.9-3.1-5-.8-1.2-1.5-2-1.5-3 0-1.2.2-1.9.2-3.2C11.2 3.7 10 2 12 2z"/></svg>',
+  };
+
+  function renderDownload() {
+    if (state.timer) { clearInterval(state.timer); state.timer = null; }
+    const zh = lang === 'zh';
+    document.title = zh ? '下载 NTMminer — NTM 矿池' : 'Download NTMminer — NTM Pools';
+    const dz = CFG.downloads || { version: '', baseUrl: '/downloads', files: [] };
+
+    // 下载卡片
+    const cards = (dz.files || []).map((f) => {
+      const url = `${dz.baseUrl}/${f.file}`;
+      const note = zh ? (f.noteZh || '') : (f.noteEn || '');
+      const icon = OS_ICON[f.icon] || DL_ICON;
+      if (f.status !== 'ready') {
+        return `<div class="dlcard building">
+          <div class="dlcard-top"><span class="os-ic">${icon}</span><div><div class="os">${esc(f.os)}</div>
+          <div class="fn">${esc(t('dl_building'))}…</div></div></div>
+          <div class="dlcard-note">${esc(note)}</div></div>`;
+      }
+      const sha = f.sha256
+        ? `<div class="sha"><span class="sha-l">${esc(t('dl_verify'))}</span><code class="sha-v">${esc(f.sha256)}</code></div>`
+        : '';
+      return `<div class="dlcard">
+        <div class="dlcard-top"><span class="os-ic">${icon}</span><div><div class="os">${esc(f.os)}</div>
+        <div class="fn mono">${esc(f.file)}</div></div></div>
+        <div class="dlcard-note">${esc(note)}</div>
+        <a class="btn primary dlcard-btn" href="${esc(url)}" download>${DL_ICON}${esc(t('dl_get_t'))}</a>
+        ${sha}</div>`;
+    }).join('');
+
+    // 完整参数说明（内联双语，按组）
+    const P = (flag, zhD, enD, req) =>
+      `<tr><td class="mono pflag">${esc(flag)}${req ? ' <span class="req">'+(zh?'必填':'required')+'</span>' : ''}</td><td>${zh ? zhD : enD}</td></tr>`;
+    const connRows = [
+      P('-o, --url <host:port>', '矿池地址，可带 <span class="mono">stratum+tcp://</span> 前缀。', 'Pool address (host:port); may include a <span class="mono">stratum+tcp://</span> prefix.', true),
+      P('-u, --user <地址>', '你的钱包/登录地址。多台机器在后面加 <span class="mono">.矿机名</span>（如 <span class="mono">-u 地址.rig1</span>）。', 'Your wallet/login address. For multiple rigs append <span class="mono">.rigname</span> (e.g. <span class="mono">-u addr.rig1</span>).', true),
+      P('--worker, --rig-id <名>', '矿机名（等价于 <span class="mono">-u 地址.名</span> 的写法）。', 'Rig name (equivalent to <span class="mono">-u addr.name</span>).'),
+      P('-p, --pass <密码>', '登录密码，默认 <span class="mono">x</span>，一般无需修改。', 'Login password, default <span class="mono">x</span>; rarely needs changing.'),
+      P('--socks5, -x [user:pass@]host:port', '经 SOCKS5 代理挖矿（如走跳板/Tor）。', 'Mine through a SOCKS5 proxy.'),
+    ].join('');
+    const hwRows = [
+      P('-a, --algo <名>', '算法/币种，见下方「各币种命令速查」。默认 <span class="mono">neuromorph</span>。', 'Algorithm/coin — see the per-coin table below. Default <span class="mono">neuromorph</span>.'),
+      P('-t, --threads <n>', 'CPU 线程数，默认=物理核数（上限 256）。', 'CPU threads; default = physical core count (max 256).'),
+      P('--smt', '改用全部逻辑核（超线程全开）。大核机通常物理核更快，故默认关。', 'Use all logical cores (SMT on). Default off — physical cores are usually faster on big-core CPUs.'),
+      P('--gpu', '开启 NVIDIA GPU 后端（midstate=纯 GPU；btx/qpow=CPU+GPU 双挖）。需 NVIDIA 驱动。', 'Enable the NVIDIA GPU backend (midstate GPU-only; btx/qpow CPU+GPU). Needs the NVIDIA driver.'),
+      P('--gpu-only, --no-cpu', '只用 GPU 挖、不起 CPU worker。GPU 矿机用这个。', 'GPU only, no CPU workers. For GPU rigs.'),
+      P('--huge-pages <2m|1g|off>', '大页内存，默认自动 <span class="mono">2m</span>（RandomX 实测提速最高 ~50%）。', 'Huge pages; default auto <span class="mono">2m</span> (up to ~50% on RandomX).'),
+      P('--no-huge-pages', '等于 <span class="mono">--huge-pages off</span>，用于 A/B 对照。', 'Same as <span class="mono">--huge-pages off</span> (A/B testing).'),
+      P('--msr', 'RandomX（dragonx/zoka）启用 MSR 预取器调优。需 root、机器相关，默认关。', 'Enable MSR prefetcher tuning for RandomX. Needs root; machine-specific; off by default.'),
+      P('--lanes <n|auto>', 'NeuroMorph 专属，MLP 交错 lane 数。默认 <span class="mono">auto</span> 自调；<span class="mono">--lanes 1</span> 关闭。', 'NeuroMorph only — MLP interleave lanes. Default <span class="mono">auto</span>; <span class="mono">--lanes 1</span> disables.'),
+    ].join('');
+    const miscRows = [
+      P('--bench <秒>', '跑 N 秒后自动退出（本地测算力，不连池）。', 'Run for N seconds then exit (local benchmark, no pool).'),
+      P('-h, --help', '显示帮助。', 'Show help.'),
+      P('-V, --version', '显示版本。', 'Show version.'),
+    ].join('');
+    const pgroup = (title, rows) => `
+      <h4 class="pgroup">${esc(title)}</h4>
+      <div class="tbl-wrap"><table class="tbl params"><tr><th>${esc(t('dl_col_flag'))}</th><th>${esc(t('dl_col_desc'))}</th></tr>${rows}</table></div>`;
+
+    // 各币种命令速查（读静态注册表）
+    const csRows = Object.entries(CFG.coins || {}).map(([id, m]) => {
+      const ep = (m.stratum && m.stratum[0]) || { host: '', port: 0 };
+      const addr = zh ? '<你的' + esc(m.symbol) + '地址>' : '<YOUR_' + esc(m.symbol) + '_ADDRESS>';
+      const plain = `NTMminer -a ${m.ntmAlgoFlag} -o ${ep.host}:${ep.port} -u ${zh ? '<你的'+m.symbol+'地址>' : '<YOUR_'+m.symbol+'_ADDRESS>'}`;
+      const xchip = m.xmrigCompatible ? ` <span class="chip" style="font-size:10px;padding:0 6px">xmrig ✓</span>` : '';
+      return `<tr>
+        <td><a href="/${esc(id)}" data-nav style="color:var(--ink);font-weight:600;text-decoration:none">${esc(m.name)}</a> <span style="color:var(--muted)">${esc(m.symbol)}</span></td>
+        <td class="mono" style="white-space:nowrap">${esc(m.algo)}${xchip}</td>
+        <td><div class="codeblock cs">${esc(plain)}<button class="copy-btn" data-copy="${esc(plain)}">${esc(t('copy'))}</button></div></td>
+      </tr>`;
+    }).join('');
+
+    const note = (tk, dk) => `<div class="fnote"><div class="fnote-t">${esc(t(tk))}</div><div class="fnote-d">${esc(t(dk))}</div></div>`;
+
+    const app = $('#app');
+    app.innerHTML = `
+      <div class="wrap dl-page">
+        <section class="dl-hero">
+          <h1>${esc(t('dl_title'))} <span class="chip live" style="vertical-align:middle">${esc(dz.version)}</span></h1>
+          <p class="sub">${esc(t('dl_sub'))}</p>
+        </section>
+
+        <section class="panel">
+          <h3>${esc(t('dl_get_t'))} <span style="color:var(--muted);font-weight:500;font-size:14px">· ${esc(t('dl_ver'))} ${esc(dz.version)}</span></h3>
+          <div class="dl-cards">${cards}</div>
+          <div class="note" style="margin-top:14px">${esc(t('dl_other_platforms'))}</div>
+        </section>
+
+        <section class="panel">
+          <h3>${esc(t('dl_quickstart_t'))}</h3>
+          <ol class="steps">
+            <li><div class="t">${esc(t('dl_qs1_t'))}</div><div class="d">${esc(t('dl_qs1_d'))}</div></li>
+            <li><div class="t">${esc(t('dl_qs2_t'))}</div><div class="d">${esc(t('dl_qs2_d'))}</div></li>
+            <li><div class="t">${esc(t('dl_qs3_t'))}</div><div class="d">${esc(t('dl_qs3_d'))}</div></li>
+          </ol>
+        </section>
+
+        <section class="panel">
+          <h3>${esc(t('dl_cheatsheet_t'))}</h3>
+          <div class="note" style="margin-bottom:12px">${esc(t('dl_cheatsheet_d'))}</div>
+          <div class="tbl-wrap"><table class="tbl cheatsheet">
+            <tr><th>${esc(t('dl_cs_coin'))}</th><th>${esc(t('dl_cs_algo'))}</th><th>${esc(t('dl_cs_cmd'))}</th></tr>
+            ${csRows}
+          </table></div>
+        </section>
+
+        <section class="panel">
+          <h3>${esc(t('dl_params_t'))}</h3>
+          <div class="note" style="margin-bottom:6px">${esc(t('dl_params_d'))}</div>
+          ${pgroup(t('dl_pg_conn'), connRows)}
+          ${pgroup(t('dl_pg_hw'), hwRows)}
+          ${pgroup(t('dl_pg_misc'), miscRows)}
+        </section>
+
+        <section class="panel">
+          <h3>${esc(t('dl_notes_t'))}</h3>
+          <div class="fnotes">
+            ${note('dl_note_win_t', 'dl_note_win_d')}
+            ${note('dl_note_hp_t', 'dl_note_hp_d')}
+            ${note('dl_note_gpu_t', 'dl_note_gpu_d')}
+            ${note('dl_note_hive_t', 'dl_note_hive_d')}
+          </div>
+        </section>
+      </div>`;
+    bindCopy(app);
   }
 
   // ---------- coin page ----------
@@ -545,8 +681,6 @@
     const ep = (meta.stratum && meta.stratum[0]) || { host: '', port: 0 };
     const addrSaved = localStorage.getItem('ntm_addr_' + coinId) || '';
     const addrPh = meta.addressExample || 'YOUR_WALLET_ADDRESS';
-    const gh = CFG.brand.githubMiner;
-    const dl = (f) => `${gh}/releases/latest/download/${f}`;
     const zh = lang === 'zh';
 
     const cmd = (bin, addr) =>
@@ -563,13 +697,8 @@
               ? `准备一个 ${esc(meta.name)} 钱包地址${meta.addressPrefix ? `（以 <span class="mono">${esc(meta.addressPrefix)}</span> 开头）` : ''}。钱包与地址生成请见 <a href="${esc(meta.links.site)}" target="_blank" rel="noopener">${esc(t('coin_links_site'))}</a>。`
               : `Get a ${esc(meta.name)} wallet address${meta.addressPrefix ? ` (starts with <span class="mono">${esc(meta.addressPrefix)}</span>)` : ''}. See the <a href="${esc(meta.links.site)}" target="_blank" rel="noopener">official site</a> for wallets.`}</div></li>
           <li><div class="t">${esc(t('conn_step2_t'))}</div>
-            <div class="d">${esc(t('conn_step2_d'))} <b id="miner-ver">${esc(CFG.brand.minerVersionFallback)}</b></div>
-            <div class="dl-grid">
-              <a class="dl-item" href="${esc(dl('NTMminer-windows-x64.exe'))}"> ${DL_ICON}<span><span class="p">Windows x64</span><br><span class="f">NTMminer-windows-x64.exe</span></span></a>
-              <a class="dl-item" href="${esc(dl('NTMminer-linux-x64'))}">${DL_ICON}<span><span class="p">Linux x64 / HiveOS</span><br><span class="f">NTMminer-linux-x64</span></span></a>
-              <a class="dl-item" href="${esc(dl('NTMminer-linux-arm64'))}">${DL_ICON}<span><span class="p">Linux ARM64</span><br><span class="f">NTMminer-linux-arm64</span></span></a>
-              <a class="dl-item" href="${esc(dl('NTMminer-macos-arm64'))}">${DL_ICON}<span><span class="p">macOS (Apple Silicon)</span><br><span class="f">NTMminer-macos-arm64</span></span></a>
-            </div></li>
+            <div class="d">${esc(t('conn_step2_d'))} <b>${esc((CFG.downloads && CFG.downloads.version) || CFG.brand.minerVersion || '')}</b></div>
+            <div style="margin-top:10px"><a class="btn primary" href="/download" data-nav>${DL_ICON}${esc(t('conn_dl_page'))}</a></div></li>
           <li><div class="t">${esc(t('conn_step3_t'))}</div>
             <div class="d">${esc(t('conn_step3_d'))}</div>
             <div class="lookup-bar" style="margin-top:10px">
@@ -626,10 +755,6 @@
     };
     $('#conn-addr').addEventListener('input', syncCmds);
     syncCmds();
-
-    fetch(CFG.brand.minerReleaseApi).then((r) => (r.ok ? r.json() : null)).then((j) => {
-      if (j && j.tag_name && $('#miner-ver')) $('#miner-ver').textContent = j.tag_name;
-    }).catch(() => {});
   }
 
   // ---------- router ----------
@@ -642,6 +767,11 @@
       state.route = 'home'; state.coin = null;
       renderHome();
       state.timer = setInterval(refreshHome, CFG.api.refreshMs);
+      return;
+    }
+    if (path === '/download' || path === '/downloads') {
+      state.route = 'download'; state.coin = null;
+      renderDownload();
       return;
     }
     const coinId = path.slice(1).split('/')[0].toLowerCase();

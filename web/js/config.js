@@ -4,11 +4,24 @@ window.NTM_CONFIG = {
   brand: {
     // NTM 英文全称（改这里即可全站生效）
     expansionEn: 'Next-Tier Mining',
-    githubMiner: 'https://github.com/scashcc/NTMminer-Multi',
-    githubMinerLabel: 'github.com/scashcc/NTMminer-Multi',
-    minerReleaseApi: 'https://api.github.com/repos/scashcc/NTMminer-Multi/releases/latest',
-    // GitHub API 拉不到时的兜底版本（页面会先显示这个，再被实时版本覆盖）
-    minerVersionFallback: 'v1.13.0',
+    minerVersion: 'v1.13.0',
+  },
+  // 矿工软件下载（自托管于 www.ntmminer.com/downloads/，闭源只发二进制）。
+  // 加平台/换版本改这里；sha256 用 `sha256sum <文件>` 现算后填，方便矿工核验。
+  // status: 'ready'=有真实文件可下载；'building'=暂未提供（页面显示「构建中」，不给死链）。
+  downloads: {
+    version: 'v1.13.0',
+    baseUrl: '/downloads',
+    files: [
+      { os: 'Windows x64', icon: 'win', file: 'NTMminer-windows-x64.exe', status: 'ready',
+        sha256: '0f104c1ad9f7c3f01e84870f9790ef3dd488e001493e42d4e1dc89e5760bc08a',
+        noteZh: 'Windows 10/11 64 位。解压即用，无需安装。首次运行若被 Defender 拦截，选「仍要运行」。',
+        noteEn: 'Windows 10/11 64-bit. No install needed. If Defender warns, choose “Run anyway”.' },
+      { os: 'Linux x64 / HiveOS', icon: 'linux', file: 'NTMminer-linux-x64', status: 'ready',
+        sha256: '8f04532e3b3ed4b3d38f5536a72512f0b727c8bf975a538e74621669ff7530f1',
+        noteZh: '通用 x86-64 Linux（Ubuntu/Debian/HiveOS 等）。含 CPU + NVIDIA GPU 后端。下载后 chmod +x 即可运行。',
+        noteEn: 'Generic x86-64 Linux (Ubuntu/Debian/HiveOS). CPU + NVIDIA GPU backends included. chmod +x and run.' },
+    ],
   },
   api: { base: '/api', refreshMs: 20000 },
   // key = NTMPool 池 id（/api/pools 里的 id）。只有出现在 /api/pools 里的币才会显示为在线。
