@@ -287,6 +287,21 @@ func (c *Client) TxConfirmations(ctx context.Context, txid string) (int64, error
 	return r.Confirmations, nil
 }
 
+// TxStatus（adapter.TxTracker）：poolnode /tx/ 契约 = 上链则 {confirmations,height}，
+// 否则 {confirmations:0, mempool:bool}。known = 已上链(conf≥1) 或仍在 mempool。
+// conf=0 且 mempool=false = 交易既不在链也不在池 = 确定丢失（打款引擎据此退款重付）。
+func (c *Client) TxStatus(ctx context.Context, txid string) (int64, bool, error) {
+	var r struct {
+		Confirmations int64 `json:"confirmations"`
+		Mempool       bool  `json:"mempool"`
+	}
+	if err := c.get(ctx, "/tx/"+txid, &r); err != nil {
+		return 0, false, err
+	}
+	known := r.Confirmations >= 1 || r.Mempool
+	return r.Confirmations, known, nil
+}
+
 // ---- HashPSSource（真值口径：poolnode 按 120 块真实时间跨度计算）----
 
 func (c *Client) NetworkHashPS(ctx context.Context) (float64, error) {
@@ -367,6 +382,7 @@ var (
 	_ adapter.NodeAdapter   = (*Client)(nil)
 	_ adapter.BlobSubmitter = (*Client)(nil)
 	_ adapter.WalletAdapter = (*Client)(nil)
+	_ adapter.TxTracker     = (*Client)(nil)
 	_ adapter.HashPSSource  = (*Client)(nil)
 	_ adapter.Notifier      = (*LongPoll)(nil)
 )

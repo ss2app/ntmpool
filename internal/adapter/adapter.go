@@ -11,10 +11,31 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/scashcc/ntmpool/internal/core"
 )
+
+// ErrNoHeightIndex 由无「高度→hash」索引的链（Kaspa 类 DAG）的 BlockHashAt 返回。
+// 打款引擎见此 sentinel 跳过「按高度取主链块 hash 逐字节比对」这道成熟闸，改为信任
+// 该链 Confirmations 内建的主链判定（DAG 用 isChainBlock：不在 selected chain = 孤块）。
+var ErrNoHeightIndex = errors.New("adapter: chain has no height→hash index (DAG); orphan check relies on Confirmations")
+
+// ErrNotBroadcast 包装「确定未广播」的打款失败——如交易在构造阶段就被拒（Kaspa KIP-9
+// storage mass 超单笔上限）。打款引擎见此 sentinel 可安全退回余额；这与 SendMany 超时的
+// 「unknown（可能已广播）」状态相反，后者绝不自动退回（防双付，交人工）。适配器只在
+// 能确证交易未离开本进程（未 broadcast）时才包这个 sentinel。
+var ErrNotBroadcast = errors.New("adapter: payout tx was not broadcast (safe to refund)")
+
+// BatchPlanner 是打款侧的可选能力：按链特有的单笔约束（如 Kaspa KIP-9 storage mass：
+// 输出金额越小单笔越装不下）把一批打款输出预分成若干子批，每子批可安全放进一笔交易。
+// 打款引擎对实现了本接口的钱包，逐子批独立原子打款；未实现的链 = 整批一笔（引擎默认）。
+type BatchPlanner interface {
+	// PlanBatches 把 outputs（地址→十进制金额）分成若干子批。返回空或单元素 = 不拆。
+	// 实现须保证并集 = 输入、无重复地址（引擎按子批独立扣款/记账，重复会重复扣）。
+	PlanBatches(outputs map[string]string) []map[string]string
+}
 
 // BlockTemplate 是适配器归一化后的挖矿模板。
 // Raw 由各币适配器自行解释（GBT JSON / blob prefix / QUIC job……），
@@ -53,6 +74,7 @@ type NodeAdapter interface {
 
 	// BlockHashAt 返回主链上指定高度的块哈希。
 	// 孤块判定铁律：成熟入账前用它与我们记录的块 ID 逐字节比对（不是比高度）。
+	// DAG 链（Kaspa 类）无高度→hash 索引，返回 ErrNoHeightIndex，打款引擎改走 Confirmations。
 	BlockHashAt(ctx context.Context, height uint64) (string, error)
 
 	// Confirmations 查询我们提交的块当前确认数（<0 = 已不在主链）。
@@ -75,6 +97,18 @@ type WalletAdapter interface {
 	// TxConfirmations 追踪打款 tx 的确认数（<0 = 掉出主链/被双花顶掉）。
 	// 这是全行业开源池的空白（miningcore 只记 txid），NTMPool 的核心超越点之一。
 	TxConfirmations(ctx context.Context, txid string) (int64, error)
+}
+
+// TxTracker 可选扩展：比 TxConfirmations 更精确的打款 tx 状态——除确认数外还报告
+// 交易「是否仍被节点知道」（在 mempool 或已上链）。打款确认追踪器据此安全判定
+// 「广播出去后又丢失」（known=false 且过 grace = 确定既不在 mempool 也不在链上 →
+// 退回矿工余额下轮重付；2026-07 bitcoin09 batch 91/95 广播后节点重启丢 mempool 的漏洞）。
+// 只有 confirmations 的钱包退化为「conf<0 才判丢失」（保守，绝不误退在 mempool 排队的 tx）。
+type TxTracker interface {
+	// TxStatus 返回 (confirmations, known)：
+	//   confirmations <0 = 掉出主链/被双花顶掉；≥0 = 主链确认数（0=未上链）。
+	//   known = 交易仍在 mempool 或链上（节点认识它）。known=false + conf≤0 = 确定丢失。
+	TxStatus(ctx context.Context, txid string) (confirmations int64, known bool, err error)
 }
 
 // Notifier 新块事件源。一个币可挂多个（ZMQ + 轮询兜底并存），

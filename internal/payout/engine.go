@@ -2,6 +2,7 @@ package payout
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -29,6 +30,13 @@ type BatchStore interface {
 	Load(id int64) (*Batch, bool, error)
 	Unfinished() ([]*Batch, error) // created/prepared/sent 但未 confirmed/failed
 	All() ([]*Batch, error)        // 全部批次（新→旧），公共 API /payments 用
+
+	// SentUnconfirmed 已广播待确认的 payout 批次（status∈{sent,confirming}、有 txid、
+	// kind='payout'，旧→新），供打款确认追踪器轮询推进确认/退款。
+	SentUnconfirmed() ([]*Batch, error)
+	// MarkConfirmations 更新一个批次全部 payments 行的确认数（维护 payments.confirmations
+	// 显示——此前从不写该列恒为 0，网页/矿工自查显示「打款了但 0 确认」误导）。
+	MarkConfirmations(batchID, confirmations int64) error
 }
 
 // Batch 一笔打款批次的完整状态（对应 payment_batches 表）。
@@ -41,6 +49,7 @@ type Batch struct {
 	RawTx       string
 	TxID        string
 	CreatedAt   time.Time
+	Confirmations int64 // 追踪器维护（仅内存/展示；PG 侧存于 payments.confirmations）
 }
 
 // Config 打款引擎配置（热参数子集在这里取快照）。
@@ -51,6 +60,12 @@ type Config struct {
 	SoloFeePercent *float64 // solo 块费率；nil = 与 FeePercent 相同
 	MinPayout      float64
 	Maturity       int64 // 打款所需确认数（低于链成熟期 = 预打款）
+
+	// 打款确认追踪（trackSent）：ConfirmThreshold 达标即标 confirmed 终态、停止追踪；
+	// DropGrace 内确定丢失（!known）的 payout 才退款——防误退在 mempool 排队的 tx。
+	// 均 ≤0 时 NewEngine 填默认值（3 确认 / 30 分钟）。
+	ConfirmThreshold int64
+	DropGrace        time.Duration
 
 	// 手续费自动归集（R9）：未归集费 ≥ FeeCollectMin 时在打款周期尾部自动
 	// 池钱包→FeeAddress（与打款共用每币锁，天然串行）。
@@ -65,11 +80,12 @@ type EventFunc func(kind, title string, fields map[string]string)
 // Engine 打款引擎（每币一个）。持有该币打款锁：正常打款/手续费/整备互斥。
 type Engine struct {
 	cfg    Config
-	ledger accounting.Ledger
-	node   NodeClassifier
-	wallet adapter.WalletAdapter
-	rawtx  adapter.RawTxWallet // 可选：拆步打款
-	store  BatchStore
+	ledger    accounting.Ledger
+	node      NodeClassifier
+	wallet    adapter.WalletAdapter
+	rawtx     adapter.RawTxWallet // 可选：拆步打款
+	txtracker adapter.TxTracker   // 可选：精确 tx 状态（是否仍在 mempool/链）
+	store     BatchStore
 
 	mu      sync.Mutex // 每币打款锁
 	enabled bool
@@ -85,9 +101,18 @@ type Engine struct {
 }
 
 func NewEngine(cfg Config, l accounting.Ledger, node NodeClassifier, w adapter.WalletAdapter, store BatchStore) *Engine {
+	if cfg.ConfirmThreshold <= 0 {
+		cfg.ConfirmThreshold = 3 // 达 3 确认即认定终态（足够抗浅 reorg，矿工在 1 确认已到账）
+	}
+	if cfg.DropGrace <= 0 {
+		cfg.DropGrace = 30 * time.Minute // 广播后 30min 仍不在 mempool/链上 = 确定丢失
+	}
 	e := &Engine{cfg: cfg, ledger: l, node: node, wallet: w, store: store, enabled: true}
 	if rt, ok := w.(adapter.RawTxWallet); ok {
 		e.rawtx = rt
+	}
+	if tr, ok := w.(adapter.TxTracker); ok {
+		e.txtracker = tr
 	}
 	return e
 }
@@ -217,6 +242,10 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 		log.Printf("[payout %s] ⚠ 守恒对账不平 delta=%s，冻结打款", e.cfg.Coin, delta)
 	}
 
+	// 打款确认追踪：推进已广播批次的 confirmed/退款状态机 + 维护 confirmations 显示。
+	// 冻结时也追踪（只读查链 + 维护显示 + 对已丢失的退回余额，不发新款，安全）。
+	e.trackSent(ctx)
+
 	if !e.enabled || e.frozen {
 		return nil
 	}
@@ -226,6 +255,132 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 	}
 	e.autoFeeCollect(ctx)
 	return nil
+}
+
+// maxTrackPerRound 每轮追踪的批次上限：平滑「首次部署时历史 sent 批次一次性回填
+// confirmed」的突发查链量（历史批次都在链上，几轮内收敛为 confirmed）。
+const maxTrackPerRound = 200
+
+// trackSent 打款确认追踪器（须持 e.mu，每轮 RunOnce 调）——NTMPool 补上「记了 txid ≠
+// 真上链」的行业空白（miningcore 只记 txid 不追踪确认）。对每个已广播待确认的 payout 批次：
+//   - conf ≥ ConfirmThreshold → CONFIRMED（终态，停止追踪）
+//   - conf < 0（reorg 掉出）或 确定丢失（!known 且过 DropGrace）→ handleDropped
+//     （有 rawtx：原样重播同一签名交易幂等重发；无 rawtx 如 btc09/dragonx：退回余额 + failed，下轮重付）
+//   - 否则 → CONFIRMING（继续追踪），并维护 payments.confirmations 显示
+//
+// 安全性：仅在「交易确定既不在 mempool 也不在链上（!known）」或「已 reorg 掉出（conf<0）」
+// 时才退款——绝不误退仍在 mempool 排队的 tx（否则退款重付 = 双付）。只有 TxConfirmations
+// 无 TxTracker 的钱包退化为「conf<0 才判丢失」（更保守，其掉款靠 rawtx 重播或人工兜底）。
+func (e *Engine) trackSent(ctx context.Context) {
+	batches, err := e.store.SentUnconfirmed()
+	if err != nil {
+		log.Printf("[payout %s] 确认追踪读批次失败（下轮再试）: %v", e.cfg.Coin, err)
+		return
+	}
+	now := time.Now()
+	processed := 0
+	for _, b := range batches {
+		if b.TxID == "" {
+			continue // 无 txid（created 未签名/广播）由 Recover 处理，不在追踪范围
+		}
+		if processed >= maxTrackPerRound {
+			break
+		}
+		processed++
+
+		conf, known, err := e.txStatus(ctx, b.TxID)
+		if err != nil {
+			continue // 查链失败：下轮再试，绝不据失败做任何状态变更
+		}
+		// 维护 confirmations 显示（负数按 0 展示）
+		dispConf := conf
+		if dispConf < 0 {
+			dispConf = 0
+		}
+		if err := e.store.MarkConfirmations(b.ID, dispConf); err != nil {
+			log.Printf("[payout %s] batch=%d 更新确认数显示失败: %v", e.cfg.Coin, b.ID, err)
+		}
+
+		switch {
+		case conf >= e.cfg.ConfirmThreshold:
+			b.Status = core.PaymentConfirmed
+			b.Confirmations = conf
+			if err := e.store.Save(b); err != nil {
+				log.Printf("[payout %s] batch=%d 标记 confirmed 未落库（下轮补标）: %v", e.cfg.Coin, b.ID, err)
+			}
+		case conf < 0 || (!known && now.Sub(b.CreatedAt) >= e.cfg.DropGrace):
+			// 冻结时（守恒对账不平）只允许「重播已签名交易」这类不改 ledger 余额的动作，
+			// 绝不自动退款（退款改余额，冻结态下应人工核对后再动）。
+			e.handleDropped(ctx, b, conf, !e.frozen)
+		default:
+			// 已广播、未达终态：置 confirming（若尚未），继续追踪
+			if b.Status != core.PaymentConfirming {
+				b.Status = core.PaymentConfirming
+				b.Confirmations = dispConf
+				if err := e.store.Save(b); err != nil {
+					log.Printf("[payout %s] batch=%d 标记 confirming 未落库: %v", e.cfg.Coin, b.ID, err)
+				}
+			}
+		}
+	}
+}
+
+// txStatus 归一化 tx 状态查询：优先用 TxTracker（精确 known），退化用 TxConfirmations
+// （known = conf≥0，保守——绝不把 0 确认误判为丢失）。
+func (e *Engine) txStatus(ctx context.Context, txid string) (conf int64, known bool, err error) {
+	if e.txtracker != nil {
+		return e.txtracker.TxStatus(ctx, txid)
+	}
+	conf, err = e.wallet.TxConfirmations(ctx, txid)
+	if err != nil {
+		return 0, false, err
+	}
+	return conf, conf >= 0, nil
+}
+
+// handleDropped 处理「广播后确定丢失/reorg 掉出」的 payout 批次：
+//   - 有 rawtx（bitcoin 系拆步）：原样重播同一签名交易（同 txid，幂等，绝不双花），保持追踪。
+//   - 无 rawtx（btc09/dragonx sendmany）：退回矿工余额 + 标 failed，下轮自动重付（金额守恒）。
+//
+// allowRefund=false（打款冻结中）时不退款（改余额的动作），只重播/告警。
+// 退款按 batch 幂等（RefundPayout 查 payment_refund tag），fee_collect 等非 payout 不动 ledger。
+func (e *Engine) handleDropped(ctx context.Context, b *Batch, conf int64, allowRefund bool) {
+	reason := "不在 mempool/链上（确定丢失）"
+	if conf < 0 {
+		reason = "已被主链甩掉（reorg/双花顶掉）"
+	}
+	// 有可重播的签名交易 → 重发同一笔（优先于退款，直接补送达，零双花风险；冻结态也安全）
+	if b.RawTx != "" && e.rawtx != nil {
+		if err := e.rawtx.Broadcast(ctx, b.RawTx); err == nil {
+			log.Printf("[payout %s] 打款 batch=%d %s，已原样重播 txid=%s",
+				e.cfg.Coin, b.ID, reason, short(b.TxID))
+		} else {
+			log.Printf("[payout %s] 打款 batch=%d %s，重播失败（下轮再试）: %v", e.cfg.Coin, b.ID, reason, err)
+		}
+		return // 保持 sent/confirming，下轮继续追踪重播后的确认
+	}
+	// 无 rawtx 不能重播：冻结中不动余额，等人工核对
+	if !allowRefund {
+		log.Printf("[payout %s] ⚠ 打款 batch=%d txid=%s %s，但打款冻结中，暂不退款（人工核对）",
+			e.cfg.Coin, b.ID, short(b.TxID), reason)
+		return
+	}
+	// 只有 payout 退回矿工余额（fee_collect/consolidate 的钱在池钱包，未动 ledger）
+	if b.Kind == "payout" {
+		if err := e.ledger.RefundPayout(ctx, e.cfg.Coin, b.Outputs, b.ID); err != nil {
+			log.Printf("[payout %s] 打款 batch=%d %s，退款失败（保持追踪下轮重试）: %v",
+				e.cfg.Coin, b.ID, reason, err)
+			return
+		}
+	}
+	b.Status = core.PaymentFailed
+	if err := e.store.Save(b); err != nil {
+		log.Printf("[payout %s] batch=%d 标 failed 未落库（退款幂等，下轮补标）: %v", e.cfg.Coin, b.ID, err)
+	}
+	log.Printf("[payout %s] ⚠ 打款 batch=%d txid=%s %s → 已退回余额，下轮自动重付",
+		e.cfg.Coin, b.ID, short(b.TxID), reason)
+	e.emit("payout_dropped", "打款交易未上链丢失（已退回余额，下轮自动重付）", map[string]string{
+		"batch": fmt.Sprint(b.ID), "txid": b.TxID, "reason": reason})
 }
 
 // maintain 钱包整备（须持 e.mu，payout 前调）：隐私链把成熟 coinbase shield 回
@@ -272,12 +427,17 @@ func (e *Engine) classify(ctx context.Context) error {
 		if conf < e.cfg.Maturity {
 			continue // 未成熟，继续等
 		}
-		// 成熟前最后一道闸：按高度取主链块 hash 与我们记的逐字节比对（铁律）
+		// 成熟前最后一道闸：按高度取主链块 hash 与我们记的逐字节比对（铁律）。
+		// DAG 链（Kaspa 类）无高度→hash 索引，BlockHashAt 返回 ErrNoHeightIndex——其孤块
+		// 判定已在上面的 Confirmations 内完成（isChainBlock：不在 selected chain 即 conf<0
+		// 走 ORPHANED 分支），故此处跳过高度比对直接入账，不弱化防超发闸。
 		mainHash, err := e.node.BlockHashAt(ctx, b.Height)
-		if err != nil {
+		switch {
+		case errors.Is(err, adapter.ErrNoHeightIndex):
+			// DAG：主链判定由 Confirmations 保证，无高度索引可比对
+		case err != nil:
 			continue
-		}
-		if mainHash != b.Hash {
+		case mainHash != b.Hash:
 			_ = e.ledger.OrphanBlock(ctx, b)
 			log.Printf("[payout %s] 块 %d 主链 hash 不符 → ORPHANED (我们=%s 主链=%s)",
 				e.cfg.Coin, b.Height, short(b.Hash), short(mainHash))
@@ -296,7 +456,8 @@ func (e *Engine) classify(ctx context.Context) error {
 	return nil
 }
 
-// payout 一轮打款：组批 → 先扣余额 → 拆步签名落库 → 广播 → 追踪。
+// payout 一轮打款：取应付余额 → 按链单笔约束预分子批 → 逐子批独立原子打款。
+// 分子批（BatchPlanner，如 Kaspa storage mass）时每子批各自扣款/记账/退回，一批失败不牵连其余。
 func (e *Engine) payout(ctx context.Context) error {
 	var perAddr map[string]float64
 	if e.minOverrides != nil {
@@ -306,6 +467,30 @@ func (e *Engine) payout(ctx context.Context) error {
 	if err != nil || len(payable) == 0 {
 		return err
 	}
+	// 按链特有单笔约束预分子批（Kaspa KIP-9 storage mass 等）；未实现 BatchPlanner = 整批一笔。
+	subBatches := []map[string]string{payable}
+	if bp, ok := e.wallet.(adapter.BatchPlanner); ok {
+		if planned := bp.PlanBatches(payable); len(planned) > 0 {
+			subBatches = planned
+		}
+	}
+	if len(subBatches) > 1 {
+		log.Printf("[payout %s] 本轮 %d 地址按单笔约束拆成 %d 子批", e.cfg.Coin, len(payable), len(subBatches))
+	}
+	for _, sub := range subBatches {
+		if len(sub) == 0 {
+			continue
+		}
+		if err := e.payoutOneBatch(ctx, sub); err != nil {
+			// 单子批失败已在内部退回/记账，不阻断其余子批（各子批 UTXO/账务彼此独立）。
+			log.Printf("[payout %s] 子批打款失败（不影响其余子批）: %v", e.cfg.Coin, err)
+		}
+	}
+	return nil
+}
+
+// payoutOneBatch 一个原子打款子批：取批号 → 先扣余额 → 拆步签名落库/或 sendmany 一步 → 广播 → 追踪。
+func (e *Engine) payoutOneBatch(ctx context.Context, payable map[string]string) error {
 	batchID, err := e.store.NextBatchID()
 	if err != nil {
 		return fmt.Errorf("取批次号: %w", err)
@@ -373,6 +558,16 @@ func (e *Engine) payout(ctx context.Context) error {
 	if err != nil {
 		batch.Status = core.PaymentFailed
 		_ = e.store.Save(batch)
+		if errors.Is(err, adapter.ErrNotBroadcast) {
+			// 适配器确证交易未广播（如 Kaspa storage mass 构造被拒）→ 安全退回余额，
+			// 该应付额回到矿工账户，下轮（PlanBatches 会把它归到更小子批）重试。
+			_ = e.ledger.RefundPayout(ctx, e.cfg.Coin, payable, batch.ID)
+			log.Printf("[payout %s] sendmany 构造失败 batch=%d（确定未广播，已退回余额）: %v",
+				e.cfg.Coin, batch.ID, err)
+			e.emit("payout_failed", "sendmany 构造失败（确定未广播，已退回余额）", map[string]string{
+				"batch": fmt.Sprint(batch.ID), "error": err.Error()})
+			return nil
+		}
 		// sendmany 可能已广播（超时），绝不自动退回也绝不自动重发 → unknown 交人工
 		log.Printf("[payout %s] sendmany 失败 batch=%d: %v（人工核对，绝不自动重发）",
 			e.cfg.Coin, batch.ID, err)

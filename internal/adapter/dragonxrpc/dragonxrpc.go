@@ -485,7 +485,12 @@ func (c *Client) waitOperation(ctx context.Context, opid string) (string, error)
 					msg = op.Error.Message
 				}
 				_ = c.call(wctx, "z_getoperationresult", ids, nil) // 回收失败记录
-				return "", fmt.Errorf("操作失败（未广播）: %s", msg)
+				// 操作 status=failed = z_sendmany 广播前失败（witness 陈旧/余额不足/
+				// shielded requirements not met 等），交易确定未离开节点 → 包 ErrNotBroadcast，
+				// 打款引擎据此安全退回矿工余额、下轮重付。若不包，引擎路径③把它当
+				// 「unknown（可能已广播）」只标 failed 不退款 → 矿工被少付（2026-07 dragonx
+				// 18 笔 witness 陈旧期失败打款漏洞的根因）。
+				return "", fmt.Errorf("操作失败（未广播）: %s: %w", msg, adapter.ErrNotBroadcast)
 			}
 		}
 		select {

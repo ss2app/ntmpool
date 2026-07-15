@@ -3,6 +3,8 @@ package payout
 import (
 	"sort"
 	"sync"
+
+	"github.com/scashcc/ntmpool/internal/core"
 )
 
 // MemBatchStore 内存 BatchStore（M1/测试；生产用 PGBatchStore 做真恢复）。
@@ -67,4 +69,29 @@ func (s *MemBatchStore) All() ([]*Batch, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID }) // 新→旧
 	return out, nil
+}
+
+func (s *MemBatchStore) SentUnconfirmed() ([]*Batch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Batch
+	for _, b := range s.batches {
+		if b.Kind != "payout" || b.TxID == "" {
+			continue
+		}
+		if b.Status == core.PaymentSent || b.Status == core.PaymentConfirming {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID }) // 旧→新
+	return out, nil
+}
+
+func (s *MemBatchStore) MarkConfirmations(batchID, confirmations int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b, ok := s.batches[batchID]; ok {
+		b.Confirmations = confirmations
+	}
+	return nil
 }

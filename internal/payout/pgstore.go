@@ -87,6 +87,21 @@ func (s *PGBatchStore) All() ([]*Batch, error) {
 	return s.list(`WHERE poolid=$1 ORDER BY id DESC`, s.coin)
 }
 
+// SentUnconfirmed 已广播待确认的 payout 批次（追踪器轮询源）。旧→新：首次部署时
+// 历史批次按创建序回填 confirmed（都在链上，不触发退款分支）。
+func (s *PGBatchStore) SentUnconfirmed() ([]*Batch, error) {
+	return s.list(`WHERE poolid=$1 AND kind='payout' AND status IN ('sent','confirming')
+	               AND txid IS NOT NULL AND txid<>'' ORDER BY id`, s.coin)
+}
+
+// MarkConfirmations 更新一个批次全部 payments 行的确认数（维护 payments.confirmations 显示列）。
+func (s *PGBatchStore) MarkConfirmations(batchID, confirmations int64) error {
+	_, err := s.h.Exec(
+		`UPDATE payments SET confirmations=$1, updated=now() WHERE poolid=$2 AND batchid=$3`,
+		confirmations, s.coin, batchID)
+	return err
+}
+
 const batchCols = `SELECT id, kind, status, COALESCE(plannedtxid,''), COALESCE(rawtx,''), COALESCE(txid,''), created FROM payment_batches `
 
 func (s *PGBatchStore) loadOne(where string, args ...any) (*Batch, error) {
