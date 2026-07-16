@@ -30,6 +30,7 @@ import (
 	"math/bits"
 
 	"github.com/scashcc/ntmpool/internal/hasher"
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -259,33 +260,55 @@ func CalculatePow(prePow []byte, timestamp, nonce uint64, target []byte) ([]byte
 	stage2 := heavyHash(m, stage1)
 	stage3 := kHeavyHash(stage2)
 
-	// stage4 = blake2b-keyed("ProofOfWorkHash")(stage3 ‖ nonce_le8 ‖ target_le32)
+	// stage4 = Argon2id memory-hard（★主网新增，consensus/pow/src/lib.rs::memory_hard_hash）
+	stage4 := memoryHardHash(stage3, stage1, nonce, target)
+
+	// stage5 = blake2b-keyed("ProofOfWorkHash")(stage4 ‖ nonce_le8 ‖ target_le32)
 	bh, err := blake2b.New(32, []byte("ProofOfWorkHash"))
 	if err != nil {
 		return nil, err
 	}
-	bh.Write(stage3)
+	bh.Write(stage4)
 	var nb [8]byte
 	binary.LittleEndian.PutUint64(nb[:], nonce)
 	bh.Write(nb[:])
 	bh.Write(target)
-	stage4 := bh.Sum(nil)
+	stage5 := bh.Sum(nil)
 
-	// 4 字 rotate-XOR 混合
+	// 4 字 rotate-XOR 混合（主网：words[3] 额外 ⊕ rotl(stage4.w3,13)）
 	var words [4]uint64
 	for i := 0; i < 4; i++ {
-		words[i] = binary.LittleEndian.Uint64(stage4[i*8:])
+		words[i] = binary.LittleEndian.Uint64(stage5[i*8:])
 	}
 	words[0] ^= bits.RotateLeft64(binary.LittleEndian.Uint64(stage1[0:8]), 17)
 	words[1] ^= bits.RotateLeft64(binary.LittleEndian.Uint64(stage2[8:16]), -11) // rotr 11
 	words[2] ^= bits.RotateLeft64(binary.LittleEndian.Uint64(stage3[16:24]), 7)
-	words[3] ^= bits.RotateLeft64(nonce, 13)
+	words[3] ^= bits.RotateLeft64(binary.LittleEndian.Uint64(stage4[24:32]), 13) ^ bits.RotateLeft64(nonce, 13)
 
 	pow := make([]byte, 32)
 	for i := 0; i < 4; i++ {
 		binary.LittleEndian.PutUint64(pow[i*8:], words[i])
 	}
 	return pow, nil
+}
+
+// memoryHardHash stage4 = Argon2id memory-hard（consensus/pow/src/lib.rs::memory_hard_hash）：
+//
+//	password = stage3(32) ‖ target_le(32) ‖ nonce_le(8) = 72B
+//	salt[i]  = stage1[i] ^ stage3[i+16], i∈[0,16)      = 16B
+//	Argon2id(memory 8192 KiB, time 1, lanes 1, version 0x13, out 32B)
+//
+// golang.org/x/crypto/argon2.IDKey 固定 version 0x13，与节点 argon2 crate V0x13 一致。
+func memoryHardHash(stage3, stage1 []byte, nonce uint64, target []byte) []byte {
+	var pwd [72]byte
+	copy(pwd[0:32], stage3)
+	copy(pwd[32:64], target)
+	binary.LittleEndian.PutUint64(pwd[64:72], nonce)
+	var salt [16]byte
+	for i := 0; i < 16; i++ {
+		salt[i] = stage1[i] ^ stage3[i+16]
+	}
+	return argon2.IDKey(pwd[:], salt[:], 1, 8192, 1, 32)
 }
 
 // ── hasher.Hasher 接口（注册 + 金锚自检门禁）──
@@ -309,26 +332,28 @@ func (velkarHasher) Hash(input []byte) ([]byte, error) {
 	return CalculatePow(prePow, timestamp, nonce, target)
 }
 
-// SelfTest 金锚 = velkar-cpuminer/src/pow.rs::velkar_stratum_pow_regression（assert 钉死）。
+// SelfTest 金锚 = 主网 velkar-core consensus/pow/src/lib.rs::State::calculate_pow
+// （NTM ntm_velkar_kat::ntm_kat_dump 固定输入；含 stage4 Argon2id）。
 func (h velkarHasher) SelfTest() error {
-	// pre_pow_hash = u256_from_le_hex(...) → hex 字节即 LE
-	prePow, _ := hex.DecodeString("f92b22c908fe912ef58501e2baa9253373d5d7f641232e8d4b386f61f4156a19")
-	// block_target = u256_from_be_hex(...) → to_le_bytes = reverse(be)
-	targetBE, _ := hex.DecodeString("00003d647c000000000000000000000000000000000000000000000000000000")
-	target := reverseBytes(targetBE)
-	const timestamp = uint64(1781329471115)
-	const nonce = uint64(0x3a333445c075fa3d)
+	var prePow [32]byte
+	for i := range prePow {
+		prePow[i] = byte(i) // prePow_le = 00..1f
+	}
+	var target [32]byte
+	for i := range target {
+		target[i] = byte(32 + i) // target_le = 20..3f
+	}
+	const timestamp = uint64(0x1122334455667788)
+	const nonce = uint64(0x0123456789abcdef)
 
-	got, err := CalculatePow(prePow, timestamp, nonce, target)
+	got, err := CalculatePow(prePow[:], timestamp, nonce, target[:])
 	if err != nil {
 		return err
 	}
-	// pow.to_be_hex() = "000382fb…" → wantLE = reverse(be)
-	wantBE, _ := hex.DecodeString("000382fb5b1c9028d630c4a00c5cb9fdbebca9fb83882e61c87f57b27656c22d")
-	want := reverseBytes(wantBE)
-	if !bytes.Equal(got, want) {
-		return fmt.Errorf("velkarhash KAT 失配: got(be)=%x want(be)=%s",
-			reverseBytes(got), hex.EncodeToString(wantBE))
+	// 主网 rust calculate_pow 输出（pow 32B LE 内部序）。
+	wantLE, _ := hex.DecodeString("fa4d0a039f977f9aac19037b4e03ad8a0e6675e1695cf61af12ed1f114777e0e")
+	if !bytes.Equal(got, wantLE) {
+		return fmt.Errorf("velkarhash 主网 KAT 失配: got(le)=%x want(le)=%x", got, wantLE)
 	}
 	return nil
 }

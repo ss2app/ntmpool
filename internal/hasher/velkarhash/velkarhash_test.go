@@ -13,24 +13,28 @@ func TestVelkarHashKAT(t *testing.T) {
 	}
 }
 
-// TestHashBlob 走 80 字节 blob 接口路径，应与 CalculatePow 一致。
+// TestHashBlob 走 80 字节 blob 接口路径，应与 CalculatePow 一致（主网 KAT 输入）。
 func TestHashBlob(t *testing.T) {
-	prePow, _ := hex.DecodeString("f92b22c908fe912ef58501e2baa9253373d5d7f641232e8d4b386f61f4156a19")
-	targetBE, _ := hex.DecodeString("00003d647c000000000000000000000000000000000000000000000000000000")
-	target := reverseBytes(targetBE)
+	var prePow, target [32]byte
+	for i := range prePow {
+		prePow[i] = byte(i) // 00..1f
+	}
+	for i := range target {
+		target[i] = byte(32 + i) // 20..3f
+	}
 
 	blob := make([]byte, 80)
-	copy(blob[0:32], prePow)
-	binary.LittleEndian.PutUint64(blob[32:40], 1781329471115)
-	binary.LittleEndian.PutUint64(blob[40:48], 0x3a333445c075fa3d)
-	copy(blob[48:80], target)
+	copy(blob[0:32], prePow[:])
+	binary.LittleEndian.PutUint64(blob[32:40], 0x1122334455667788)
+	binary.LittleEndian.PutUint64(blob[40:48], 0x0123456789abcdef)
+	copy(blob[48:80], target[:])
 
 	got, err := velkarHasher{}.Hash(blob)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantBE := "000382fb5b1c9028d630c4a00c5cb9fdbebca9fb83882e61c87f57b27656c22d"
-	if gotBE := hex.EncodeToString(reverseBytes(got)); gotBE != wantBE {
-		t.Fatalf("Hash blob 失配:\n got(be)=%s\nwant(be)=%s", gotBE, wantBE)
+	wantLE := "fa4d0a039f977f9aac19037b4e03ad8a0e6675e1695cf61af12ed1f114777e0e"
+	if gotLE := hex.EncodeToString(got); gotLE != wantLE {
+		t.Fatalf("Hash blob 失配:\n got(le)=%s\nwant(le)=%s", gotLE, wantLE)
 	}
 }

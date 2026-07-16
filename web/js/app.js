@@ -178,6 +178,7 @@
     const nd = $('#nav-download'); if (nd) nd.textContent = t('nav_download');
     const nb = $('#nav-dl-btn-t'); if (nb) nb.textContent = t('nav_dl_btn');
     const fd = $('#foot-dl'); if (fd) fd.textContent = t('nav_dl_btn');
+    const fdc = $('#foot-discord-t'); if (fdc) fdc.textContent = t('foot_discord');
     $('#lang-btn').textContent = lang === 'zh' ? 'EN' : '中文';
     // 高亮当前导航
     const path = location.pathname.replace(/\/+$/, '') || '/';
@@ -189,13 +190,33 @@
   async function renderHome() {
     document.title = lang === 'zh' ? 'NTM 矿池 — 高效透明的多币种矿池' : 'NTM Pools — efficient, transparent multi-coin mining';
     const app = $('#app');
+    const recLinks = [
+      { ic: '🌐', k: 'rec_l_site', host: 'scashnetwork.org', url: 'https://scashnetwork.org/' },
+      { ic: '⛏️', k: 'rec_l_pool', host: 'scash.work', url: 'https://www.scash.work/' },
+      { ic: '🔎', k: 'rec_l_explorer', host: 'scash.tv', url: 'https://scash.tv/' },
+      { ic: '👛', k: 'rec_l_wallet', host: 'scash.app', url: 'https://scash.app' },
+    ].map((l) => `<a class="rec-link" href="${l.url}" target="_blank" rel="noopener"><span class="ic">${l.ic}</span><span class="tx"><b>${esc(t(l.k))}</b><small>${l.host}</small></span></a>`).join('')
+      + `<a class="rec-link ex" href="https://www.ourbit.com/register?inviteCode=2ZWA4P" target="_blank" rel="noopener"><span class="ic">💱</span><span class="tx"><b>${esc(t('rec_l_exchange'))}</b><small>ourbit.com</small></span></a>`;
     app.innerHTML = `
       <section class="hero wrap">
-        <h1>${esc(t('hero_title_pre'))} <span class="expansion">· ${esc(CFG.brand.expansionEn)}</span><br>${esc(t('hero_title_post'))}</h1>
-        <p class="sub">${esc(t('hero_sub'))}</p>
-        <div class="hero-cta">
-          <a class="btn primary" href="/download" data-nav>${DL_ICON}${esc(t('hero_cta_download'))}</a>
-          <a class="btn" href="/dragonx" data-nav>${esc(t('hero_cta_start'))}</a>
+        <div class="hero-top">
+          <div class="hero-copy">
+            <h1>${esc(t('hero_title_pre'))} <span class="expansion">· ${esc(CFG.brand.expansionEn)}</span><br>${esc(t('hero_title_post'))}</h1>
+            <p class="sub">${esc(t('hero_sub'))}</p>
+            <div class="hero-cta">
+              <a class="btn primary" href="/download" data-nav>${DL_ICON}${esc(t('hero_cta_download'))}</a>
+              <a class="btn" href="/dragonx" data-nav>${esc(t('hero_cta_start'))}</a>
+            </div>
+          </div>
+          <aside class="rec-card">
+            <span class="rec-badge">${esc(t('rec_badge'))}</span>
+            <div class="rec-head">
+              <img class="rec-logo" src="/img/scash_logo.png" alt="SCASH" width="34" height="34" loading="lazy">
+              <div class="rec-title">${esc(t('rec_title'))} <b>SCASH</b></div>
+            </div>
+            <p class="rec-desc">${esc(t('rec_desc'))}</p>
+            <div class="rec-links">${recLinks}</div>
+          </aside>
         </div>
         <div class="stat-strip" id="home-strip">
           ${['strip_coins', 'strip_miners', 'strip_blocks'].map((k) =>
@@ -719,6 +740,32 @@
         </table></div>
         ${(meta.stratum || []).some((s) => (s.mode || '').toLowerCase() === 'solo') ? `<div class="note" style="margin-top:10px">${esc(t('conn_solo_note'))}</div>` : ''}
       </div>
+      ${meta.gpuMulti ? `
+      <div class="panel">
+        <h3>${zh ? '多显卡挖矿（GPU 多卡）' : 'Multi-GPU mining'}</h3>
+        <div class="note" style="font-size:14px;color:var(--ink-2);line-height:1.65">
+          ${zh
+            ? `NTMminer <b>原生支持多显卡</b>（v1.14.0 起）：<b>一条命令、一个进程</b>就能驱动机器上<b>全部</b> NVIDIA 显卡——不再需要「每卡一进程 + CUDA_VISIBLE_DEVICES」那套。不加卡号参数默认用<b>所有卡</b>；要指定某几张用 <span class="mono">--gpu-devices 0,1,3</span>（逗号列表，编号从 0 开始）。卡间自动分配互不重复的 nonce 区间、各自独立驱动，一张卡出错不影响其它卡。`
+            : `NTMminer has <b>native multi-GPU support</b> (since v1.14.0): <b>one command, one process</b> drives <b>every</b> NVIDIA card in the machine — no more "one process per card + CUDA_VISIBLE_DEVICES". With no device flag it uses <b>all cards</b>; to pick specific ones use <span class="mono">--gpu-devices 0,1,3</span> (comma list, indices from 0). Cards get disjoint nonce ranges automatically and run independently — one card failing won't affect the others.`}
+        </div>
+        <div style="color:var(--muted);font-size:12.5px;margin:12px 0 2px">${zh ? '① 先查有几张卡、它们的编号（从 0 开始）' : '① List your cards and their indices (they start at 0)'}</div>
+        <div class="codeblock" id="mg-smi"></div>
+        <div style="color:var(--muted);font-size:12.5px;margin:14px 0 2px">${zh ? '② 挖全部卡（Windows）—— 一条命令即可' : '② Mine on all cards (Windows) — a single command'}</div>
+        <div class="codeblock" id="mg-bat"></div>
+        <div style="color:var(--muted);font-size:12.5px;margin:14px 0 2px">${zh ? '② 挖全部卡（Linux / HiveOS）' : '② Mine on all cards (Linux / HiveOS)'}</div>
+        <div class="codeblock" id="mg-sh"></div>
+        <div style="color:var(--muted);font-size:12.5px;margin:14px 0 2px">${zh ? '③ 只用某几张卡（可选，示例：只用第 0 和第 2 张）' : '③ Use only specific cards (optional, e.g. cards 0 and 2)'}</div>
+        <div class="codeblock" id="mg-sel"></div>
+        <div class="note" style="margin-top:14px">
+          <ul style="margin:6px 0;padding-left:20px;line-height:1.75">
+            <li>${zh ? `<span class="mono">--gpu-devices &lt;逗号列表&gt;</span> 指定用哪几张卡（如 <span class="mono">0,1,3</span>）；<b>不加则用全部卡</b>。编号对照 <span class="mono">nvidia-smi -L</span>，从 0 开始。` : `<span class="mono">--gpu-devices &lt;list&gt;</span> picks which cards (e.g. <span class="mono">0,1,3</span>); <b>omit it to use all cards</b>. Indices match <span class="mono">nvidia-smi -L</span>, starting at 0.`}</li>
+            <li>${zh ? `<span class="mono">--gpu-only</span> = 纯 GPU、不起 CPU worker（GPU 矿机推荐这样）。` : `<span class="mono">--gpu-only</span> = GPU only, no CPU workers (recommended for GPU rigs).`}</li>
+            <li>${zh ? `越界/无效的卡号会被自动忽略并提示；机器上没有可用 N 卡时自动回退 CPU 挖矿。` : `Out-of-range/invalid indices are ignored with a warning; with no usable NVIDIA card it falls back to CPU mining.`}</li>
+            <li>${zh ? `一个进程带全部卡时，网页按<b>一个矿机名</b>显示合计算力。若想<b>每张卡单独看算力</b>，给每张卡各起一个进程（<span class="mono">--gpu-devices 0</span> / <span class="mono">1</span> …）并用不同矿机名 <span class="mono">.gpu0</span> / <span class="mono">.gpu1</span>。` : `With one process for all cards, the page shows a <b>single worker</b> with combined hashrate. To see <b>per-card hashrate</b>, run one process per card (<span class="mono">--gpu-devices 0</span> / <span class="mono">1</span> …) with distinct worker names <span class="mono">.gpu0</span> / <span class="mono">.gpu1</span>.`}</li>
+            <li>${zh ? `挖矿时用 <span class="mono">nvidia-smi</span> 盯温度/功耗。` : `Watch temps/power with <span class="mono">nvidia-smi</span> while mining.`}</li>
+          </ul>
+        </div>
+      </div>` : ''}
       ${meta.xmrigCompatible ? `
       <div class="panel">
         <h3>${esc(t('conn_xmrig_t'))}</h3>
@@ -751,6 +798,14 @@
       put('#cmd-win', cmd('NTMminer-windows-x64.exe', a));
       put('#cmd-lin', cmd('./NTMminer-linux-x64', a));
       if (meta.xmrigCompatible) put('#cmd-xmrig', xmrigCmd(a));
+      if (meta.gpuMulti) {
+        const host = `${ep.host}:${ep.port}`;
+        const A = a || addrPh;
+        put('#mg-smi', 'nvidia-smi -L');
+        put('#mg-bat', `NTMminer-windows-x64.exe -a ${meta.ntmAlgoFlag} -o ${host} -u ${A} --gpu-only`);
+        put('#mg-sh',  `./NTMminer-linux-x64 -a ${meta.ntmAlgoFlag} -o ${host} -u ${A} --gpu-only`);
+        put('#mg-sel', `NTMminer-windows-x64.exe -a ${meta.ntmAlgoFlag} -o ${host} -u ${A} --gpu-devices 0,2 --gpu-only`);
+      }
       bindCopy(body);
     };
     $('#conn-addr').addEventListener('input', syncCmds);

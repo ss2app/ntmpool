@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/scashcc/ntmpool/internal/adapter"
@@ -30,6 +31,9 @@ type Client struct {
 	decimals int      // satoshi→币 的小数位，绝大多数 bitcoin 系为 8
 	gbtRules []string // getblocktemplate rules，默认 ["segwit"]（老分叉币可置空）
 	hc       *http.Client
+
+	mu             sync.Mutex
+	lastLongPollID string // 最近一次 GBT 返回的 longpollid（供 GBT longpoll 挂等，见 longpoll.go）
 }
 
 // 编译期接口断言：三个角色都必须实现完整。
@@ -160,9 +164,15 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 		Target            string `json:"target"`
 		CoinbaseValue     int64  `json:"coinbasevalue"`
 		MinTime           int64  `json:"mintime"`
+		LongPollID        string `json:"longpollid"`
 	}
 	if err := json.Unmarshal(raw, &t); err != nil {
 		return nil, err
+	}
+	if t.LongPollID != "" {
+		c.mu.Lock()
+		c.lastLongPollID = t.LongPollID
+		c.mu.Unlock()
 	}
 	return &adapter.BlockTemplate{
 		Height:        t.Height,
@@ -311,11 +321,18 @@ func (c *Client) PrepareSendMany(ctx context.Context, outputs map[string]string)
 		Hex      string `json:"hex"`
 		Complete bool   `json:"complete"`
 	}
-	if err := c.call(ctx, "signrawtransactionwithwallet", []any{funded.Hex}, &signed); err != nil {
-		return "", "", fmt.Errorf("signrawtransactionwithwallet: %w", err)
+	// 新节点(Bitcoin Core ≥0.17)用 signrawtransactionwithwallet；老节点(PIVX 等)只有
+	// legacy signrawtransaction（同 {hex,complete} 返回）。方法不存在(-32601)时回退，
+	// 一份代码兼容两类节点（brva=Bitcoin Core v30 走新方法，noctari=PIVX 走 legacy）。
+	signErr := c.call(ctx, "signrawtransactionwithwallet", []any{funded.Hex}, &signed)
+	if code, ok := rpcCode(signErr); ok && code == -32601 {
+		signErr = c.call(ctx, "signrawtransaction", []any{funded.Hex}, &signed)
+	}
+	if signErr != nil {
+		return "", "", fmt.Errorf("sign raw tx: %w", signErr)
 	}
 	if !signed.Complete {
-		return "", "", fmt.Errorf("signrawtransactionwithwallet: 签名不完整")
+		return "", "", fmt.Errorf("sign raw tx: 签名不完整")
 	}
 	// ④ 取 txid（不广播）
 	var decoded struct {
