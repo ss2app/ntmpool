@@ -9,4 +9,5 @@ import (
 	_ "github.com/scashcc/ntmpool/internal/hasher/brisviarx"
 	_ "github.com/scashcc/ntmpool/internal/hasher/dragonxrx"
 	_ "github.com/scashcc/ntmpool/internal/hasher/randomx"
+	_ "github.com/scashcc/ntmpool/internal/hasher/scashrx"
 )
