@@ -224,6 +224,34 @@ func (l *PGLedger) MarkBlockPending(ctx context.Context, _, hash string) error {
 	return nil
 }
 
+func (l *PGLedger) UpdateBlockReward(ctx context.Context, _, hash, reward string) error {
+	rewardSat, err := l.parse(reward)
+	if err != nil {
+		return fmt.Errorf("块 reward 金额非法 %q: %w", reward, err)
+	}
+	res, err := l.h.ExecContext(ctx, `
+		UPDATE blocks SET reward=$3
+		WHERE poolid=$1 AND transactionconfirmationdata=$2
+		  AND status IN ('submitting','pending')`, l.coin, hash, l.toStr(rewardSat))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	var status string
+	err = l.h.QueryRowContext(ctx, `
+		SELECT status FROM blocks WHERE poolid=$1 AND transactionconfirmationdata=$2`,
+		l.coin, hash).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("块 %s 不存在", hash)
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("块 %s 状态 %s 不允许回填 reward", hash, status)
+}
+
 // UpdateBlockHash 意图 hash → 节点受理后的权威 hash（blob 链「意图先落库」补录，docs/05 场景B）。
 // block_credits 以 blockhash 为键（直付块 record 时已写行）→ 同步改。
 func (l *PGLedger) UpdateBlockHash(ctx context.Context, _, oldHash, newHash string) error {

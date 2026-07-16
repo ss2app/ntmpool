@@ -87,6 +87,33 @@ func assertDelta0(t *testing.T, ctx context.Context, l Ledger, coin, when string
 func runLedgerConformance(t *testing.T, mk mkLedger) {
 	ctx := context.Background()
 
+	t.Run("reward回填幂等与状态约束", func(t *testing.T) {
+		l, coin := mk(t)
+		b := confBlock(coin, "reward-fill", "A", "999.00000000", 99, 1, false)
+		if err := l.RecordBlock(ctx, b, "raw"); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := l.UpdateBlockReward(ctx, coin, b.Hash, "12.50000000"); err != nil {
+				t.Fatalf("第 %d 次幂等回填: %v", i+1, err)
+			}
+		}
+		pending, err := l.PendingBlocks(ctx, coin)
+		if err != nil || len(pending) != 1 || pending[0].Reward != "12.50000000" {
+			t.Fatalf("回填值未写入 pending block: err=%v blocks=%+v", err, pending)
+		}
+		b.Reward = "12.50000000"
+		if err := l.ConfirmBlock(ctx, b, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.UpdateBlockReward(ctx, coin, b.Hash, "12.50000000"); err == nil {
+			t.Fatal("confirmed 块不得回填 reward")
+		}
+		if err := l.UpdateBlockReward(ctx, coin, "missing", "1.00000000"); err == nil {
+			t.Fatal("不存在的块不得回填 reward")
+		}
+	})
+
 	t.Run("PPLNS分账守恒与按份额分", func(t *testing.T) {
 		l, coin := mk(t)
 		now := time.Now()

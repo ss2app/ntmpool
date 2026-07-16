@@ -20,7 +20,7 @@ func buildFamily(ctx context.Context, cfg config.CoinConfig, decimals int, inst 
 	switch cfg.Adapter {
 	case "", "bitcoin-rpc":
 		return buildBitcoinFamily(ctx, cfg, decimals, inst)
-	case "custom-http", "cryptonote-rpc":
+	case "custom-http", "cryptonote-rpc", "zephyr-rpc":
 		return buildBlobFamily(ctx, cfg, decimals, inst)
 	case "dragonx-rpc":
 		return buildDragonXFamily(ctx, cfg, decimals, inst)
@@ -35,7 +35,7 @@ func buildFamily(ctx context.Context, cfg config.CoinConfig, decimals int, inst 
 	case "velkar-rpc":
 		return buildVelkarFamily(ctx, cfg, decimals, inst)
 	default:
-		return nil, errf("[%s] 未知适配器 %q（可选 bitcoin-rpc / cryptonote-rpc / custom-http / dragonx-rpc / brisvia-rpc / noctari-rpc / btc09-http / midstate-rpc / velkar-rpc）", cfg.ID, cfg.Adapter)
+		return nil, errf("[%s] 未知适配器 %q（可选 bitcoin-rpc / cryptonote-rpc / zephyr-rpc / custom-http / dragonx-rpc / brisvia-rpc / noctari-rpc / btc09-http / midstate-rpc / velkar-rpc）", cfg.ID, cfg.Adapter)
 	}
 }
 
@@ -77,7 +77,11 @@ func buildBitcoinFamily(ctx context.Context, cfg config.CoinConfig, decimals int
 // 成功则改用权威 hash 并转 pending，失败留 submitting 交分类器/恢复扫描按链上比对
 // 归位（docs/05 场景B「意图先落库，动作后执行」）。submit 由作业管理器提供：
 // bitcoin 系返回原 hash，blob 系返回节点受理后的权威块 id。
-func (inst *Instance) blockSink() func(ctx context.Context, b core.FoundBlock, rawHex string, submit func(context.Context) (string, error)) error {
+func (inst *Instance) blockSink(rewardSources ...adapter.BlockRewardSource) func(ctx context.Context, b core.FoundBlock, rawHex string, submit func(context.Context) (string, error)) error {
+	var rewardSource adapter.BlockRewardSource
+	if len(rewardSources) > 0 {
+		rewardSource = rewardSources[0]
+	}
 	return func(ctx context.Context, b core.FoundBlock, rawHex string, submit func(context.Context) (string, error)) error {
 		coin := inst.cfg.ID
 		// ① 意图先落库
@@ -101,6 +105,20 @@ func (inst *Instance) blockSink() func(ctx context.Context, b core.FoundBlock, r
 			} else {
 				b.Hash = finalHash
 			}
+		}
+		// 多资产链的模板 expected_reward 不是池会计资产的真实矿工收入。
+		// 必须先按权威 block id 查询并回填，再允许转 pending/进入确认流程。
+		if rewardSource != nil {
+			reward, err := rewardSource.BlockReward(ctx, b.Hash)
+			if err != nil {
+				log.Printf("[%s] 爆块真实 reward 查询失败 hash=%s: %v（保持 submitting）", coin, short(b.Hash), err)
+				return err
+			}
+			if err := inst.ledger.UpdateBlockReward(ctx, coin, b.Hash, reward); err != nil {
+				log.Printf("[%s] 爆块真实 reward 回填失败 hash=%s: %v（保持 submitting）", coin, short(b.Hash), err)
+				return err
+			}
+			b.Reward = reward
 		}
 		if err := inst.ledger.MarkBlockPending(ctx, coin, b.Hash); err != nil {
 			log.Printf("[%s] 爆块转 pending 失败 hash=%s: %v", coin, short(b.Hash), err)
