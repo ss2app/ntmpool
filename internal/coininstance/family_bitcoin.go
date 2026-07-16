@@ -84,6 +84,9 @@ func (inst *Instance) blockSink(rewardSources ...adapter.BlockRewardSource) func
 	}
 	return func(ctx context.Context, b core.FoundBlock, rawHex string, submit func(context.Context) (string, error)) error {
 		coin := inst.cfg.ID
+		if rewardSource != nil {
+			b.RewardPending = true
+		}
 		// ① 意图先落库
 		if err := inst.ledger.RecordBlock(ctx, b, rawHex); err != nil {
 			log.Printf("[%s] ★爆块意图落库失败 height=%d: %v", coin, b.Height, err)
@@ -102,6 +105,9 @@ func (inst *Instance) blockSink(rewardSources ...adapter.BlockRewardSource) func
 		if finalHash != "" && finalHash != b.Hash {
 			if err := inst.ledger.UpdateBlockHash(ctx, coin, b.Hash, finalHash); err != nil {
 				log.Printf("[%s] 爆块 hash 补录失败 %s→%s: %v", coin, short(b.Hash), short(finalHash), err)
+				if rewardSource != nil {
+					return err
+				}
 			} else {
 				b.Hash = finalHash
 			}
@@ -119,6 +125,7 @@ func (inst *Instance) blockSink(rewardSources ...adapter.BlockRewardSource) func
 				return err
 			}
 			b.Reward = reward
+			b.RewardPending = false
 		}
 		if err := inst.ledger.MarkBlockPending(ctx, coin, b.Hash); err != nil {
 			log.Printf("[%s] 爆块转 pending 失败 hash=%s: %v", coin, short(b.Hash), err)

@@ -90,8 +90,12 @@ func runLedgerConformance(t *testing.T, mk mkLedger) {
 	t.Run("reward回填幂等与状态约束", func(t *testing.T) {
 		l, coin := mk(t)
 		b := confBlock(coin, "reward-fill", "A", "999.00000000", 99, 1, false)
+		b.RewardPending = true
 		if err := l.RecordBlock(ctx, b, "raw"); err != nil {
 			t.Fatal(err)
+		}
+		if err := l.ConfirmBlock(ctx, b, 0); err == nil {
+			t.Fatal("权威 reward 未回填前不得 confirm")
 		}
 		for i := 0; i < 2; i++ {
 			if err := l.UpdateBlockReward(ctx, coin, b.Hash, "12.50000000"); err != nil {

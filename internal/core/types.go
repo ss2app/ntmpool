@@ -72,17 +72,20 @@ type DirectCredit struct {
 
 // FoundBlock 记录池挖到的一个块。
 type FoundBlock struct {
-	Coin    string
-	Height  uint64
-	Hash    string // 我们提交的块 ID —— 孤块比对的基准
-	Finder  string // 爆块矿工地址
-	Worker  string
-	Reward  string  // 十进制字符串，币为单位（对齐 miningcore NUMERIC）
-	NetDiff float64 // 该块的网络难度（PPLNS 窗口 = pplnsN × NetDiff）
-	Effort  float64
-	Status  BlockStatus
-	FoundAt time.Time
-	Solo    bool
+	Coin   string
+	Height uint64
+	Hash   string // 我们提交的块 ID —— 孤块比对的基准
+	Finder string // 爆块矿工地址
+	Worker string
+	Reward string // 十进制字符串，币为单位（对齐 miningcore NUMERIC）
+	// RewardPending 仅用于模板奖励不是最终会计奖励的链。为 true 时 Ledger
+	// 必须拒绝 ConfirmBlock，直到 UpdateBlockReward 写入权威值。
+	RewardPending bool
+	NetDiff       float64 // 该块的网络难度（PPLNS 窗口 = pplnsN × NetDiff）
+	Effort        float64
+	Status        BlockStatus
+	FoundAt       time.Time
+	Solo          bool
 	// Direct 非 nil = 直付块：分账在模板时已定死并嵌进 coinbase（可为空切片=
 	// 全额归费侧）。ConfirmBlock 按记录快照入账，绝不重算窗口（账实一致铁律）。
 	Direct []DirectCredit
