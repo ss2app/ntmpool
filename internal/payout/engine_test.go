@@ -62,12 +62,22 @@ type fakeWallet struct {
 	broadcasted       map[string]bool   // rawtx → 已广播
 	failNextBroadcast bool
 	txSeq             int
+	spendable         string
+	spendableErr      error
 }
 
 func newFakeWallet() *fakeWallet {
 	return &fakeWallet{prepared: map[string]string{}, broadcasted: map[string]bool{}}
 }
-func (w *fakeWallet) SpendableBalance(_ context.Context) (string, error) { return "1000000.0", nil }
+func (w *fakeWallet) SpendableBalance(_ context.Context) (string, error) {
+	if w.spendableErr != nil {
+		return "", w.spendableErr
+	}
+	if w.spendable != "" {
+		return w.spendable, nil
+	}
+	return "1000000.0", nil
+}
 func (w *fakeWallet) SendMany(_ context.Context, _ map[string]string) (string, error) {
 	w.txSeq++
 	return "sendmany_tx", nil
@@ -96,6 +106,14 @@ func (w *fakeWallet) TxExists(_ context.Context, txid string) (bool, error) {
 	}
 	return false, nil
 }
+
+type walletWithoutBalance struct{ sent int }
+
+func (w *walletWithoutBalance) SendMany(_ context.Context, _ map[string]string) (string, error) {
+	w.sent++
+	return "tx-without-balance-capability", nil
+}
+func (*walletWithoutBalance) TxConfirmations(context.Context, string) (int64, error) { return 0, nil }
 
 func setup(t *testing.T) (*Engine, *accounting.MemLedger, *fakeNode, *fakeWallet) {
 	t.Helper()
@@ -132,6 +150,48 @@ func TestConfirmAndPayout(t *testing.T) {
 	}
 	if snap.TotalPaid != "50.00000000" {
 		// 打款后余额转已付
+	}
+}
+
+func TestPayoutSolvencyGateSkipsWithoutDeduction(t *testing.T) {
+	ctx := context.Background()
+	e, l, _, w := setup(t)
+	_ = l.RecordShare(ctx, core.Share{Coin: "t", Address: "A"}, 1)
+	b := core.FoundBlock{Coin: "t", Height: 1, Hash: "fund", Finder: "A",
+		Reward: "50.00000000", NetDiff: 1, Status: core.BlockPending}
+	_ = l.RecordBlock(ctx, b, "raw")
+	if err := l.ConfirmBlock(ctx, b, 0); err != nil {
+		t.Fatal(err)
+	}
+	w.spendable = "49.99999999"
+	if err := e.payout(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if w.txSeq != 0 || len(w.broadcasted) != 0 {
+		t.Fatalf("余额不足不得构造或广播交易: txSeq=%d broadcasts=%d", w.txSeq, len(w.broadcasted))
+	}
+	snapshot, _ := l.Snapshot(ctx, "t")
+	if snapshot.Balances["A"] != "50.00000000" || snapshot.TotalPaid != "0.00000000" {
+		t.Fatalf("余额不足不得扣账: %+v", snapshot)
+	}
+}
+
+func TestPayoutSolvencyGateGracefulWithoutCapability(t *testing.T) {
+	ctx := context.Background()
+	l := accounting.NewMemLedger(8, 2)
+	_ = l.RecordShare(ctx, core.Share{Coin: "t", Address: "A"}, 1)
+	b := core.FoundBlock{Coin: "t", Height: 1, Hash: "fund", Finder: "A",
+		Reward: "2.00000000", NetDiff: 1, Status: core.BlockPending}
+	_ = l.RecordBlock(ctx, b, "raw")
+	_ = l.ConfirmBlock(ctx, b, 0)
+	w := &walletWithoutBalance{}
+	e := NewEngine(Config{Coin: "t", Decimals: 8, MinPayout: 1}, l,
+		&fakeNode{conf: map[string]int64{}, mainHash: map[uint64]string{}}, w, NewMemBatchStore())
+	if err := e.payout(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if w.sent != 1 {
+		t.Fatalf("未实现 SpendableBalanceSource 应优雅降级并保持原行为: sent=%d", w.sent)
 	}
 }
 

@@ -27,13 +27,25 @@ type TwoStageKeyedHasher interface {
 	HashKeyedTwoStage(key, input []byte) (result, pow []byte, err error)
 }
 
-var keyedRegistry = map[string]KeyedHasher{}
+var (
+	keyedRegistry      = map[string]KeyedHasher{}
+	standaloneSelfTest = map[string]func() error{}
+)
 
 // RegisterKeyed 注册一个带 key 算法实现（在各实现包的 init 中调用）。
 func RegisterKeyed(h KeyedHasher) {
 	mu.Lock()
 	defer mu.Unlock()
 	keyedRegistry[h.Name()] = h
+}
+
+// RegisterStandaloneSelfTest 注册只提供专用共识接口、不能安全伪装成 Hasher 或
+// KeyedHasher 的算法启动门禁。SCASH 的 RandomX 输出 R 只是 commitment 输入，CM
+// 才是 PoW；把它塞进通用单 digest / TwoStage 接口会模糊 share 接受语义。
+func RegisterStandaloneSelfTest(name string, test func() error) {
+	mu.Lock()
+	defer mu.Unlock()
+	standaloneSelfTest[name] = test
 }
 
 // GetKeyed 按算法名取带 key 哈希器。
@@ -52,8 +64,9 @@ func selfTestByName(name string) error {
 	mu.RLock()
 	h, plain := registry[name]
 	kh, keyed := keyedRegistry[name]
+	standalone, special := standaloneSelfTest[name]
 	mu.RUnlock()
-	if !plain && !keyed {
+	if !plain && !keyed && !special {
 		return fmt.Errorf("hasher %q 未注册", name)
 	}
 	if plain {
@@ -64,6 +77,11 @@ func selfTestByName(name string) error {
 	if keyed {
 		if err := kh.SelfTest(); err != nil {
 			return fmt.Errorf("keyed hasher %s 金锚自检失败（拒绝启动）: %w", name, err)
+		}
+	}
+	if special {
+		if err := standalone(); err != nil {
+			return fmt.Errorf("specialized hasher %s 金锚自检失败（拒绝启动）: %w", name, err)
 		}
 	}
 	return nil

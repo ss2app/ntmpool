@@ -51,6 +51,71 @@
       "newConnectionsEnabled": true
     },
     {
+      "id": "scash",
+      "symbol": "SCASH",
+      "adapter": "scash-rpc",
+      "algo": "rx/scash",
+      "decimals": 8,
+      "nodes": [
+        { "url": "http://127.0.0.1:8342", "user": "rpc", "pass": "${SCASH_RPC_PASS}" }
+      ],
+      "poolAddress": "SCASH_POOL_ADDRESS_HERE",
+      "feeAddress": "SCASH_FEE_ADDRESS_HERE",
+      "ports": [
+        {
+          "port": 3421, "mode": "pplns", "dialect": "stratum1", "enabled": true,
+          "proxyProtocol": "required", "maxConns": 5000,
+          "vardiff": { "enabled": true, "startDiff": 65536, "minDiff": 65536, "maxDiff": 65536000000, "targetSeconds": 12 }
+        }
+      ],
+      "payout": {
+        "enabled": false,
+        "scheme": "pplns",
+        "pplnsFactor": 2.0,
+        "feePercent": 1.0,
+        "minPayout": "1.0",
+        "confirmations": 100,
+        "intervalSeconds": 600,
+        "orphanDebts": false,
+        "feeCollect": { "enabled": false, "minAmount": "" }
+      },
+      "miningEnabled": true,
+      "newConnectionsEnabled": true
+    },
+    {
+      "id": "zeph",
+      "symbol": "ZEPH",
+      "adapter": "zephyr-rpc",
+      "algo": "rx/0",
+      "decimals": 12,
+      "nodes": [
+        { "url": "http://127.0.0.1:17767" }
+      ],
+      "wallet": { "url": "http://127.0.0.1:17769" },
+      "poolAddress": "ZEPH_POOL_ADDRESS_HERE",
+      "feeAddress": "",
+      "ports": [
+        {
+          "port": 3411, "mode": "pplns", "dialect": "cryptonote", "enabled": true,
+          "proxyProtocol": "required", "maxConns": 5000,
+          "vardiff": { "enabled": true, "startDiff": 1000, "minDiff": 100, "maxDiff": 10000000, "targetSeconds": 12 }
+        }
+      ],
+      "payout": {
+        "enabled": false,
+        "scheme": "pplns",
+        "pplnsFactor": 2.0,
+        "feePercent": 1.0,
+        "minPayout": "0.1",
+        "confirmations": 60,
+        "intervalSeconds": 600,
+        "orphanDebts": true,
+        "feeCollect": { "enabled": false, "minAmount": "" }
+      },
+      "miningEnabled": true,
+      "newConnectionsEnabled": true
+    },
+    {
       "id": "midstate",
       "symbol": "MDS",
       "adapter": "midstate-rpc",

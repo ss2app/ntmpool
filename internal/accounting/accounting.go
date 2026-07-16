@@ -38,6 +38,9 @@ type Ledger interface {
 	UpdateBlockHash(ctx context.Context, coin, oldHash, newHash string) error
 	// MarkBlockPending 块已成功提交给节点（submitting→pending）。
 	MarkBlockPending(ctx context.Context, coin, hash string) error
+	// UpdateBlockReward 用权威链上值替换模板占位奖励。重复写同一值幂等，
+	// 且只允许 submitting/pending 块；confirmed 后禁止改账。
+	UpdateBlockReward(ctx context.Context, coin, hash, reward string) error
 
 	// PendingBlocks 取所有待确认块（打款引擎轮询它们做确认追踪与孤块比对）。
 	PendingBlocks(ctx context.Context, coin string) ([]core.FoundBlock, error)

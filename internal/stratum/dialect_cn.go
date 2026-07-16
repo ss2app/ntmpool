@@ -373,7 +373,12 @@ func (c *cnConn) maybeRetarget() {
 	if !c.port.Vardiff.Enabled {
 		return
 	}
-	_, _ = c.vd.MaybeRetarget(time.Now())
+	// vardiff 抬/降难度后【必须】把新 target 推给矿工，否则矿工仍在旧难度上挖，
+	// 池按新（更高）Current 判定 → 旧难度 share 全被拒「Low difficulty share」。
+	// （2026-07-13 noctari 实测：漏推新 job → 6.22MH/s 矿工 2/3 share 被拒。）
+	if _, changed := c.vd.MaybeRetarget(time.Now()); changed {
+		_ = c.pushJob()
+	}
 }
 
 // pushJob 推送当前 job（登录后、新块广播、vardiff 调档时）。

@@ -14,9 +14,9 @@ import (
 // fakeCoinWallet 模拟 btc09/dragonx 类「只 sendmany、无拆步」的钱包（e.rawtx==nil，
 // 走 payoutOneBatch 路径③）。实现 adapter.TxTracker，可控每笔 tx 的 (conf, known)。
 type fakeCoinWallet struct {
-	sendErr error                // SendMany 返回的错误（测 ErrNotBroadcast）
+	sendErr error // SendMany 返回的错误（测 ErrNotBroadcast）
 	txSeq   int
-	status  map[string]txStat    // txid → 追踪状态
+	status  map[string]txStat // txid → 追踪状态
 }
 
 type txStat struct {
@@ -111,6 +111,10 @@ func TestTrackRefundsDroppedPayout(t *testing.T) {
 	e, l, node, w := setupCoin(t)
 	e.cfg.DropGrace = time.Nanosecond // 任何 age 即算过 grace
 	pb := confirmAndPay(t, ctx, e, l, node, "A", "h1")
+	// Windows 时钟粒度可能让紧邻的 time.Now 仍等于 CreatedAt；显式回拨，
+	// 避免 1ns grace 测试依赖平台时钟分辨率。
+	pb.CreatedAt = time.Now().Add(-time.Second)
+	_ = e.store.Save(pb)
 	// 打款后 A 余额已清空（先扣）
 	if snap, _ := l.Snapshot(ctx, "t"); snap.Balances["A"] != "0.00000000" {
 		t.Fatalf("打款后 A 应为 0，得 %s", snap.Balances["A"])

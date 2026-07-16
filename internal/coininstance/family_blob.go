@@ -7,6 +7,8 @@ import (
 	"github.com/scashcc/ntmpool/internal/adapter/cnrpc"
 	"github.com/scashcc/ntmpool/internal/adapter/cnwallet"
 	"github.com/scashcc/ntmpool/internal/adapter/customhttp"
+	"github.com/scashcc/ntmpool/internal/adapter/zephyrrpc"
+	"github.com/scashcc/ntmpool/internal/adapter/zephyrwallet"
 	"github.com/scashcc/ntmpool/internal/cnjob"
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/core"
@@ -30,10 +32,11 @@ func buildBlobFamily(ctx context.Context, cfg config.CoinConfig, decimals int, i
 	}
 
 	var (
-		node       blobNode
-		wallet     adapter.WalletAdapter
-		classifier payout.NodeClassifier
-		hashps     adapter.HashPSSource // blob 链通常无真值口径 → nil（绝不反推）
+		node         blobNode
+		wallet       adapter.WalletAdapter
+		classifier   payout.NodeClassifier
+		hashps       adapter.HashPSSource // blob 链通常无真值口径 → nil（绝不反推）
+		rewardSource adapter.BlockRewardSource
 	)
 	n := cfg.Nodes[0]
 	switch cfg.Adapter {
@@ -48,13 +51,21 @@ func buildBlobFamily(ctx context.Context, cfg config.CoinConfig, decimals int, i
 		c.SetPoolAddress(cfg.PoolAddress)
 		node, classifier = c, c
 		wallet = cnwallet.New(cfg.ID+"-wallet", cfg.Wallet.URL, decimals)
+	case "zephyr-rpc":
+		if cfg.Wallet.URL == "" {
+			return nil, errf("[%s] zephyr-rpc 需要独立 wallet 端点（cfg.wallet.url）", cfg.ID)
+		}
+		c := zephyrrpc.New(cfg.ID, n.URL, cfg.Algo, decimals)
+		c.SetPoolAddress(cfg.PoolAddress)
+		node, classifier, rewardSource = c, c, c
+		wallet = zephyrwallet.New(cfg.ID+"-wallet", cfg.Wallet.URL, decimals)
 	default:
 		return nil, errf("[%s] blob 家族不支持适配器 %q", cfg.ID, cfg.Adapter)
 	}
 
 	jm := cnjob.New(cfg.ID, cfg.Algo, node, kh)
 	dialect := stratum.NewCNDialect(cfg.ID, jm)
-	sink := inst.blockSink()
+	sink := inst.blockSink(rewardSource)
 	jm.SetCallbacks(dialect.BroadcastJob,
 		func(ctx context.Context, b core.FoundBlock, rawHex string, submit cnjob.SubmitFunc) error {
 			return sink(ctx, b, rawHex, submit)

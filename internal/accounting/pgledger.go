@@ -160,12 +160,18 @@ func (l *PGLedger) RecordBlock(ctx context.Context, b core.FoundBlock, rawHex st
 	// （2026-07-07 zoka 影子池 13 个真块被此 bug 白挖，详见 docs/BUG-zoka爆块漏判-排查.md）。
 	// 一条块绝不能因金额格式化问题而丢——空奖励归一到 "0"（accrue-only 币无影响；
 	// 打款币的真值应由适配器从节点 /blocks 回填，见该链适配器 TODO）。
-	reward := b.Reward
-	if reward == "" {
-		reward = "0"
-	}
-	if _, err := l.parse(reward); err != nil {
-		return fmt.Errorf("块奖励金额非法: %w", err)
+	var reward any
+	if b.RewardPending {
+		reward = nil // nullable reward 即「权威值尚未回填」，ConfirmBlock 必须拒绝
+	} else {
+		rewardText := b.Reward
+		if rewardText == "" {
+			rewardText = "0"
+		}
+		if _, err := l.parse(rewardText); err != nil {
+			return fmt.Errorf("块奖励金额非法: %w", err)
+		}
+		reward = rewardText
 	}
 	tx, err := l.h.BeginTx(ctx, nil)
 	if err != nil {
@@ -224,6 +230,34 @@ func (l *PGLedger) MarkBlockPending(ctx context.Context, _, hash string) error {
 	return nil
 }
 
+func (l *PGLedger) UpdateBlockReward(ctx context.Context, _, hash, reward string) error {
+	rewardSat, err := l.parse(reward)
+	if err != nil {
+		return fmt.Errorf("块 reward 金额非法 %q: %w", reward, err)
+	}
+	res, err := l.h.ExecContext(ctx, `
+		UPDATE blocks SET reward=$3
+		WHERE poolid=$1 AND transactionconfirmationdata=$2
+		  AND status IN ('submitting','pending')`, l.coin, hash, l.toStr(rewardSat))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	var status string
+	err = l.h.QueryRowContext(ctx, `
+		SELECT status FROM blocks WHERE poolid=$1 AND transactionconfirmationdata=$2`,
+		l.coin, hash).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("块 %s 不存在", hash)
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("块 %s 状态 %s 不允许回填 reward", hash, status)
+}
+
 // UpdateBlockHash 意图 hash → 节点受理后的权威 hash（blob 链「意图先落库」补录，docs/05 场景B）。
 // block_credits 以 blockhash 为键（直付块 record 时已写行）→ 同步改。
 func (l *PGLedger) UpdateBlockHash(ctx context.Context, _, oldHash, newHash string) error {
@@ -249,7 +283,7 @@ func (l *PGLedger) PendingBlocks(ctx context.Context, _ string) ([]core.FoundBlo
 	// submitting 也返回：崩溃残留的意图记录交给分类器与链上比对归位（docs/05 场景D-1）
 	rows, err := l.h.QueryContext(ctx, `
 		SELECT blockheight, transactionconfirmationdata, COALESCE(miner,''), COALESCE(worker,''),
-		       COALESCE(reward::text,'0'), networkdifficulty, COALESCE(effort,0), solo, status, created
+		       reward::text, networkdifficulty, COALESCE(effort,0), solo, status, created
 		FROM blocks WHERE poolid=$1 AND status IN ('submitting','pending') ORDER BY id`, l.coin)
 	if err != nil {
 		return nil, err
@@ -279,9 +313,11 @@ func (l *PGLedger) ConfirmBlock(ctx context.Context, b core.FoundBlock, feePerce
 	var status string
 	var direct bool
 	var blockID int64
+	var storedReward sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT status, direct, id FROM blocks WHERE poolid=$1 AND transactionconfirmationdata=$2 FOR UPDATE`,
-		l.coin, b.Hash).Scan(&status, &direct, &blockID)
+		SELECT status, direct, id, reward::text FROM blocks
+		WHERE poolid=$1 AND transactionconfirmationdata=$2 FOR UPDATE`,
+		l.coin, b.Hash).Scan(&status, &direct, &blockID, &storedReward)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("块 %s 不存在", b.Hash)
 	}
@@ -291,8 +327,11 @@ func (l *PGLedger) ConfirmBlock(ctx context.Context, b core.FoundBlock, feePerce
 	if status == string(core.BlockConfirmed) {
 		return tx.Commit() // 幂等
 	}
+	if !storedReward.Valid {
+		return fmt.Errorf("块 %s 的权威 reward 尚未回填", b.Hash)
+	}
 
-	rewardSat, err := l.parse(b.Reward)
+	rewardSat, err := l.parse(storedReward.String)
 	if err != nil {
 		return err
 	}
@@ -990,13 +1029,17 @@ func scanBlock(r rowScanner, coin string) (core.FoundBlock, error) {
 	var height int64
 	var status string
 	var created time.Time
-	var rewardStr string
-	if err := r.Scan(&height, &b.Hash, &b.Finder, &b.Worker, &rewardStr, &b.NetDiff, &b.Effort, &b.Solo, &status, &created); err != nil {
+	var reward sql.NullString
+	if err := r.Scan(&height, &b.Hash, &b.Finder, &b.Worker, &reward, &b.NetDiff, &b.Effort, &b.Solo, &status, &created); err != nil {
 		return b, err
 	}
 	b.Coin = coin
 	b.Height = uint64(height)
-	b.Reward = rewardStr
+	if reward.Valid {
+		b.Reward = reward.String
+	} else {
+		b.RewardPending = true
+	}
 	b.FoundAt = created
 	switch status {
 	case "submitting", "pending":

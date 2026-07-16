@@ -133,6 +133,25 @@ func (l *MemLedger) MarkBlockPending(_ context.Context, _, hash string) error {
 	return fmt.Errorf("块 %s 不存在", hash)
 }
 
+func (l *MemLedger) UpdateBlockReward(_ context.Context, _, hash, reward string) error {
+	rewardSat, err := l.parse(reward)
+	if err != nil {
+		return fmt.Errorf("块 reward 金额非法 %q: %w", reward, err)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	mb := l.findBlock(hash)
+	if mb == nil {
+		return fmt.Errorf("块 %s 不存在", hash)
+	}
+	if mb.b.Status != core.BlockPending {
+		return fmt.Errorf("块 %s 状态 %s 不允许回填 reward", hash, mb.b.Status)
+	}
+	mb.b.Reward = l.toStr(rewardSat)
+	mb.b.RewardPending = false
+	return nil
+}
+
 func (l *MemLedger) PendingBlocks(_ context.Context, _ string) ([]core.FoundBlock, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -177,7 +196,10 @@ func (l *MemLedger) ConfirmBlock(_ context.Context, b core.FoundBlock, feePercen
 	if mb.credited {
 		return nil // 幂等
 	}
-	rewardSat, err := l.parse(b.Reward)
+	if mb.b.RewardPending {
+		return fmt.Errorf("块 %s 的权威 reward 尚未回填", b.Hash)
+	}
+	rewardSat, err := l.parse(mb.b.Reward)
 	if err != nil {
 		return err
 	}

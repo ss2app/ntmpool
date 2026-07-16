@@ -41,14 +41,14 @@ type BatchStore interface {
 
 // Batch 一笔打款批次的完整状态（对应 payment_batches 表）。
 type Batch struct {
-	ID          int64
-	Kind        string // payout | fee_collect | fee_sweep | consolidate
-	Outputs     map[string]string
-	Status      core.PaymentStatus
-	PlannedTxID string
-	RawTx       string
-	TxID        string
-	CreatedAt   time.Time
+	ID            int64
+	Kind          string // payout | fee_collect | fee_sweep | consolidate
+	Outputs       map[string]string
+	Status        core.PaymentStatus
+	PlannedTxID   string
+	RawTx         string
+	TxID          string
+	CreatedAt     time.Time
 	Confirmations int64 // 追踪器维护（仅内存/展示；PG 侧存于 payments.confirmations）
 }
 
@@ -79,12 +79,13 @@ type EventFunc func(kind, title string, fields map[string]string)
 
 // Engine 打款引擎（每币一个）。持有该币打款锁：正常打款/手续费/整备互斥。
 type Engine struct {
-	cfg    Config
+	cfg       Config
 	ledger    accounting.Ledger
 	node      NodeClassifier
 	wallet    adapter.WalletAdapter
-	rawtx     adapter.RawTxWallet // 可选：拆步打款
-	txtracker adapter.TxTracker   // 可选：精确 tx 状态（是否仍在 mempool/链）
+	spendable adapter.SpendableBalanceSource // 可选：打款前 solvency 门禁
+	rawtx     adapter.RawTxWallet            // 可选：拆步打款
+	txtracker adapter.TxTracker              // 可选：精确 tx 状态（是否仍在 mempool/链）
 	store     BatchStore
 
 	mu      sync.Mutex // 每币打款锁
@@ -113,6 +114,9 @@ func NewEngine(cfg Config, l accounting.Ledger, node NodeClassifier, w adapter.W
 	}
 	if tr, ok := w.(adapter.TxTracker); ok {
 		e.txtracker = tr
+	}
+	if sb, ok := w.(adapter.SpendableBalanceSource); ok {
+		e.spendable = sb
 	}
 	return e
 }
@@ -467,6 +471,9 @@ func (e *Engine) payout(ctx context.Context) error {
 	if err != nil || len(payable) == 0 {
 		return err
 	}
+	if !e.payoutSolvent(ctx, payable) {
+		return nil
+	}
 	// 按链特有单笔约束预分子批（Kaspa KIP-9 storage mass 等）；未实现 BatchPlanner = 整批一笔。
 	subBatches := []map[string]string{payable}
 	if bp, ok := e.wallet.(adapter.BatchPlanner); ok {
@@ -487,6 +494,45 @@ func (e *Engine) payout(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// payoutSolvent 在任何批次落库或扣账前校验钱包成熟可花余额。旧 adapter
+// 未实现 SpendableBalanceSource 时保持兼容；实现了但查询失败时安全跳过本轮。
+func (e *Engine) payoutSolvent(ctx context.Context, payable map[string]string) bool {
+	if e.spendable == nil {
+		return true
+	}
+	availableText, err := e.spendable.SpendableBalance(ctx)
+	if err != nil {
+		log.Printf("[payout %s] ⚠ 查询可花余额失败，本轮跳过且不扣账: %v", e.cfg.Coin, err)
+		e.emit("payout_insolvent", "可花余额查询失败，本轮打款已跳过", map[string]string{"error": err.Error()})
+		return false
+	}
+	available, err := parseAmountSat(availableText, e.cfg.Decimals)
+	if err != nil {
+		log.Printf("[payout %s] ⚠ 可花余额格式非法 %q，本轮跳过且不扣账: %v", e.cfg.Coin, availableText, err)
+		e.emit("payout_insolvent", "可花余额格式非法，本轮打款已跳过", map[string]string{"balance": availableText})
+		return false
+	}
+	var required int64
+	for _, amountText := range payable {
+		amount, err := parseAmountSat(amountText, e.cfg.Decimals)
+		if err != nil || amount < 0 || required+amount < required {
+			log.Printf("[payout %s] ⚠ 应付金额非法 %q，本轮跳过且不扣账", e.cfg.Coin, amountText)
+			return false
+		}
+		required += amount
+	}
+	if available < required {
+		balance, need := formatAmountSat(available, e.cfg.Decimals), formatAmountSat(required, e.cfg.Decimals)
+		log.Printf("[payout %s] ⚠ 钱包可花余额不足（available=%s required=%s），本轮跳过且不扣账",
+			e.cfg.Coin, balance, need)
+		e.emit("payout_insolvent", "钱包可花余额不足，本轮打款已跳过", map[string]string{
+			"available": balance, "required": need,
+		})
+		return false
+	}
+	return true
 }
 
 // payoutOneBatch 一个原子打款子批：取批号 → 先扣余额 → 拆步签名落库/或 sendmany 一步 → 广播 → 追踪。
