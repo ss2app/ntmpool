@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -108,6 +109,13 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 	return nil
 }
 
+// Call exposes the shared CryptoNote JSON-RPC transport to thin protocol
+// specializations. Callers should prefer the typed methods on Client whenever
+// the RPC is part of the common CryptoNote contract.
+func (c *Client) Call(ctx context.Context, method string, params, out any) error {
+	return c.call(ctx, method, params, out)
+}
+
 // ---- NodeAdapter ----
 
 func (c *Client) Status(ctx context.Context) (adapter.ChainStatus, error) {
@@ -132,6 +140,7 @@ type gbtResp struct {
 	BlocktemplateBlob string `json:"blocktemplate_blob"`
 	BlockhashingBlob  string `json:"blockhashing_blob"`
 	Difficulty        uint64 `json:"difficulty"`
+	WideDifficulty    string `json:"wide_difficulty"`
 	Height            uint64 `json:"height"`
 	PrevHash          string `json:"prev_hash"`
 	SeedHash          string `json:"seed_hash"`
@@ -151,8 +160,18 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 	if err != nil || len(hashing) < nonceOffset+nonceLen {
 		return nil, fmt.Errorf("%s: blockhashing_blob 非法（len=%d, %v）", c.name, len(hashing), err)
 	}
-	if t.Difficulty == 0 {
-		return nil, fmt.Errorf("%s: difficulty=0", c.name)
+	difficulty := new(big.Int)
+	if t.WideDifficulty != "" {
+		// Monero/Zephyr store_difficulty serializes wide_difficulty as a 0x-prefixed
+		// hexadecimal integer. Base 0 also accepts decimal fixtures/compatible daemons.
+		if _, ok := difficulty.SetString(t.WideDifficulty, 0); !ok || difficulty.Sign() <= 0 {
+			return nil, fmt.Errorf("%s: wide_difficulty 非法: %q", c.name, t.WideDifficulty)
+		}
+	} else {
+		difficulty.SetUint64(t.Difficulty)
+		if difficulty.Sign() <= 0 {
+			return nil, fmt.Errorf("%s: difficulty=0", c.name)
+		}
 	}
 	work := &adapter.BlobWork{
 		HashingBlob:     hashing,
@@ -161,7 +180,7 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 		SearchLen:       searchLen,
 		SeedHash:        t.SeedHash,
 		Algo:            c.algo,
-		NetworkTarget:   cnwork.TargetFromDiff(float64(t.Difficulty)),
+		NetworkTarget:   new(big.Int).Div(new(big.Int).Set(cnwork.Diff1), difficulty),
 		HashBigEndian:   false, // monero 惯例：hash 小端解释
 		TargetCompactLE: true,  // XMRig 惯例：8-hex compact 小端
 		Nicehash:        true,
@@ -204,8 +223,14 @@ func (c *Client) SubmitBlob(ctx context.Context, sol *adapter.BlobSolution) (str
 		return "", fmt.Errorf("%s: blocktemplate_blob 非法", c.name)
 	}
 	cnwork.PutNonceLE(blk, nonceOffset, nonceLen, sol.Nonce)
-	if err := c.call(ctx, "submit_block", []any{hex.EncodeToString(blk)}, nil); err != nil {
+	var submitted struct {
+		BlockID string `json:"block_id"`
+	}
+	if err := c.call(ctx, "submit_block", []any{hex.EncodeToString(blk)}, &submitted); err != nil {
 		return "", err
+	}
+	if submitted.BlockID != "" {
+		return submitted.BlockID, nil
 	}
 	// 取回权威块 hash（我们的块刚成为该高度主链块）
 	height := blockHeightFromWork(sol)

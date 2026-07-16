@@ -84,6 +84,12 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 	return nil
 }
 
+// Call exposes the shared wallet JSON-RPC transport to thin protocol
+// specializations. Common CryptoNote wallets should use Client's typed methods.
+func (c *Client) Call(ctx context.Context, method string, params, out any) error {
+	return c.call(ctx, method, params, out)
+}
+
 // ---- WalletAdapter ----
 
 func (c *Client) SpendableBalance(ctx context.Context) (string, error) {

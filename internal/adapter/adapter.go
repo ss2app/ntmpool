@@ -83,11 +83,15 @@ type NodeAdapter interface {
 	Confirmations(ctx context.Context, blockHash string, height uint64) (int64, error)
 }
 
+// BlockRewardSource is an optional daemon capability for chains whose template
+// reward is not the amount ultimately paid in the pool's accounting asset.
+// It is queried with the authoritative block id returned by submission.
+type BlockRewardSource interface {
+	BlockReward(ctx context.Context, blockHash string) (string, error)
+}
+
 // WalletAdapter 打款侧。与 NodeAdapter 分离：有的链钱包在节点里，有的独立进程。
 type WalletAdapter interface {
-	// SpendableBalance 池钱包已成熟可花余额（十进制字符串，币）。
-	SpendableBalance(ctx context.Context) (string, error)
-
 	// SendMany 单笔多输出批量打款，返回 txid。
 	// 铁律：绝不逐地址串行发 tx（UTXO 互撞，pitfall C2）；
 	// 调用方保证「先扣余额再调用，失败绝不自动重发」（pitfall C4）。
@@ -97,6 +101,12 @@ type WalletAdapter interface {
 	// TxConfirmations 追踪打款 tx 的确认数（<0 = 掉出主链/被双花顶掉）。
 	// 这是全行业开源池的空白（miningcore 只记 txid），NTMPool 的核心超越点之一。
 	TxConfirmations(ctx context.Context, txid string) (int64, error)
+}
+
+// SpendableBalanceSource is an optional wallet capability used by the payout
+// engine's pre-flight solvency gate. Wallets without it retain legacy behavior.
+type SpendableBalanceSource interface {
+	SpendableBalance(ctx context.Context) (string, error)
 }
 
 // TxTracker 可选扩展：比 TxConfirmations 更精确的打款 tx 状态——除确认数外还报告
