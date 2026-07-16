@@ -26,6 +26,8 @@ func buildFamily(ctx context.Context, cfg config.CoinConfig, decimals int, inst 
 		return buildDragonXFamily(ctx, cfg, decimals, inst)
 	case "brisvia-rpc":
 		return buildBrisviaFamily(ctx, cfg, decimals, inst)
+	case "scash-rpc":
+		return buildScashFamily(ctx, cfg, decimals, inst)
 	case "noctari-rpc":
 		return buildNoctariFamily(ctx, cfg, decimals, inst)
 	case "btc09-http":
@@ -35,7 +37,7 @@ func buildFamily(ctx context.Context, cfg config.CoinConfig, decimals int, inst 
 	case "velkar-rpc":
 		return buildVelkarFamily(ctx, cfg, decimals, inst)
 	default:
-		return nil, errf("[%s] 未知适配器 %q（可选 bitcoin-rpc / cryptonote-rpc / zephyr-rpc / custom-http / dragonx-rpc / brisvia-rpc / noctari-rpc / btc09-http / midstate-rpc / velkar-rpc）", cfg.ID, cfg.Adapter)
+		return nil, errf("[%s] 未知适配器 %q（可选 bitcoin-rpc / cryptonote-rpc / zephyr-rpc / custom-http / dragonx-rpc / brisvia-rpc / scash-rpc / noctari-rpc / btc09-http / midstate-rpc / velkar-rpc）", cfg.ID, cfg.Adapter)
 	}
 }
 
