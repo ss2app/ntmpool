@@ -127,6 +127,11 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	// 崩溃恢复走真持久化）；否则内存版（单实例，M1 竖切够用）。
 	if deps.DB != nil {
 		pg := accounting.NewPGLedger(deps.DB, cfg.ID, decimals, cfg.Payout.PplnsFactor, deps.Instance)
+		// schema 迁移由进程入口先于 Start 完成；每币首启在接收业务前建立 journal 起账快照。
+		// 影子期起账失败只告警，不阻断实例启动或既有账本业务。
+		if err := pg.EnsureJournalOpening(ctx); err != nil {
+			log.Printf("[P0] [%s] journal_opening_failed err=%v action=continue", cfg.ID, err)
+		}
 		pg.StartFlusher(ctx, time.Second) // share 每秒批量落盘（爆块/confirm 前会强制同步 flush）
 		inst.ledger = pg
 		inst.batches = payout.NewPGBatchStore(deps.DB, cfg.ID)

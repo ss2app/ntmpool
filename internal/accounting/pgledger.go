@@ -341,7 +341,7 @@ func (l *PGLedger) ConfirmBlock(ctx context.Context, b core.FoundBlock, feePerce
 	// （batchid = −blocks.id，与打款引擎批次号空间天然隔离），txid=块 hash=
 	// 「已随块直付」。不碰 debts 抵扣（carry 计划时已减掉 debts）。
 	if direct {
-		if err := l.confirmDirectTx(ctx, tx, b.Hash, blockID, rewardSat); err != nil {
+		if err := l.confirmDirectTx(ctx, tx, b.Hash, blockID, rewardSat, feePercent, b.Solo); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -378,6 +378,9 @@ func (l *PGLedger) ConfirmBlock(ctx context.Context, b core.FoundBlock, feePerce
 		}
 	}
 
+	journal := newJournalTx("confirm", "confirm:block:"+b.Hash, journalPolicyPreRegistry,
+		fmt.Sprintf("feePercent=%g solo=%t", feePercent, b.Solo))
+	journal.leg("block:revenue", "", rewardSat).leg("pool:fee_accrued", "", -feeSat)
 	// 快照（抵债前全额）→ 抵债 → 入余额 → 审计流水
 	for a, amt := range payouts {
 		if _, err := tx.ExecContext(ctx, `
@@ -393,17 +396,20 @@ func (l *PGLedger) ConfirmBlock(ctx context.Context, b core.FoundBlock, feePerce
 		if err := l.addBalanceTx(ctx, tx, a, credit, "reward", "block:"+b.Hash); err != nil {
 			return err
 		}
+		journal.leg("miner:payable", a, -credit)
+		journal.leg("debt:receivable", a, -(amt - credit))
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE blocks SET status='confirmed', confirmationprogress=1, feeamount=$3
 		WHERE poolid=$1 AND transactionconfirmationdata=$2`, l.coin, b.Hash, l.toStr(feeSat)); err != nil {
 		return err
 	}
+	l.writeJournalShadow(ctx, tx, journal)
 	return tx.Commit()
 }
 
 // confirmDirectTx 直付块入账（须在持有 blocks 行锁的事务内）。
-func (l *PGLedger) confirmDirectTx(ctx context.Context, tx *sql.Tx, hash string, blockID, rewardSat int64) error {
+func (l *PGLedger) confirmDirectTx(ctx context.Context, tx *sql.Tx, hash string, blockID, rewardSat int64, feePercent float64, solo bool) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT address, amount::text, COALESCE(paid,0)::text FROM block_credits
 		WHERE poolid=$1 AND blockhash=$2 AND NOT reversed ORDER BY address`, l.coin, hash)
@@ -439,12 +445,16 @@ func (l *PGLedger) confirmDirectTx(ctx context.Context, tx *sql.Tx, hash string,
 		return err
 	}
 
+	journal := newJournalTx("direct_confirm", "confirm:block:"+hash, journalPolicyPreRegistry,
+		fmt.Sprintf("feePercent=%g solo=%t direct=true", feePercent, solo))
+	journal.leg("block:revenue", "", rewardSat)
 	var sumCredit int64
 	for _, dc := range dcs {
 		sumCredit += dc.cSat
 		if err := l.addBalanceTx(ctx, tx, dc.addr, dc.cSat, "reward", "block:"+hash); err != nil {
 			return err
 		}
+		journal.leg("miner:payable", dc.addr, -dc.cSat)
 		if dc.pSat > 0 {
 			if err := l.addBalanceTx(ctx, tx, dc.addr, -dc.pSat, "payment", "block:"+hash); err != nil {
 				return err
@@ -456,12 +466,20 @@ func (l *PGLedger) confirmDirectTx(ctx context.Context, tx *sql.Tx, hash string,
 				l.coin, dc.addr, l.toStr(dc.pSat), -blockID, hash); err != nil {
 				return err
 			}
+			journal.leg("miner:payable", dc.addr, dc.pSat)
+			journal.leg("payout:settled", "", -dc.pSat)
 		}
 	}
+	feeSat := rewardSat - sumCredit
 	_, err = tx.ExecContext(ctx, `
 		UPDATE blocks SET status='confirmed', confirmationprogress=1, feeamount=$3
-		WHERE poolid=$1 AND transactionconfirmationdata=$2`, l.coin, hash, l.toStr(rewardSat-sumCredit))
-	return err
+		WHERE poolid=$1 AND transactionconfirmationdata=$2`, l.coin, hash, l.toStr(feeSat))
+	if err != nil {
+		return err
+	}
+	journal.leg("pool:fee_accrued", "", -feeSat)
+	l.writeJournalShadow(ctx, tx, journal)
+	return nil
 }
 
 func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
@@ -474,9 +492,11 @@ func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
 	var status string
 	var direct bool
 	var blockID int64
+	var rewardStr, feeStr sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT status, direct, id FROM blocks WHERE poolid=$1 AND transactionconfirmationdata=$2 FOR UPDATE`,
-		l.coin, b.Hash).Scan(&status, &direct, &blockID)
+		SELECT status, direct, id, reward::text, feeamount::text
+		FROM blocks WHERE poolid=$1 AND transactionconfirmationdata=$2 FOR UPDATE`,
+		l.coin, b.Hash).Scan(&status, &direct, &blockID, &rewardStr, &feeStr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("块 %s 不存在", b.Hash)
 	}
@@ -485,6 +505,26 @@ func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
 	}
 	if status == string(core.BlockOrphaned) {
 		return tx.Commit() // 幂等
+	}
+	var journal *journalBuilder
+	var takeSum, remainSum int64
+	if status == string(core.BlockConfirmed) {
+		if !rewardStr.Valid {
+			return fmt.Errorf("已确认块 %s 缺少 reward", b.Hash)
+		}
+		rewardSat, err := l.parse(rewardStr.String)
+		if err != nil {
+			return err
+		}
+		feeSat := int64(0)
+		if feeStr.Valid {
+			feeSat, err = l.parse(feeStr.String)
+			if err != nil {
+				return err
+			}
+		}
+		journal = newJournalTx("orphan", "orphan:block:"+b.Hash, journalPolicyPreRegistry, "")
+		journal.leg("pool:fee_accrued", "", feeSat).leg("block:revenue", "", -rewardSat)
 	}
 
 	// 已确认直付块回滚：coinbase 没上链=谁都没拿到——先退 paid（usage='payment_refund'
@@ -525,6 +565,8 @@ func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
 			if err := l.addBalanceTx(ctx, tx, p.addr, p.pSat, "payment_refund", "block:"+b.Hash); err != nil {
 				return err
 			}
+			journal.leg("payout:settled", "", p.pSat)
+			journal.leg("miner:payable", p.addr, -p.pSat)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM payments WHERE poolid=$1 AND batchid=$2`, l.coin, -blockID); err != nil {
@@ -562,6 +604,8 @@ func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
 		if err := rows.Err(); err != nil {
 			return err
 		}
+		// 配平推导：Σtake + Σremain = Σblock_credits.amount = reward - fee；
+		// 再加 DR fee 与 CR reward 后整笔为零，builder 的 J1 断言作最终兜底。
 		for _, c := range credits {
 			bal, err := l.balanceForUpdateTx(ctx, tx, c.addr)
 			if err != nil {
@@ -576,6 +620,8 @@ func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
 					return err
 				}
 			}
+			takeSum += take
+			journal.leg("miner:payable", c.addr, take)
 			if remain := c.amt - take; remain > 0 {
 				if _, err := tx.ExecContext(ctx, `
 					INSERT INTO debts (poolid, address, original, remaining, reason)
@@ -583,6 +629,8 @@ func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
 					l.coin, c.addr, l.toStr(remain), fmt.Sprintf("orphaned block %d (%s)", b.Height, b.Hash)); err != nil {
 					return err
 				}
+				remainSum += remain
+				journal.leg("debt:receivable", c.addr, remain)
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -595,6 +643,10 @@ func (l *PGLedger) OrphanBlock(ctx context.Context, b core.FoundBlock) error {
 		UPDATE blocks SET status='orphaned' WHERE poolid=$1 AND transactionconfirmationdata=$2`,
 		l.coin, b.Hash); err != nil {
 		return err
+	}
+	if journal != nil {
+		journal.memo = fmt.Sprintf("takeSum=%s remainSum=%s direct=%t", l.toStr(takeSum), l.toStr(remainSum), direct)
+		l.writeJournalShadow(ctx, tx, journal)
 	}
 	return tx.Commit()
 }
@@ -636,6 +688,8 @@ func (l *PGLedger) DeductForPayout(ctx context.Context, _ string, outputs map[st
 		return err
 	}
 	defer tx.Rollback()
+	journal := newJournalTx("deduct", fmt.Sprintf("deduct:batch:%d", batchID), journalPolicyPreRegistry,
+		fmt.Sprintf("batchID=%d", batchID))
 	// 地址排序遍历：跨事务锁序一致防死锁
 	for _, a := range sortedAmountKeys(outputs) {
 		amt, err := l.parse(outputs[a])
@@ -652,7 +706,9 @@ func (l *PGLedger) DeductForPayout(ctx context.Context, _ string, outputs map[st
 		if err := l.addBalanceTx(ctx, tx, a, -amt, "payment", fmt.Sprintf("batch:%d", batchID)); err != nil {
 			return err
 		}
+		journal.leg("miner:payable", a, amt).leg("payout:settled", "", -amt)
 	}
+	l.writeJournalShadow(ctx, tx, journal)
 	return tx.Commit()
 }
 
@@ -673,6 +729,8 @@ func (l *PGLedger) RefundPayout(ctx context.Context, _ string, outputs map[strin
 	if already {
 		return tx.Commit()
 	}
+	journal := newJournalTx("refund", fmt.Sprintf("refund:batch:%d", batchID), journalPolicyPreRegistry,
+		fmt.Sprintf("batchID=%d", batchID))
 	for _, a := range sortedAmountKeys(outputs) {
 		amt, err := l.parse(outputs[a])
 		if err != nil {
@@ -681,7 +739,9 @@ func (l *PGLedger) RefundPayout(ctx context.Context, _ string, outputs map[strin
 		if err := l.addBalanceTx(ctx, tx, a, amt, "payment_refund", fmt.Sprintf("batch:%d", batchID)); err != nil {
 			return err
 		}
+		journal.leg("payout:settled", "", amt).leg("miner:payable", a, -amt)
 	}
+	l.writeJournalShadow(ctx, tx, journal)
 	return tx.Commit()
 }
 

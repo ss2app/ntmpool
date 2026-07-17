@@ -460,6 +460,57 @@ func (b *brokenLedger) Reconcile(context.Context, string) (string, error) {
 	return "0.00000001", nil
 }
 
+type shadowMismatchLedger struct {
+	*accounting.MemLedger
+	mismatch bool
+	checked  bool
+}
+
+func (l *shadowMismatchLedger) JournalShadowAudit(context.Context, string) ([]accounting.JournalMismatch, bool, error) {
+	if !l.checked {
+		return nil, false, errors.New("审计查询暂不可用")
+	}
+	if !l.mismatch {
+		return nil, true, nil
+	}
+	return []accounting.JournalMismatch{{
+		Account: "miner:payable", Address: "A",
+		JournalAmount: "1.00000000", ProjectionAmount: "2.00000000",
+	}}, true, nil
+}
+
+func TestJournalShadowMismatchWarnsWithoutFreezeAndDeduplicates(t *testing.T) {
+	ctx := context.Background()
+	ledger := &shadowMismatchLedger{MemLedger: accounting.NewMemLedger(8, 2)}
+	e := NewEngine(Config{Coin: "t", Decimals: 8, MinPayout: 1, Maturity: 100},
+		ledger, &fakeNode{conf: map[string]int64{}, mainHash: map[uint64]string{}},
+		newFakeWallet(), NewMemBatchStore())
+	e.SetEnabled(false)
+	var events []string
+	e.SetEvents(func(kind, _ string, _ map[string]string) { events = append(events, kind) })
+
+	// checked=false 必须静默，不误报。
+	_ = e.RunOnce(ctx)
+	ledger.checked, ledger.mismatch = true, true
+	_ = e.RunOnce(ctx)
+	_ = e.RunOnce(ctx)
+	if got := strings.Join(events, ","); got != "journal_shadow_mismatch" {
+		t.Fatalf("持续失配应只告警一次: %v", events)
+	}
+	if e.Frozen() {
+		t.Fatal("影子期 J3 失配绝不能冻结打款")
+	}
+
+	// 恢复一轮后再次进入失配，应再次报告翻转。
+	ledger.mismatch = false
+	_ = e.RunOnce(ctx)
+	ledger.mismatch = true
+	_ = e.RunOnce(ctx)
+	if len(events) != 2 || events[1] != "journal_shadow_mismatch" {
+		t.Fatalf("恢复后再次失配应重新告警: %v", events)
+	}
+}
+
 // 节点不认识块（conf<0）→ 孤块。
 func TestOrphanByNotFound(t *testing.T) {
 	ctx := context.Background()

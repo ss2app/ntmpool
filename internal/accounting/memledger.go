@@ -45,6 +45,18 @@ type memBalanceChange struct {
 	tag   string
 }
 
+type memJournalLeg struct {
+	account string
+	address string
+	delta   int64
+}
+
+type memJournalTx struct {
+	key  string
+	kind string
+	legs []memJournalLeg
+}
+
 // MemLedger 单实例内存会计（M1 + 单元测试；生产多实例用 Postgres 实现）。
 type MemLedger struct {
 	mu       sync.Mutex
@@ -56,6 +68,7 @@ type MemLedger struct {
 	changes  []memBalanceChange
 	debts    map[string]int64 // 地址→未抵扣欠款（聪）
 	blocks   []*memBlock
+	journal  []memJournalTx
 
 	totalPaid  int64
 	totalFees  int64
@@ -87,6 +100,28 @@ func (l *MemLedger) parse(s string) (int64, error) { return parseAmount(s, l.dec
 // addBalanceChange 须在持有 l.mu 时调用；usage/tag 必须与 PGLedger.addBalanceTx 完全一致。
 func (l *MemLedger) addBalanceChange(addr string, delta int64, usage, tag string) {
 	l.changes = append(l.changes, memBalanceChange{addr: addr, delta: delta, usage: usage, tag: tag})
+}
+
+// appendJournal 须在持有 l.mu 时调用。影子期校验失败或 business_key 重复只记 P0 并跳过，
+// 绝不回滚或改变已经完成的内存投影业务结果。
+func (l *MemLedger) appendJournal(coin string, j *journalBuilder) {
+	if err := j.validate(); err != nil {
+		log.Printf("[P0] [会计 %s] journal_write_skipped business_key=%s kind=%s err=%v",
+			coin, j.businessKey, j.kind, err)
+		return
+	}
+	for _, existing := range l.journal {
+		if existing.key == j.businessKey {
+			log.Printf("[P0] [会计 %s] journal_duplicate_business_key business_key=%s kind=%s action=skip",
+				coin, j.businessKey, j.kind)
+			return
+		}
+	}
+	mt := memJournalTx{key: j.businessKey, kind: j.kind, legs: make([]memJournalLeg, 0, len(j.legs))}
+	for _, leg := range j.legs {
+		mt.legs = append(mt.legs, memJournalLeg{account: leg.account, address: leg.address, delta: leg.delta})
+	}
+	l.journal = append(l.journal, mt)
 }
 
 func (l *MemLedger) RecordShare(_ context.Context, s core.Share, weight float64) error {
@@ -224,24 +259,31 @@ func (l *MemLedger) ConfirmBlock(_ context.Context, b core.FoundBlock, feePercen
 	// 忽略传入 feePercent（费率已在模板分账时生效）。不碰 debts 抵扣——
 	// carry 计划时已减掉 debts（DirectPlanInputs），coinbase 无法扣款。
 	if mb.direct {
+		journal := newJournalTx("direct_confirm", "confirm:block:"+b.Hash, journalPolicyPreRegistry,
+			fmt.Sprintf("feePercent=%g solo=%t direct=true", feePercent, b.Solo))
+		journal.leg("block:revenue", "", rewardSat)
 		var sumCredit int64
 		for a, c := range mb.directCred {
 			l.balances[a] += c
 			l.addBalanceChange(a, c, "reward", "block:"+b.Hash)
 			sumCredit += c
+			journal.leg("miner:payable", a, -c)
 			if p := mb.directPaid[a]; p > 0 {
 				l.balances[a] -= p
 				l.addBalanceChange(a, -p, "payment", "block:"+b.Hash)
 				l.totalPaid += p
 				l.paidOut += p
 				l.paidByAddr[a] += p
+				journal.leg("miner:payable", a, p).leg("payout:settled", "", -p)
 			}
 		}
 		mb.credited = true
 		mb.feeSat = rewardSat - sumCredit
 		l.totalFees += mb.feeSat
+		journal.leg("pool:fee_accrued", "", -mb.feeSat)
 		mb.b.Status = core.BlockConfirmed
 		l.setBlockStatus(b.Hash, core.BlockConfirmed)
+		l.appendJournal(b.Coin, journal)
 		return nil
 	}
 
@@ -277,8 +319,12 @@ func (l *MemLedger) ConfirmBlock(_ context.Context, b core.FoundBlock, feePercen
 		}
 	}
 
+	journal := newJournalTx("confirm", "confirm:block:"+b.Hash, journalPolicyPreRegistry,
+		fmt.Sprintf("feePercent=%g solo=%t", feePercent, b.Solo))
+	journal.leg("block:revenue", "", rewardSat).leg("pool:fee_accrued", "", -feeSat)
 	// 入账：先抵扣该地址 debts（孤块追缴），余额入 balances
 	for a, amt := range payouts {
+		fullAmt := amt
 		if d := l.debts[a]; d > 0 {
 			take := d
 			if take > amt {
@@ -289,6 +335,8 @@ func (l *MemLedger) ConfirmBlock(_ context.Context, b core.FoundBlock, feePercen
 		}
 		l.balances[a] += amt
 		l.addBalanceChange(a, amt, "reward", "block:"+b.Hash)
+		journal.leg("miner:payable", a, -amt)
+		journal.leg("debt:receivable", a, -(fullAmt - amt))
 	}
 	l.totalFees += feeSat
 	mb.credited = true
@@ -296,6 +344,7 @@ func (l *MemLedger) ConfirmBlock(_ context.Context, b core.FoundBlock, feePercen
 	mb.feeSat = feeSat
 	mb.b.Status = core.BlockConfirmed
 	l.setBlockStatus(b.Hash, core.BlockConfirmed)
+	l.appendJournal(b.Coin, journal)
 	return nil
 }
 
@@ -312,6 +361,13 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 	// 直付块回滚：coinbase 没上链=谁都没拿到——先退回 paid（对冲 totalPaid），
 	// 再按 credit 快照反转余额（扣不动的记 debt，同普通块）。
 	if mb.credited && mb.direct {
+		journal := newJournalTx("orphan", "orphan:block:"+b.Hash, journalPolicyPreRegistry, "")
+		rewardSat, err := l.parse(mb.b.Reward)
+		if err != nil {
+			return err
+		}
+		journal.leg("pool:fee_accrued", "", mb.feeSat).leg("block:revenue", "", -rewardSat)
+		var takeSum, remainSum int64
 		for a, p := range mb.directPaid {
 			if p <= 0 {
 				continue
@@ -321,6 +377,7 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 			l.totalPaid -= p
 			l.paidOut -= p
 			l.paidByAddr[a] -= p
+			journal.leg("payout:settled", "", p).leg("miner:payable", a, -p)
 		}
 		for a, c := range mb.directCred {
 			if l.balances[a] >= c {
@@ -328,6 +385,8 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 				if c > 0 {
 					l.addBalanceChange(a, -c, "orphan_reversal", "block:"+b.Hash)
 				}
+				takeSum += c
+				journal.leg("miner:payable", a, c)
 			} else {
 				take := l.balances[a]
 				remain := c - take
@@ -336,6 +395,9 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 					l.addBalanceChange(a, -take, "orphan_reversal", "block:"+b.Hash)
 				}
 				l.debts[a] += remain
+				takeSum += take
+				remainSum += remain
+				journal.leg("miner:payable", a, take).leg("debt:receivable", a, remain)
 			}
 		}
 		l.totalFees -= mb.feeSat
@@ -343,11 +405,22 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 		mb.credited = false
 		mb.b.Status = core.BlockOrphaned
 		l.setBlockStatus(b.Hash, core.BlockOrphaned)
+		journal.memo = fmt.Sprintf("takeSum=%s remainSum=%s direct=true", l.toStr(takeSum), l.toStr(remainSum))
+		l.appendJournal(b.Coin, journal)
 		return nil
 	}
 
 	// 若已入账（预打款垫付场景）：把已发的每地址金额转成 debts 追缴
 	if mb.credited {
+		journal := newJournalTx("orphan", "orphan:block:"+b.Hash, journalPolicyPreRegistry, "")
+		rewardSat, err := l.parse(mb.b.Reward)
+		if err != nil {
+			return err
+		}
+		journal.leg("pool:fee_accrued", "", mb.feeSat).leg("block:revenue", "", -rewardSat)
+		var takeSum, remainSum int64
+		// 配平推导：Σtake + Σremain = Σpayouts = reward - fee；
+		// 再加 DR fee 与 CR reward 后整笔为零，builder 的 J1 断言作最终兜底。
 		for a, amt := range mb.payouts {
 			// 已在余额里的先扣回，扣不动的（已打款出去）记 debt
 			if l.balances[a] >= amt {
@@ -355,6 +428,8 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 				if amt > 0 {
 					l.addBalanceChange(a, -amt, "orphan_reversal", "block:"+b.Hash)
 				}
+				takeSum += amt
+				journal.leg("miner:payable", a, amt)
 			} else {
 				take := l.balances[a]
 				remain := amt - take
@@ -363,11 +438,16 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 					l.addBalanceChange(a, -take, "orphan_reversal", "block:"+b.Hash)
 				}
 				l.debts[a] += remain
+				takeSum += take
+				remainSum += remain
+				journal.leg("miner:payable", a, take).leg("debt:receivable", a, remain)
 			}
 		}
 		// 计提费一并作废（不作废则守恒 delta=-fee 误冻结打款；M4 修）
 		l.totalFees -= mb.feeSat
 		mb.feeSat = 0
+		journal.memo = fmt.Sprintf("takeSum=%s remainSum=%s direct=false", l.toStr(takeSum), l.toStr(remainSum))
+		l.appendJournal(b.Coin, journal)
 	}
 	mb.credited = false
 	mb.b.Status = core.BlockOrphaned
@@ -395,7 +475,7 @@ func (l *MemLedger) PayableBalances(_ context.Context, _ string, defaultThreshol
 	return out, nil
 }
 
-func (l *MemLedger) DeductForPayout(_ context.Context, _ string, outputs map[string]string, batchID int64) error {
+func (l *MemLedger) DeductForPayout(_ context.Context, coin string, outputs map[string]string, batchID int64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	// 先校验够扣，再统一扣（事务语义）
@@ -410,19 +490,25 @@ func (l *MemLedger) DeductForPayout(_ context.Context, _ string, outputs map[str
 		}
 		deduct[a] = amt
 	}
+	journal := newJournalTx("deduct", fmt.Sprintf("deduct:batch:%d", batchID), journalPolicyPreRegistry,
+		fmt.Sprintf("batchID=%d", batchID))
 	for a, amt := range deduct {
 		l.balances[a] -= amt
 		l.addBalanceChange(a, -amt, "payment", fmt.Sprintf("batch:%d", batchID))
 		l.paidOut += amt
 		l.totalPaid += amt
 		l.paidByAddr[a] += amt
+		journal.leg("miner:payable", a, amt).leg("payout:settled", "", -amt)
 	}
+	l.appendJournal(coin, journal)
 	return nil
 }
 
-func (l *MemLedger) RefundPayout(_ context.Context, _ string, outputs map[string]string, batchID int64) error {
+func (l *MemLedger) RefundPayout(_ context.Context, coin string, outputs map[string]string, batchID int64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	journal := newJournalTx("refund", fmt.Sprintf("refund:batch:%d", batchID), journalPolicyPreRegistry,
+		fmt.Sprintf("batchID=%d", batchID))
 	for a, s := range outputs {
 		amt, err := l.parse(s)
 		if err != nil {
@@ -433,7 +519,9 @@ func (l *MemLedger) RefundPayout(_ context.Context, _ string, outputs map[string
 		l.paidOut -= amt
 		l.totalPaid -= amt
 		l.paidByAddr[a] -= amt
+		journal.leg("payout:settled", "", amt).leg("miner:payable", a, -amt)
 	}
+	l.appendJournal(coin, journal)
 	return nil
 }
 

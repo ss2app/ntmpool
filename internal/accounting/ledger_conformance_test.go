@@ -6,6 +6,7 @@ package accounting
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync/atomic"
@@ -24,8 +25,8 @@ type mkLedger func(t *testing.T) (Ledger, string)
 func memFactory(t *testing.T) (Ledger, string) {
 	l := NewMemLedger(8, 2)
 	coin := fmt.Sprintf("mem%d", poolSeq.Add(1))
-	// 每个 conformance 子场景退出时都经 Reconcile 验证守恒 + J4。
-	t.Cleanup(func() { assertDelta0(t, context.Background(), l, coin, "场景收尾 J4") })
+	// 每个 conformance 子场景退出时统一验证现有守恒/J4 与 journal J1/J2/J3。
+	t.Cleanup(func() { assertConformanceTail(t, context.Background(), l, coin) })
 	return l, coin
 }
 
@@ -45,8 +46,8 @@ func pgFactory(t *testing.T) (Ledger, string) {
 	}
 	coin := fmt.Sprintf("pg%d-%d", time.Now().UnixNano(), poolSeq.Add(1))
 	l := NewPGLedger(h, coin, 8, 2, "test1")
-	// 后注册以保证 LIFO 顺序下先校验 J4、再关闭测试数据库句柄。
-	t.Cleanup(func() { assertDelta0(t, context.Background(), l, coin, "场景收尾 J4") })
+	// 后注册以保证 LIFO 顺序下先校验账本、再关闭测试数据库句柄。
+	t.Cleanup(func() { assertConformanceTail(t, context.Background(), l, coin) })
 	return l, coin
 }
 
@@ -88,6 +89,97 @@ func assertDelta0(t *testing.T, ctx context.Context, l Ledger, coin, when string
 	}
 	if delta != "0.00000000" {
 		t.Fatalf("%s: 守恒破坏 delta=%s", when, delta)
+	}
+}
+
+func assertConformanceTail(t *testing.T, ctx context.Context, l Ledger, coin string) {
+	t.Helper()
+	assertDelta0(t, ctx, l, coin, "场景收尾 J4")
+	mismatches, checked, err := l.JournalShadowAudit(ctx, coin)
+	if err != nil || !checked {
+		t.Fatalf("场景收尾 J3 未完成: checked=%t err=%v", checked, err)
+	}
+	if len(mismatches) != 0 {
+		t.Fatalf("场景收尾 J3 失配: %+v", mismatches)
+	}
+
+	switch ledger := l.(type) {
+	case *MemLedger:
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		seen := map[string]struct{}{}
+		for _, tx := range ledger.journal {
+			var sum int64
+			for _, leg := range tx.legs {
+				sum += leg.delta
+			}
+			if sum != 0 {
+				t.Errorf("场景收尾 J1 不平: key=%s sum=%d", tx.key, sum)
+			}
+			if _, duplicate := seen[tx.key]; duplicate {
+				t.Errorf("场景收尾 J2 business_key 重复: %s", tx.key)
+			}
+			seen[tx.key] = struct{}{}
+		}
+	case *PGLedger:
+		var unbalanced, duplicates int
+		if err := ledger.h.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM (
+			  SELECT jt.id FROM journal_tx jt
+			  LEFT JOIN journal_entry je ON je.txref=jt.id
+			  WHERE jt.poolid=$1 GROUP BY jt.id HAVING COALESCE(SUM(je.amount),0)<>0
+			) bad`, coin).Scan(&unbalanced); err != nil {
+			t.Fatalf("场景收尾 J1 查询: %v", err)
+		}
+		if unbalanced != 0 {
+			t.Errorf("场景收尾 J1 不平笔数=%d", unbalanced)
+		}
+		if err := ledger.h.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM (
+			  SELECT business_key FROM journal_tx WHERE poolid=$1
+			  GROUP BY business_key HAVING COUNT(*)>1
+			) dup`, coin).Scan(&duplicates); err != nil {
+			t.Fatalf("场景收尾 J2 查询: %v", err)
+		}
+		if duplicates != 0 {
+			t.Errorf("场景收尾 J2 重复键数=%d", duplicates)
+		}
+	default:
+		t.Fatalf("未覆盖的 Ledger 实现 %T", l)
+	}
+}
+
+func journalBusinessKeyCount(t *testing.T, ctx context.Context, l Ledger, coin, key string) int {
+	t.Helper()
+	switch ledger := l.(type) {
+	case *MemLedger:
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		count := 0
+		for _, tx := range ledger.journal {
+			if tx.key == key {
+				count++
+			}
+		}
+		return count
+	case *PGLedger:
+		var count int
+		if err := ledger.h.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM journal_tx WHERE poolid=$1 AND business_key=$2`, coin, key).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	default:
+		t.Fatalf("未覆盖的 Ledger 实现 %T", l)
+		return 0
+	}
+}
+
+func TestJournalBuilderRejectsUnbalanced(t *testing.T) {
+	j := newJournalTx("test", "test:unbalanced", journalPolicyPreRegistry, "")
+	j.leg("block:revenue", "", 1)
+	if err := j.validate(); !errors.Is(err, ErrJournalUnbalanced) {
+		t.Fatalf("不平 journal 应返回哨兵错误，得到 %v", err)
 	}
 }
 
@@ -324,6 +416,42 @@ func runLedgerConformance(t *testing.T, mk mkLedger) {
 		snap, _ := l.Snapshot(ctx, coin)
 		if snap.TotalFees != "0.00000000" {
 			t.Fatalf("孤块后计提费应作废: %s", snap.TotalFees)
+		}
+	})
+
+	t.Run("孤块回滚journal配平", func(t *testing.T) {
+		// 同一场景同时覆盖 fee 与余额不足转 debt：R=50、F=5，先付 40，孤块后 take=5/remain=40。
+		l, coin := mk(t)
+		_ = l.RecordShare(ctx, confShare(coin, "A", time.Now()), 1)
+		b := confBlock(coin, "journal-orphan", "A", "50.00000000", 110, 1, false)
+		_ = l.RecordBlock(ctx, b, "raw")
+		if err := l.ConfirmBlock(ctx, b, 10); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.DeductForPayout(ctx, coin, map[string]string{"A": "40.00000000"}, 110); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.OrphanBlock(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+		mismatches, checked, err := l.JournalShadowAudit(ctx, coin)
+		if err != nil || !checked || len(mismatches) != 0 {
+			t.Fatalf("带费且带 debt 的孤块回滚后 J3: checked=%t err=%v mismatch=%+v", checked, err, mismatches)
+		}
+	})
+
+	t.Run("重复business_key被拒", func(t *testing.T) {
+		l, coin := mk(t)
+		b := confBlock(coin, "journal-idempotent", "A", "5.00000000", 111, 1, true)
+		_ = l.RecordBlock(ctx, b, "raw")
+		if err := l.ConfirmBlock(ctx, b, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.ConfirmBlock(ctx, b, 0); err != nil {
+			t.Fatal(err)
+		}
+		if count := journalBusinessKeyCount(t, ctx, l, coin, "confirm:block:"+b.Hash); count != 1 {
+			t.Fatalf("重复 confirm 只能有一笔 journal，得到 %d", count)
 		}
 	})
 
@@ -573,6 +701,9 @@ func runLedgerConformance(t *testing.T, mk mkLedger) {
 			t.Fatalf("直付孤块不应产生 debts（coinbase 没上链）: %s", snap.DebtsNet)
 		}
 		assertDelta0(t, ctx, l, coin, "直付孤块回滚后")
+		if mismatches, checked, err := l.JournalShadowAudit(ctx, coin); err != nil || !checked || len(mismatches) != 0 {
+			t.Fatalf("直付确认+孤块回滚后 J3: checked=%t err=%v mismatch=%+v", checked, err, mismatches)
+		}
 		// 未确认直付块孤块 = 无账务动作
 		b2 := confBlock(coin, "d2", "A", "100.00000000", 301, 1.0, false)
 		b2.Direct = []core.DirectCredit{{Address: "A", Credit: "60.00000000", Paid: "60.00000000"}}
@@ -605,5 +736,63 @@ func runLedgerConformance(t *testing.T, mk mkLedger) {
 			t.Fatalf("爆块者不应被虚记余额: %s", v)
 		}
 		assertDelta0(t, ctx, l, coin, "空分账直付块后")
+	})
+
+	t.Run("opening幂等", func(t *testing.T) {
+		l, coin := mk(t)
+		pg, ok := l.(*PGLedger)
+		if !ok {
+			t.Skip("Mem 账本从空账开始，无 opening")
+		}
+		for i := 0; i < 2; i++ {
+			if err := pg.EnsureJournalOpening(ctx); err != nil {
+				t.Fatalf("第 %d 次 opening: %v", i+1, err)
+			}
+		}
+		var count int
+		if err := pg.h.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM journal_tx WHERE poolid=$1 AND kind='opening'`, coin).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("opening 应只有一笔，得到 %d", count)
+		}
+	})
+
+	t.Run("带存量数据起账", func(t *testing.T) {
+		l, coin := mk(t)
+		pg, ok := l.(*PGLedger)
+		if !ok {
+			t.Skip("仅 PG 有持久存量起账")
+		}
+		// 模拟升级前的投影与历史流水：余额 12、债务 2、已确认收入 16/费 3、已付 3。
+		seed, err := pg.h.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedStatements := []string{
+			`INSERT INTO balances(poolid,address,amount) VALUES($1,'A',12)`,
+			`INSERT INTO balance_changes(poolid,address,amount,usage,tags) VALUES
+			 ($1,'A',15,'reward',ARRAY['legacy']),($1,'A',-3,'payment',ARRAY['legacy'])`,
+			`INSERT INTO debts(poolid,address,original,remaining,reason) VALUES($1,'A',2,2,'legacy')`,
+			`INSERT INTO blocks(poolid,blockheight,networkdifficulty,status,transactionconfirmationdata,reward,feeamount)
+			 VALUES($1,900,1,'confirmed','legacy-confirmed',16,3)`,
+		}
+		for _, statement := range seedStatements {
+			if _, err := seed.ExecContext(ctx, statement, coin); err != nil {
+				seed.Rollback()
+				t.Fatalf("构造存量投影: %v", err)
+			}
+		}
+		if err := seed.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if err := pg.EnsureJournalOpening(ctx); err != nil {
+			t.Fatal(err)
+		}
+		mismatches, checked, err := pg.JournalShadowAudit(ctx, coin)
+		if err != nil || !checked || len(mismatches) != 0 {
+			t.Fatalf("存量起账后 J3: checked=%t err=%v mismatch=%+v", checked, err, mismatches)
+		}
 	})
 }

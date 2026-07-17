@@ -111,6 +111,8 @@ type Engine struct {
 	// 当前回看窗口内已告警的异常键；每轮成功审计后替换，避免周期性刷屏。
 	auditUnknown map[string]struct{}
 	auditMissing map[string]struct{}
+	// J3 影子差异按 (account,address) 翻转去重；只告警，绝不参与 frozen。
+	journalMismatch map[string]struct{}
 }
 
 func NewEngine(cfg Config, l accounting.Ledger, node NodeClassifier, w adapter.WalletAdapter, store BatchStore) *Engine {
@@ -121,7 +123,8 @@ func NewEngine(cfg Config, l accounting.Ledger, node NodeClassifier, w adapter.W
 		cfg.DropGrace = 30 * time.Minute // 广播后 30min 仍不在 mempool/链上 = 确定丢失
 	}
 	e := &Engine{cfg: cfg, ledger: l, node: node, wallet: w, store: store, enabled: true,
-		auditUnknown: map[string]struct{}{}, auditMissing: map[string]struct{}{}}
+		auditUnknown: map[string]struct{}{}, auditMissing: map[string]struct{}{},
+		journalMismatch: map[string]struct{}{}}
 	switch {
 	case cfg.ChainAuditEnabled == nil:
 		log.Printf("[payout %s] chain_audit_disabled reason=volatile-store", cfg.Coin)
@@ -267,6 +270,10 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 		log.Printf("[payout %s] ⚠ 守恒对账不平 delta=%s，冻结打款", e.cfg.Coin, delta)
 	}
 
+	// J3 journal 影子对拍：查询未完成时静默跳过；失配只发事件与结构化日志，
+	// 阶段 1 绝不冻结打款，也不改变任何业务状态。
+	e.runJournalShadowAudit(ctx)
+
 	// chain-to-book 反向审计：严格只读；只有确证未知出账才复用 frozen 冻结。
 	// 放在守恒对账之后，使两类异常同轮出现时各自事件都能发出；查链/查库失败与
 	// 能力不足均由 reconciler 记日志并跳过，绝不误冻结。
@@ -285,6 +292,32 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 	}
 	e.autoFeeCollect(ctx)
 	return nil
+}
+
+// runJournalShadowAudit 须持 e.mu。同一 (account,address) 只在进入失配状态时报告一次；
+// 恢复后会从集合移除，日后再次失配可重新报告。
+func (e *Engine) runJournalShadowAudit(ctx context.Context) {
+	mismatches, checked, _ := e.ledger.JournalShadowAudit(ctx, e.cfg.Coin)
+	if !checked {
+		return
+	}
+	current := make(map[string]struct{}, len(mismatches))
+	for _, mismatch := range mismatches {
+		key := mismatch.Account + "\x00" + mismatch.Address
+		current[key] = struct{}{}
+		if _, reported := e.journalMismatch[key]; reported {
+			continue
+		}
+		fields := map[string]string{
+			"account": mismatch.Account, "address": mismatch.Address,
+			"journal_amount":    mismatch.JournalAmount,
+			"projection_amount": mismatch.ProjectionAmount,
+		}
+		e.emit("journal_shadow_mismatch", "P0 journal 影子账与现有投影不一致", fields)
+		log.Printf("[P0] [payout %s] journal_shadow_mismatch account=%s address=%s journal_amount=%s projection_amount=%s action=warn_only",
+			e.cfg.Coin, mismatch.Account, mismatch.Address, mismatch.JournalAmount, mismatch.ProjectionAmount)
+	}
+	e.journalMismatch = current
 }
 
 // runChainAudit 须持 e.mu。它只消费 reconciler 的确证结果并翻转统一 frozen 开关，

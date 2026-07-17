@@ -67,6 +67,9 @@ type Ledger interface {
 
 	// Reconcile 守恒对账，delta 非 0 由调用方冻结打款并告警。
 	Reconcile(ctx context.Context, coin string) (delta string, err error)
+	// JournalShadowAudit 只读比对影子 journal 与现有投影。checked=false 表示查询未完成，
+	// 调用方不得据此告警或冻结；影子期失配也只能告警，不能影响业务结果。
+	JournalShadowAudit(ctx context.Context, coin string) (mismatches []JournalMismatch, checked bool, err error)
 
 	// Snapshot 供 API/日志读的只读快照。
 	Snapshot(ctx context.Context, coin string) (Stats, error)
@@ -78,6 +81,14 @@ type Ledger interface {
 
 	// MinerSummary 单矿工会计摘要（公共 API 矿工自查）。地址无任何记录时 ok=false。
 	MinerSummary(ctx context.Context, coin, addr string) (ms MinerSummary, ok bool, err error)
+}
+
+// JournalMismatch 是 J3 影子对拍的一项差异；金额保持十进制字符串，绝不经过浮点。
+type JournalMismatch struct {
+	Account          string
+	Address          string
+	JournalAmount    string
+	ProjectionAmount string
 }
 
 // MinerSummary 单矿工会计摘要（金额十进制字符串，金额铁律：不过浮点）。

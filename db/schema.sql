@@ -210,3 +210,26 @@ CREATE TABLE IF NOT EXISTS reconciliations (
     delta        NUMERIC NOT NULL,      -- 应为 0，非 0 告警并冻结打款
     created      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- 阶段 1 复式账本影子 journal：纯追加，不替代任何现有投影表。
+CREATE TABLE IF NOT EXISTS journal_tx (
+    id             BIGSERIAL PRIMARY KEY,
+    poolid         TEXT NOT NULL,
+    business_key   TEXT NOT NULL,
+    kind           TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    memo           TEXT NULL,
+    created        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (poolid, business_key)
+);
+
+CREATE TABLE IF NOT EXISTS journal_entry (
+    id        BIGSERIAL PRIMARY KEY,
+    txref     BIGINT NOT NULL REFERENCES journal_tx(id),
+    poolid    TEXT NOT NULL,
+    account   TEXT NOT NULL,
+    address   TEXT NULL,
+    amount    NUMERIC NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_journal_entry_acct
+    ON journal_entry(poolid, account, address);
