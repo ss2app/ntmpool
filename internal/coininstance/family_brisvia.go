@@ -36,7 +36,13 @@ func buildBrisviaFamily(_ context.Context, cfg config.CoinConfig, decimals int, 
 	c := brisviarpc.New(cfg.ID, n.URL, n.User, n.Pass, cfg.PoolAddress)
 	c.SetDecimals(decimals)
 
-	jm := cnjob.New(cfg.ID, cfg.Algo, c, kh)
+	// wire 算法名（对矿工声明）：默认=内部 algo；BRVA 设 stratumAlgo=rx/0 让通用 RandomX 锄头能连。
+	// hasher 路由仍用 cfg.Algo（rx/brva → brisviarx），wire 与内部标识解耦。
+	wireAlgo := cfg.StratumAlgo
+	if wireAlgo == "" {
+		wireAlgo = cfg.Algo
+	}
+	jm := cnjob.New(cfg.ID, wireAlgo, c, kh)
 	dialect := stratum.NewCNDialect(cfg.ID, jm)
 	sink := inst.blockSink()
 	jm.SetCallbacks(dialect.BroadcastJob,

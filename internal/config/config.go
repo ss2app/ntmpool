@@ -79,6 +79,10 @@ type CoinConfig struct {
 	Symbol      string         `json:"symbol"`  // 展示用
 	Adapter     string         `json:"adapter"` // "bitcoin-rpc" | "cryptonote-rpc" | "custom-http"
 	Algo        string         `json:"algo"`
+	// StratumAlgo 对矿工声明的 wire 算法名（login 能力协商 + job.algo）。留空=用 Algo。
+	// 用于「内部算法标识 ≠ 通用矿工认识的标准名」的币：如 Brisvia 内部 algo=rx/brva（选 hasher），
+	// 但它是字节兼容 stock rx/0，故 stratumAlgo=rx/0 让 xmrig/SRBMiner 等通用 RandomX 锄头能连（池是主生意）。
+	StratumAlgo string         `json:"stratumAlgo"`
 	Decimals    int            `json:"decimals"` // 币最小单位小数位；0 = 按适配器默认（btc 系 8，门罗系 12）
 	Nodes       []NodeEndpoint `json:"nodes"`    // 多节点 failover + 并发提交
 	Wallet      NodeEndpoint   `json:"wallet"`   // 钱包独立进程的链（cryptonote-rpc 必填）
