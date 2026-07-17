@@ -3,6 +3,7 @@ package accounting
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -35,6 +36,15 @@ type memBlock struct {
 	directPaid map[string]int64 // 地址→随 coinbase 实付（paid）
 }
 
+// memBalanceChange 与 PG balance_changes 的语义逐项对齐，是 J4 重放校验的内存事件流。
+// 它刻意保持私有：当前只用于在线不变量检查，不是产品查询 API。
+type memBalanceChange struct {
+	addr  string
+	delta int64
+	usage string
+	tag   string
+}
+
 // MemLedger 单实例内存会计（M1 + 单元测试；生产多实例用 Postgres 实现）。
 type MemLedger struct {
 	mu       sync.Mutex
@@ -43,6 +53,7 @@ type MemLedger struct {
 
 	shares   []memShare       // 统一滚动窗口（PPLNS）；孤块 share 天然并入
 	balances map[string]int64 // 地址→聪
+	changes  []memBalanceChange
 	debts    map[string]int64 // 地址→未抵扣欠款（聪）
 	blocks   []*memBlock
 
@@ -72,6 +83,11 @@ func (l *MemLedger) unit() int64 { return amountUnit(l.decimals) }
 func (l *MemLedger) toStr(sat int64) string { return formatAmount(sat, l.decimals) }
 
 func (l *MemLedger) parse(s string) (int64, error) { return parseAmount(s, l.decimals) }
+
+// addBalanceChange 须在持有 l.mu 时调用；usage/tag 必须与 PGLedger.addBalanceTx 完全一致。
+func (l *MemLedger) addBalanceChange(addr string, delta int64, usage, tag string) {
+	l.changes = append(l.changes, memBalanceChange{addr: addr, delta: delta, usage: usage, tag: tag})
+}
 
 func (l *MemLedger) RecordShare(_ context.Context, s core.Share, weight float64) error {
 	l.mu.Lock()
@@ -211,9 +227,11 @@ func (l *MemLedger) ConfirmBlock(_ context.Context, b core.FoundBlock, feePercen
 		var sumCredit int64
 		for a, c := range mb.directCred {
 			l.balances[a] += c
+			l.addBalanceChange(a, c, "reward", "block:"+b.Hash)
 			sumCredit += c
 			if p := mb.directPaid[a]; p > 0 {
 				l.balances[a] -= p
+				l.addBalanceChange(a, -p, "payment", "block:"+b.Hash)
 				l.totalPaid += p
 				l.paidOut += p
 				l.paidByAddr[a] += p
@@ -270,6 +288,7 @@ func (l *MemLedger) ConfirmBlock(_ context.Context, b core.FoundBlock, feePercen
 			amt -= take
 		}
 		l.balances[a] += amt
+		l.addBalanceChange(a, amt, "reward", "block:"+b.Hash)
 	}
 	l.totalFees += feeSat
 	mb.credited = true
@@ -298,6 +317,7 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 				continue
 			}
 			l.balances[a] += p
+			l.addBalanceChange(a, p, "payment_refund", "block:"+b.Hash)
 			l.totalPaid -= p
 			l.paidOut -= p
 			l.paidByAddr[a] -= p
@@ -305,9 +325,16 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 		for a, c := range mb.directCred {
 			if l.balances[a] >= c {
 				l.balances[a] -= c
+				if c > 0 {
+					l.addBalanceChange(a, -c, "orphan_reversal", "block:"+b.Hash)
+				}
 			} else {
-				remain := c - l.balances[a]
+				take := l.balances[a]
+				remain := c - take
 				l.balances[a] = 0
+				if take > 0 {
+					l.addBalanceChange(a, -take, "orphan_reversal", "block:"+b.Hash)
+				}
 				l.debts[a] += remain
 			}
 		}
@@ -325,9 +352,16 @@ func (l *MemLedger) OrphanBlock(_ context.Context, b core.FoundBlock) error {
 			// 已在余额里的先扣回，扣不动的（已打款出去）记 debt
 			if l.balances[a] >= amt {
 				l.balances[a] -= amt
+				if amt > 0 {
+					l.addBalanceChange(a, -amt, "orphan_reversal", "block:"+b.Hash)
+				}
 			} else {
-				remain := amt - l.balances[a]
+				take := l.balances[a]
+				remain := amt - take
 				l.balances[a] = 0
+				if take > 0 {
+					l.addBalanceChange(a, -take, "orphan_reversal", "block:"+b.Hash)
+				}
 				l.debts[a] += remain
 			}
 		}
@@ -361,7 +395,7 @@ func (l *MemLedger) PayableBalances(_ context.Context, _ string, defaultThreshol
 	return out, nil
 }
 
-func (l *MemLedger) DeductForPayout(_ context.Context, _ string, outputs map[string]string, _ int64) error {
+func (l *MemLedger) DeductForPayout(_ context.Context, _ string, outputs map[string]string, batchID int64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	// 先校验够扣，再统一扣（事务语义）
@@ -378,6 +412,7 @@ func (l *MemLedger) DeductForPayout(_ context.Context, _ string, outputs map[str
 	}
 	for a, amt := range deduct {
 		l.balances[a] -= amt
+		l.addBalanceChange(a, -amt, "payment", fmt.Sprintf("batch:%d", batchID))
 		l.paidOut += amt
 		l.totalPaid += amt
 		l.paidByAddr[a] += amt
@@ -385,7 +420,7 @@ func (l *MemLedger) DeductForPayout(_ context.Context, _ string, outputs map[str
 	return nil
 }
 
-func (l *MemLedger) RefundPayout(_ context.Context, _ string, outputs map[string]string, _ int64) error {
+func (l *MemLedger) RefundPayout(_ context.Context, _ string, outputs map[string]string, batchID int64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for a, s := range outputs {
@@ -394,6 +429,7 @@ func (l *MemLedger) RefundPayout(_ context.Context, _ string, outputs map[string
 			return err
 		}
 		l.balances[a] += amt
+		l.addBalanceChange(a, amt, "payment_refund", fmt.Sprintf("batch:%d", batchID))
 		l.paidOut -= amt
 		l.totalPaid -= amt
 		l.paidByAddr[a] -= amt
@@ -429,7 +465,7 @@ func (l *MemLedger) DirectPlanInputs(_ context.Context, _ string, windowWeight f
 	return weights, carry, nil
 }
 
-func (l *MemLedger) Reconcile(_ context.Context, _ string) (string, error) {
+func (l *MemLedger) Reconcile(_ context.Context, coin string) (string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	// Σ已确认奖励 = Σ已付 + Σ余额 + Σ手续费 + Σ债务净额（在途在内存实现里已计入 totalPaid）
@@ -449,7 +485,55 @@ func (l *MemLedger) Reconcile(_ context.Context, _ string) (string, error) {
 	}
 	// delta = 确认奖励 - 已付 - 余额 - 费 + 债务净额（债务是「已多付待收回」，抵账正号）
 	delta := confirmedRewards - l.totalPaid - balSum - l.totalFees + debtSum
+
+	streamByAddr := make(map[string]int64)
+	for _, change := range l.changes {
+		streamByAddr[change.addr] += change.delta
+	}
+	type mismatch struct {
+		addr                  string
+		balance, stream, diff int64
+	}
+	var mismatches []mismatch
+	var j4Abs int64
+	seen := make(map[string]struct{}, len(l.balances))
+	for addr, balance := range l.balances {
+		stream := streamByAddr[addr]
+		seen[addr] = struct{}{}
+		if diff := balance - stream; diff != 0 {
+			mismatches = append(mismatches, mismatch{balance: balance, stream: stream, diff: diff})
+			mismatches[len(mismatches)-1].addr = addr
+			j4Abs += absAmount(diff)
+		}
+	}
+	for addr, stream := range streamByAddr {
+		if _, ok := seen[addr]; ok || stream == 0 {
+			continue
+		}
+		mismatches = append(mismatches, mismatch{addr: addr, stream: stream, diff: -stream})
+		j4Abs += absAmount(stream)
+	}
+	if len(mismatches) > 0 {
+		sort.Slice(mismatches, func(i, j int) bool { return mismatches[i].addr < mismatches[j].addr })
+		log.Printf("[P0] [会计 %s] j4_balance_stream_mismatch mismatches=%d abs_diff=%s", coin, len(mismatches), l.toStr(j4Abs))
+		for i := 0; i < len(mismatches) && i < 3; i++ {
+			m := mismatches[i]
+			log.Printf("[P0] [会计 %s] j4_sample address=%s balance=%s stream_sum=%s diff=%s",
+				coin, m.addr, l.toStr(m.balance), l.toStr(m.stream), l.toStr(m.diff))
+		}
+	}
+	// 现有守恒异常优先；仅当守恒为零时，J4 绝对差才接管返回值并触发冻结。
+	if delta == 0 && j4Abs != 0 {
+		delta = j4Abs
+	}
 	return l.toStr(delta), nil
+}
+
+func absAmount(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func (l *MemLedger) Snapshot(_ context.Context, _ string) (Stats, error) {

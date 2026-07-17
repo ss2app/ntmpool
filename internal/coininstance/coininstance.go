@@ -197,6 +197,7 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 		FeePercent: cfg.Payout.FeePercent, MinPayout: parseFloat(cfg.Payout.MinPayout),
 		SoloFeePercent:    cfg.Payout.SoloFeePercent,
 		Maturity:          cfg.Payout.Confirmations,
+		ChainAuditEnabled: resolveChainAudit(cfg.Payout.ChainAudit, deps.DB != nil),
 		FeeAddress:        cfg.FeeAddress,
 		FeeCollectEnabled: cfg.Payout.FeeCollect.Enabled,
 		FeeCollectMin:     cfg.Payout.FeeCollect.MinAmount,
@@ -278,6 +279,16 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	// 恢复扫描（崩溃恢复；内存实现无持久化，Postgres 实现时真正生效）
 	_ = inst.engine.Recover(ctx)
 	return inst, nil
+}
+
+// resolveChainAudit 保留三态配置：显式 true/false 优先；auto 时持久 store 开启，
+// volatile mem store 保持 nil，让 Engine 以 reason=volatile-store 明确记录安全禁用。
+func resolveChainAudit(configured *bool, persistent bool) *bool {
+	if configured != nil || !persistent {
+		return configured
+	}
+	enabled := true
+	return &enabled
 }
 
 func (inst *Instance) startLoops(ctx context.Context) {

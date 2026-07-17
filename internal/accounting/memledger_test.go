@@ -171,3 +171,71 @@ func TestDeductInsufficient(t *testing.T) {
 		t.Fatalf("失败后 A 余额被误扣: %d", l.balances["A"])
 	}
 }
+
+func TestMemBalanceChangeSemanticsMatchPG(t *testing.T) {
+	ctx := context.Background()
+	l := NewMemLedger(8, 2)
+	_ = l.RecordShare(ctx, mkShare("A", time.Unix(1, 0)), 1)
+	b := mkBlock("h1", "A", "10.00000000", 1, false)
+	_ = l.RecordBlock(ctx, b, "raw")
+	if err := l.ConfirmBlock(ctx, b, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.DeductForPayout(ctx, "t", map[string]string{"A": "4.00000000"}, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.RefundPayout(ctx, "t", map[string]string{"A": "4.00000000"}, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.OrphanBlock(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+
+	direct := mkBlock("d1", "A", "10.00000000", 1, false)
+	direct.Direct = []core.DirectCredit{{Address: "A", Credit: "6.00000000", Paid: "4.00000000"}}
+	if err := l.RecordBlock(ctx, direct, "raw"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.ConfirmBlock(ctx, direct, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.OrphanBlock(ctx, direct); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []memBalanceChange{
+		{addr: "A", delta: 1_000_000_000, usage: "reward", tag: "block:h1"},
+		{addr: "A", delta: -400_000_000, usage: "payment", tag: "batch:7"},
+		{addr: "A", delta: 400_000_000, usage: "payment_refund", tag: "batch:7"},
+		{addr: "A", delta: -1_000_000_000, usage: "orphan_reversal", tag: "block:h1"},
+		{addr: "A", delta: 600_000_000, usage: "reward", tag: "block:d1"},
+		{addr: "A", delta: -400_000_000, usage: "payment", tag: "block:d1"},
+		{addr: "A", delta: 400_000_000, usage: "payment_refund", tag: "block:d1"},
+		{addr: "A", delta: -600_000_000, usage: "orphan_reversal", tag: "block:d1"},
+	}
+	if len(l.changes) != len(want) {
+		t.Fatalf("流水条数=%d want=%d: %+v", len(l.changes), len(want), l.changes)
+	}
+	for i := range want {
+		if l.changes[i] != want[i] {
+			t.Fatalf("流水[%d]=%+v want=%+v", i, l.changes[i], want[i])
+		}
+	}
+	if delta, err := l.Reconcile(ctx, "t"); err != nil || delta != "0.00000000" {
+		t.Fatalf("完整流水重放后 J4 应成立: delta=%s err=%v", delta, err)
+	}
+}
+
+func TestMemReconcileJ4ReturnsAbsDiffWhenConservationIsZero(t *testing.T) {
+	l := NewMemLedger(8, 2)
+	// 人工制造“守恒式为 0、但余额没有流水”的白盒状态，钉死 J4 的独立冻结路径。
+	l.balances["A"] = 1
+	l.totalFees = -1
+	delta, err := l.Reconcile(context.Background(), "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta != "0.00000001" {
+		t.Fatalf("J4 应返回绝对差 1 聪，got=%s", delta)
+	}
+}

@@ -317,11 +317,13 @@ const chainAuditInitialLookback = uint64(1000)
 // 避免升级时把建库前的历史钱包转账误判为未知出账；后续由审计器传入重叠游标。
 func (c *Client) recentWalletHistory(ctx context.Context, sinceHeight uint64) ([]walletHistoryEntry, error) {
 	start := sinceHeight
+	var tip uint64
+	tipKnown := false
 	if start == 0 {
-		var tip uint64
 		if err := c.call(ctx, "getblockcount", []any{}, &tip); err != nil {
 			return nil, fmt.Errorf("getblockcount: %w", err)
 		}
+		tipKnown = true
 		if tip > chainAuditInitialLookback {
 			start = tip - chainAuditInitialLookback
 		}
@@ -340,7 +342,33 @@ func (c *Client) recentWalletHistory(ctx context.Context, sinceHeight uint64) ([
 	if err := c.call(ctx, "listsinceblock", []any{blockHash, 1, true}, &result); err != nil {
 		return nil, fmt.Errorf("listsinceblock: %w", err)
 	}
+	// PIVX v5 等节点的 listsinceblock 条目没有 blockheight。已确认条目可由
+	// tip-confirmations+1 精确反推；同一次审计至多取一次 tip，且只补返回游标字段。
+	for i := range result.Transactions {
+		entry := &result.Transactions[i]
+		if entry.BlockHeight != 0 || entry.Confirmations <= 0 {
+			continue
+		}
+		if !tipKnown {
+			if err := c.call(ctx, "getblockcount", []any{}, &tip); err != nil {
+				return nil, fmt.Errorf("getblockcount: %w", err)
+			}
+			tipKnown = true
+		}
+		entry.BlockHeight = derivedBlockHeight(tip, entry.Confirmations)
+	}
 	return result.Transactions, nil
+}
+
+func derivedBlockHeight(tip uint64, confirmations int64) uint64 {
+	if confirmations <= 0 {
+		return 0
+	}
+	confirmed := uint64(confirmations)
+	if confirmed > tip { // tip-confirmations+1 <= 0 时放弃反推。
+		return 0
+	}
+	return tip - confirmed + 1
 }
 
 // ListRecentOutbound 实现 adapter.ChainAuditor。listsinceblock 对同一 tx 的每个

@@ -66,6 +66,8 @@ type Config struct {
 	SoloFeePercent *float64 // solo 块费率；nil = 与 FeePercent 相同
 	MinPayout      float64
 	Maturity       int64 // 打款所需确认数（低于链成熟期 = 预打款）
+	// nil=auto（接线方未确认持久 store 时按 volatile-store 安全禁用）；显式值覆盖。
+	ChainAuditEnabled *bool
 
 	// 打款确认追踪（trackSent）：ConfirmThreshold 达标即标 confirmed 终态、停止追踪；
 	// DropGrace 内确定丢失（!known）的 payout 才退款——防误退在 mempool 排队的 tx。
@@ -120,7 +122,14 @@ func NewEngine(cfg Config, l accounting.Ledger, node NodeClassifier, w adapter.W
 	}
 	e := &Engine{cfg: cfg, ledger: l, node: node, wallet: w, store: store, enabled: true,
 		auditUnknown: map[string]struct{}{}, auditMissing: map[string]struct{}{}}
-	e.chainAudit = NewChainToBookReconciler(cfg.Coin, w, store, l)
+	switch {
+	case cfg.ChainAuditEnabled == nil:
+		log.Printf("[payout %s] chain_audit_disabled reason=volatile-store", cfg.Coin)
+	case !*cfg.ChainAuditEnabled:
+		log.Printf("[payout %s] chain_audit_disabled reason=config", cfg.Coin)
+	default:
+		e.chainAudit = NewChainToBookReconciler(cfg.Coin, w, store, l)
+	}
 	if rt, ok := w.(adapter.RawTxWallet); ok {
 		e.rawtx = rt
 	}

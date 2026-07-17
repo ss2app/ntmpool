@@ -1,6 +1,25 @@
 package config
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestPayoutChainAuditTriStateJSON(t *testing.T) {
+	var omitted, enabled PayoutConfig
+	if err := json.Unmarshal([]byte(`{}`), &omitted); err != nil {
+		t.Fatal(err)
+	}
+	if omitted.ChainAudit != nil {
+		t.Fatal("省略 chainAudit 必须保留 nil=auto")
+	}
+	if err := json.Unmarshal([]byte(`{"chainAudit":true}`), &enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled.ChainAudit == nil || !*enabled.ChainAudit {
+		t.Fatal("显式 chainAudit=true 必须穿透")
+	}
+}
 
 func TestPortSecurityDefaults(t *testing.T) {
 	p := WithPortDefaults(PortConfig{})

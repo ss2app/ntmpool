@@ -165,6 +165,7 @@ type FeeCollectConfig struct {
 
 type PayoutConfig struct {
 	Enabled        bool     `json:"enabled"`                  // 铁律：第一天就有的总开关
+	ChainAudit     *bool    `json:"chainAudit,omitempty"`     // nil=auto：持久账本开、内存账本关
 	Scheme         string   `json:"scheme"`                   // "pplns"（solo 由端口 mode 决定）
 	PplnsFactor    float64  `json:"pplnsFactor"`              // 窗口 = factor × 网络难度
 	FeePercent     float64  `json:"feePercent"`               // 热参数

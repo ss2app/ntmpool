@@ -780,11 +780,95 @@ func (l *PGLedger) Reconcile(ctx context.Context, _ string) (string, error) {
 		return "", err
 	}
 	delta := confirmed - paid - bal - fees + debt
+	j4Delta, err := l.reconcileBalanceStream(ctx)
+	if err != nil {
+		return "", err
+	}
+	// 现有守恒异常优先；仅当守恒为零时，J4 绝对差才接管返回值并触发冻结。
+	if delta == 0 && j4Delta != 0 {
+		delta = j4Delta
+	}
 	_, _ = l.h.ExecContext(ctx, `
 		INSERT INTO reconciliations (poolid, confirmed_rewards, total_paid, total_balances, total_fees, in_flight, debts_net, delta)
 		VALUES ($1,$2,$3,$4,$5,0,$6,$7)`,
 		l.coin, confirmedStr, l.toStr(paid), l.toStr(bal), l.toStr(fees), l.toStr(debt), l.toStr(delta))
 	return l.toStr(delta), nil
+}
+
+// reconcileBalanceStream 固化 J4：逐地址 Σbalance_changes == balances.amount。
+// 第一方向检查全部余额行，第二方向单独捕获“非零流水但无余额行”的孤儿流。
+func (l *PGLedger) reconcileBalanceStream(ctx context.Context) (int64, error) {
+	var balanceMismatchCount, orphanCount int64
+	var balanceAbsStr, orphanAbsStr string
+	err := l.h.QueryRowContext(ctx, `
+		WITH stream AS (
+			SELECT address, SUM(amount) AS stream_sum
+			FROM balance_changes WHERE poolid=$1 GROUP BY address
+		)
+		SELECT
+			COUNT(*) FILTER (WHERE b.amount <> COALESCE(s.stream_sum,0)),
+			COALESCE(SUM(ABS(b.amount-COALESCE(s.stream_sum,0)))
+				FILTER (WHERE b.amount <> COALESCE(s.stream_sum,0)),0)::text,
+			(SELECT COUNT(*) FROM stream os
+			 LEFT JOIN balances ob ON ob.poolid=$1 AND ob.address=os.address
+			 WHERE os.stream_sum <> 0 AND ob.address IS NULL),
+			COALESCE((SELECT SUM(ABS(os.stream_sum)) FROM stream os
+			 LEFT JOIN balances ob ON ob.poolid=$1 AND ob.address=os.address
+			 WHERE os.stream_sum <> 0 AND ob.address IS NULL),0)::text
+		FROM balances b LEFT JOIN stream s ON s.address=b.address
+		WHERE b.poolid=$1`, l.coin).Scan(
+		&balanceMismatchCount, &balanceAbsStr, &orphanCount, &orphanAbsStr)
+	if err != nil {
+		return 0, fmt.Errorf("J4 汇总查询: %w", err)
+	}
+	balanceAbs, err := l.parse(balanceAbsStr)
+	if err != nil {
+		return 0, fmt.Errorf("J4 余额侧绝对差: %w", err)
+	}
+	orphanAbs, err := l.parse(orphanAbsStr)
+	if err != nil {
+		return 0, fmt.Errorf("J4 孤儿流绝对差: %w", err)
+	}
+	if balanceMismatchCount == 0 && orphanCount == 0 {
+		return 0, nil
+	}
+
+	log.Printf("[P0] [会计 %s] j4_balance_stream_mismatch balance_mismatches=%d orphan_streams=%d abs_diff=%s",
+		l.coin, balanceMismatchCount, orphanCount, l.toStr(balanceAbs+orphanAbs))
+	rows, err := l.h.QueryContext(ctx, `
+		WITH stream AS (
+			SELECT address, SUM(amount) AS stream_sum
+			FROM balance_changes WHERE poolid=$1 GROUP BY address
+		), mismatches AS (
+			SELECT b.address, b.amount AS balance, COALESCE(s.stream_sum,0) AS stream_sum,
+			       b.amount-COALESCE(s.stream_sum,0) AS diff
+			FROM balances b LEFT JOIN stream s ON s.address=b.address
+			WHERE b.poolid=$1 AND b.amount <> COALESCE(s.stream_sum,0)
+			UNION ALL
+			SELECT s.address, 0::numeric, s.stream_sum, -s.stream_sum
+			FROM stream s LEFT JOIN balances b ON b.poolid=$1 AND b.address=s.address
+			WHERE s.stream_sum <> 0 AND b.address IS NULL
+		)
+		SELECT address, balance::text, stream_sum::text, diff::text
+		FROM mismatches ORDER BY address LIMIT 3`, l.coin)
+	if err != nil {
+		log.Printf("[P0] [会计 %s] j4_sample_query_failed err=%v", l.coin, err)
+		return balanceAbs + orphanAbs, nil
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var addr, balance, stream, diff string
+		if err := rows.Scan(&addr, &balance, &stream, &diff); err != nil {
+			log.Printf("[P0] [会计 %s] j4_sample_scan_failed err=%v", l.coin, err)
+			return balanceAbs + orphanAbs, nil
+		}
+		log.Printf("[P0] [会计 %s] j4_sample address=%s balance=%s stream_sum=%s diff=%s",
+			l.coin, addr, balance, stream, diff)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[P0] [会计 %s] j4_sample_rows_failed err=%v", l.coin, err)
+	}
+	return balanceAbs + orphanAbs, nil
 }
 
 func (l *PGLedger) Snapshot(ctx context.Context, _ string) (Stats, error) {

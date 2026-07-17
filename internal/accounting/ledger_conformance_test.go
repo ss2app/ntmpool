@@ -22,7 +22,11 @@ var poolSeq atomic.Int64
 type mkLedger func(t *testing.T) (Ledger, string)
 
 func memFactory(t *testing.T) (Ledger, string) {
-	return NewMemLedger(8, 2), fmt.Sprintf("mem%d", poolSeq.Add(1))
+	l := NewMemLedger(8, 2)
+	coin := fmt.Sprintf("mem%d", poolSeq.Add(1))
+	// 每个 conformance 子场景退出时都经 Reconcile 验证守恒 + J4。
+	t.Cleanup(func() { assertDelta0(t, context.Background(), l, coin, "场景收尾 J4") })
+	return l, coin
 }
 
 func pgFactory(t *testing.T) (Ledger, string) {
@@ -40,7 +44,10 @@ func pgFactory(t *testing.T) (Ledger, string) {
 		t.Fatalf("迁移: %v", err)
 	}
 	coin := fmt.Sprintf("pg%d-%d", time.Now().UnixNano(), poolSeq.Add(1))
-	return NewPGLedger(h, coin, 8, 2, "test1"), coin
+	l := NewPGLedger(h, coin, 8, 2, "test1")
+	// 后注册以保证 LIFO 顺序下先校验 J4、再关闭测试数据库句柄。
+	t.Cleanup(func() { assertDelta0(t, context.Background(), l, coin, "场景收尾 J4") })
+	return l, coin
 }
 
 func TestLedgerConformanceMem(t *testing.T) { runLedgerConformance(t, memFactory) }
@@ -86,6 +93,45 @@ func assertDelta0(t *testing.T, ctx context.Context, l Ledger, coin, when string
 
 func runLedgerConformance(t *testing.T, mk mkLedger) {
 	ctx := context.Background()
+
+	t.Run("绕过流水改余额必被J4抓住", func(t *testing.T) {
+		l, coin := mk(t)
+		creditViaBlock(t, ctx, l, coin, "A", "10.00000000", "j4", 1)
+		assertDelta0(t, ctx, l, coin, "篡改前")
+
+		switch ledger := l.(type) {
+		case *MemLedger:
+			ledger.mu.Lock()
+			ledger.balances["A"]++
+			ledger.mu.Unlock()
+		case *PGLedger:
+			if _, err := ledger.h.ExecContext(ctx,
+				`UPDATE balances SET amount=amount+1 WHERE poolid=$1 AND address='A'`, coin); err != nil {
+				t.Fatalf("绕过流水修改 PG 余额: %v", err)
+			}
+		default:
+			t.Fatalf("未覆盖的 Ledger 实现 %T", l)
+		}
+
+		if delta, err := l.Reconcile(ctx, coin); err != nil {
+			t.Fatalf("J4 日志路径不应 panic/报错: %v", err)
+		} else if delta == "0.00000000" {
+			t.Fatal("绕过流水修改余额后 J4 必须返回非零 delta")
+		}
+
+		switch ledger := l.(type) {
+		case *MemLedger:
+			ledger.mu.Lock()
+			ledger.balances["A"]--
+			ledger.mu.Unlock()
+		case *PGLedger:
+			if _, err := ledger.h.ExecContext(ctx,
+				`UPDATE balances SET amount=amount-1 WHERE poolid=$1 AND address='A'`, coin); err != nil {
+				t.Fatalf("修复 PG 余额: %v", err)
+			}
+		}
+		assertDelta0(t, ctx, l, coin, "修复后")
+	})
 
 	t.Run("reward回填幂等与状态约束", func(t *testing.T) {
 		l, coin := mk(t)

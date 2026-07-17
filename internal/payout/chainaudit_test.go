@@ -44,7 +44,33 @@ func (s *allFailBatchStore) FindByTxID(string) (*Batch, bool, error) {
 func newChainAuditEngine(wallet adapter.WalletAdapter, store BatchStore) *Engine {
 	ledger := accounting.NewMemLedger(8, 2)
 	node := &fakeNode{conf: map[string]int64{}, mainHash: map[uint64]string{}}
-	return NewEngine(Config{Coin: "audit", Decimals: 8, MinPayout: 1, Maturity: 100}, ledger, node, wallet, store)
+	enabled := true
+	return NewEngine(Config{Coin: "audit", Decimals: 8, MinPayout: 1, Maturity: 100,
+		ChainAuditEnabled: &enabled}, ledger, node, wallet, store)
+}
+
+func TestChainAuditEnablement(t *testing.T) {
+	trueValue, falseValue := true, false
+	tests := []struct {
+		name    string
+		enabled *bool
+		want    bool
+	}{
+		{name: "mem store auto", enabled: nil, want: false},
+		{name: "mem store explicit true", enabled: &trueValue, want: true},
+		{name: "explicit false", enabled: &falseValue, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ledger := accounting.NewMemLedger(8, 2)
+			node := &fakeNode{conf: map[string]int64{}, mainHash: map[uint64]string{}}
+			engine := NewEngine(Config{Coin: "audit", ChainAuditEnabled: tt.enabled}, ledger, node,
+				&chainAuditWallet{}, NewMemBatchStore())
+			if got := engine.chainAudit != nil; got != tt.want {
+				t.Fatalf("chainAudit 构造状态=%v want=%v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestChainAuditUnknownOutboundFreezesAndEmits(t *testing.T) {
@@ -148,7 +174,8 @@ func TestChainAuditAndConservationBothEmit(t *testing.T) {
 	}}}
 	ledger := &brokenLedger{MemLedger: accounting.NewMemLedger(8, 2)}
 	node := &fakeNode{conf: map[string]int64{}, mainHash: map[uint64]string{}}
-	engine := NewEngine(Config{Coin: "audit", Decimals: 8, MinPayout: 1, Maturity: 100},
+	enabled := true
+	engine := NewEngine(Config{Coin: "audit", Decimals: 8, MinPayout: 1, Maturity: 100, ChainAuditEnabled: &enabled},
 		ledger, node, wallet, NewMemBatchStore())
 	seen := map[string]bool{}
 	engine.SetEvents(func(kind, _ string, _ map[string]string) { seen[kind] = true })
