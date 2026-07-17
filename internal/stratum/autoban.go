@@ -1,8 +1,13 @@
 package stratum
 
 import (
+	"errors"
+	"log"
+	"net"
 	"time"
 
+	"github.com/scashcc/ntmpool/internal/banlist"
+	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/core"
 )
 
@@ -10,45 +15,89 @@ import (
 type Banner interface {
 	Ban(target, reason string, ttl time.Duration) error
 	Strikes(target string) int
+	IsProtected(target string) bool
 }
 
-// 自动 ban 策略（docs/03 M3：invalidPercent 阈值 + 指数退避）。
-// 只数恶意信号：badpow（共识失配）/malformed（协议非法）/dup（重放）。
-// stale/lowdiff 是良性（vardiff straddle、换工竞速），绝不计入——
-// 否则把弱矿机 ban 了（lolMiner 连续 3 个误拒就弃池，误 ban 更致命）。
+// 保留默认常量名供策略测试使用；生产值来自 PortConfig。
 const (
-	autoBanMinSamples = 10 // 至少积累多少条提交才判定
-	autoBanPercent    = 50 // 恶意占比阈值（%）
-	autoBanBaseTTL    = 10 * time.Minute
-	autoBanMaxTTL     = 24 * time.Hour
+	autoBanMinSamples = config.DefaultAutoBanMinSamples
+	autoBanPercent    = config.DefaultAutoBanPercent
 )
 
-// autoBan 每连接违规统计（V1/CN 方言共用）。非并发安全：每连接串行使用。
+// autoBan 每连接违规统计。无 verified IP、受保护目标或端口坍缩降级时，
+// 达阈值仍返回 true 断开坏连接，但绝不写 IP ban。
 type autoBan struct {
 	banner  Banner
 	ip      string
+	coin    string
 	total   int
 	violent int
+	cfg     config.PortConfig
+	allowed func() bool
+	tripped bool
 }
 
-// record 记一条提交结果；返回 true = 已触发 ban（调用方应立即断开连接）。
-func (a *autoBan) record(outcome core.ShareOutcome) bool {
-	if a == nil || a.banner == nil {
-		return false
+func newAutoBan(b Banner, conn net.Conn, coin string, pc config.PortConfig) *autoBan {
+	id := connectionIdentity(conn)
+	var allowed func() bool
+	if gate, ok := conn.(ipAutobanGate); ok {
+		allowed = gate.IPAutobanAllowed
 	}
+	return &autoBan{banner: b, ip: id.VerifiedClientIP, coin: coin, cfg: config.WithPortDefaults(pc), allowed: allowed}
+}
+
+// record 记一条提交结果；返回 true = 应立即断开当前连接。
+func (a *autoBan) record(outcome core.ShareOutcome) bool {
+	if a == nil || a.tripped {
+		return a != nil && a.tripped
+	}
+	pc := config.WithPortDefaults(a.cfg)
 	a.total++
 	switch outcome {
 	case core.OutcomeBadPow, core.OutcomeMalformed, core.OutcomeDup:
 		a.violent++
 	}
-	if a.total < autoBanMinSamples || a.violent*100 < a.total*autoBanPercent {
+	if a.total < pc.AutoBanMinSamples || a.violent*100 < a.total*pc.AutoBanPercent {
 		return false
 	}
-	// 指数退避：TTL = base × 2^strikes（封顶 24h）
-	ttl := autoBanBaseTTL << uint(a.banner.Strikes(a.ip))
-	if ttl > autoBanMaxTTL || ttl <= 0 {
-		ttl = autoBanMaxTTL
+	a.tripped = true
+	reason := "auto: bad shares"
+	if a.banner == nil || a.ip == "" {
+		log.Printf("[P0] [%s] autoban_degraded target=%q reason=%q action=%q strikes=%d ttl=%s detail=%q", a.coin, a.ip, reason, "session_disconnect", 0, 0*time.Second, "verified_client_ip unavailable")
+		return true
 	}
-	_ = a.banner.Ban(a.ip, "auto: bad shares", ttl)
+	if a.allowed != nil && !a.allowed() {
+		log.Printf("[P0] [%s] autoban_degraded target=%q reason=%q action=%q strikes=%d ttl=%s detail=%q", a.coin, a.ip, reason, "session_disconnect", a.banner.Strikes(a.ip), 0*time.Second, "port collapse guard active")
+		return true
+	}
+	if a.banner.IsProtected(a.ip) {
+		log.Printf("[P0] [%s] autoban_protected target=%q reason=%q action=%q strikes=%d ttl=%s", a.coin, a.ip, reason, "session_disconnect", a.banner.Strikes(a.ip), 0*time.Second)
+		return true
+	}
+
+	strikes := a.banner.Strikes(a.ip)
+	ttl := time.Duration(pc.AutoBanBaseTTLSeconds) * time.Second
+	maxTTL := time.Duration(pc.AutoBanMaxTTLSeconds) * time.Second
+	for i := 0; i < strikes && ttl < maxTTL; i++ {
+		if ttl > maxTTL/2 {
+			ttl = maxTTL
+			break
+		}
+		ttl *= 2
+	}
+	if ttl > maxTTL || ttl <= 0 {
+		ttl = maxTTL
+	}
+	err := a.banner.Ban(a.ip, reason, ttl)
+	if err != nil {
+		action := "session_disconnect"
+		level := "ERROR"
+		if errors.Is(err, banlist.ErrProtected) {
+			level = "P0"
+		}
+		log.Printf("[%s] [%s] autoban_result target=%q reason=%q action=%q strikes=%d ttl=%s error=%q", level, a.coin, a.ip, reason, action, strikes, ttl, err)
+		return true
+	}
+	log.Printf("[%s] autoban_result target=%q reason=%q action=%q strikes=%d ttl=%s", a.coin, a.ip, reason, "ip_ban_and_session_disconnect", a.banner.Strikes(a.ip), ttl)
 	return true
 }

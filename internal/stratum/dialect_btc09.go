@@ -125,12 +125,14 @@ type btc09Conn struct {
 	worker   string
 	loggedIn bool
 	ab       *autoBan
+	guard    *connectionGuard
 	remoteIP string
 
 	seen sync.Map // jobid:nonce → 去重
 }
 
 func (d *Btc09Dialect) Serve(ctx context.Context, conn net.Conn, port config.PortConfig) error {
+	port = config.WithPortDefaults(port)
 	seq := d.connSeq.Add(1)
 	vcfg := vardiff.Config{
 		StartDiff:      port.Vardiff.StartDiff,
@@ -145,27 +147,19 @@ func (d *Btc09Dialect) Serve(ctx context.Context, conn net.Conn, port config.Por
 		port:     port,
 		connID:   uint32(seq), // nonce 窗口高位（2^20 连接内不重叠）
 		vd:       vardiff.New(vcfg, time.Now()),
-		remoteIP: remoteHost(conn),
+		remoteIP: verifiedClientIP(conn),
+		guard:    newConnectionGuard(port),
 	}
-	c.ab = &autoBan{banner: d.banner, ip: c.remoteIP}
+	c.ab = newAutoBan(d.banner, conn, d.coinID, port)
 	d.conns.Store(c, struct{}{})
 	defer d.conns.Delete(c)
 
-	lines := make(chan string, 16)
-	go func() {
-		defer close(lines)
-		sc := newLineScanner(conn)
-		for sc.Scan() {
-			select {
-			case lines <- sc.Text():
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	lines := scanLines(ctx, conn, port.MessageMaxBytes)
 
 	idle := time.NewTimer(10 * time.Minute) // 老池读 deadline 同款
 	defer idle.Stop()
+	handshake := time.NewTimer(port.HandshakeTimeout())
+	defer handshake.Stop()
 
 	for {
 		select {
@@ -173,13 +167,22 @@ func (d *Btc09Dialect) Serve(ctx context.Context, conn net.Conn, port config.Por
 			return nil
 		case <-idle.C:
 			return fmt.Errorf("[%s] 09C 连接空闲超时 %s", d.coinID, c.remoteIP)
-		case line, ok := <-lines:
+		case <-handshake.C:
+			return fmt.Errorf("[%s] 09C login 超时 verified_client_ip=%q", d.coinID, c.remoteIP)
+		case frame, ok := <-lines:
 			if !ok {
 				return nil
 			}
+			if frame.err != nil {
+				return fmt.Errorf("[%s] 09C 消息读取失败: %w", d.coinID, frame.err)
+			}
+			line := frame.text
 			idle.Reset(10 * time.Minute)
 			if strings.TrimSpace(line) == "" {
 				continue
+			}
+			if err := c.guard.observe(line, c.authed()); err != nil {
+				return fmt.Errorf("[%s] 09C 分级校验拒绝: %w", d.coinID, err)
 			}
 			var msg btc09Req
 			if err := json.Unmarshal([]byte(line), &msg); err != nil {
@@ -187,6 +190,14 @@ func (d *Btc09Dialect) Serve(ctx context.Context, conn net.Conn, port config.Por
 			}
 			if err := c.dispatch(ctx, &msg); err != nil {
 				return err
+			}
+			if c.authed() {
+				if !handshake.Stop() {
+					select {
+					case <-handshake.C:
+					default:
+					}
+				}
 			}
 		}
 	}
@@ -281,7 +292,10 @@ func (c *btc09Conn) onLogin(msg *btc09Req) error {
 
 func (c *btc09Conn) onSubmit(ctx context.Context, msg *btc09Req) error {
 	if !c.authed() {
-		return c.rejectSubmit(msg.ID, core.OutcomeMalformed, "bad share")
+		if err := c.guard.unauthorized("submit"); err != nil {
+			return err
+		}
+		return c.replyErr(msg.ID, "unauthorized")
 	}
 	var p btc09SubmitParams
 	if err := json.Unmarshal(msg.Params, &p); err != nil || p.JobID == "" {
@@ -307,7 +321,12 @@ func (c *btc09Conn) onSubmit(ctx context.Context, msg *btc09Req) error {
 		Judge:    func(d float64) (float64, bool) { return c.vd.Judge(d, time.Now()) },
 		Solo:     c.port.Mode == "solo",
 	}
+	release, ok := acquirePowSlot(ctx, c.d.coinID, c.port)
+	if !ok {
+		return c.replyErr(msg.ID, "server busy (verification queue full)")
+	}
 	res := c.d.handler.HandleSubmit(ctx, sub)
+	release()
 
 	switch res.Outcome {
 	case core.OutcomeAccepted, core.OutcomeBlock:

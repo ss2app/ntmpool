@@ -103,6 +103,46 @@ type WalletAdapter interface {
 	TxConfirmations(ctx context.Context, txid string) (int64, error)
 }
 
+// OutboundOutput 是钱包转出交易的一个对外输出。Amount 使用链的最小单位整数，
+// 绝不经过浮点；IsMine 表示适配器已确证该地址属于本钱包，供审计层排除找零/自转。
+type OutboundOutput struct {
+	Address string
+	Amount  int64
+	IsMine  bool
+}
+
+// OutboundTx 是钱包近期一笔转出交易。Height=0 表示仍在 mempool 或节点未提供高度。
+type OutboundTx struct {
+	TxID          string
+	Outputs       []OutboundOutput
+	Confirmations int64
+	Height        uint64
+}
+
+// ChainAuditor 可选：能列出钱包近期出账，供 chain-to-book 反向对账。
+// 适配器实现它才参与审计；不实现的币跳过并诚实记录 audit unavailable。
+type ChainAuditor interface {
+	// ListRecentOutbound 返回钱包近期转出交易（txid、输出、确认数）。
+	// sinceHeight=0 表示由适配器选取一个保守的近期回看窗口。
+	ListRecentOutbound(ctx context.Context, sinceHeight uint64) ([]OutboundTx, error)
+}
+
+// CoinbaseReceipt 是钱包收到的一笔挖矿收入。Amount 使用最小单位整数；
+// BlockHash 是与内部 blocks round 反查的稳定键。
+type CoinbaseReceipt struct {
+	TxID          string
+	BlockHash     string
+	Amount        int64
+	Confirmations int64
+	Height        uint64
+}
+
+// CoinbaseAuditor 是 chain-to-book 方向 B 的可选能力。不能列 coinbase 的钱包
+// 不实现它；审计层只跳过该方向，绝不伪装成已审。
+type CoinbaseAuditor interface {
+	ListRecentCoinbase(ctx context.Context, sinceHeight uint64) ([]CoinbaseReceipt, error)
+}
+
 // SpendableBalanceSource is an optional wallet capability used by the payout
 // engine's pre-flight solvency gate. Wallets without it retain legacy behavior.
 type SpendableBalanceSource interface {

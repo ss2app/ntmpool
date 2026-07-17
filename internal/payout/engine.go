@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,8 @@ type BatchStore interface {
 	NextBatchID() (int64, error)
 	Save(b *Batch) error
 	Load(id int64) (*Batch, bool, error)
+	// FindByTxID 按实际/计划 txid 只读反查持久化 intent，供 chain-to-book 审计。
+	FindByTxID(txid string) (*Batch, bool, error)
 	Unfinished() ([]*Batch, error) // created/prepared/sent 但未 confirmed/failed
 	All() ([]*Batch, error)        // 全部批次（新→旧），公共 API /payments 用
 
@@ -50,6 +53,9 @@ type Batch struct {
 	TxID          string
 	CreatedAt     time.Time
 	Confirmations int64 // 追踪器维护（仅内存/展示；PG 侧存于 payments.confirmations）
+	// B3 最小版本闭环：批次创建时固化当时费率/取整与确认策略，后续热配置不追溯覆盖。
+	FeePolicyVersion          string
+	ConfirmationPolicyVersion string
 }
 
 // Config 打款引擎配置（热参数子集在这里取快照）。
@@ -90,7 +96,7 @@ type Engine struct {
 
 	mu      sync.Mutex // 每币打款锁
 	enabled bool
-	frozen  bool // 守恒对账破坏时冻结
+	frozen  bool // 守恒或 chain-to-book 审计破坏时冻结
 
 	// minOverrides 地址级起付额覆盖（矿工 mp= 设置，minersettings 注入；可为 nil）
 	minOverrides func() map[string]float64
@@ -99,6 +105,10 @@ type Engine struct {
 	// maintainer 钱包整备器（可为 nil；dragonx 类隐私链：shield 成熟 coinbase
 	// 回金库，打款锁内、payout 前调——docs/02 §6 承诺的接线，dragonx 首用）
 	maintainer adapter.WalletMaintainer
+	chainAudit *ChainToBookReconciler
+	// 当前回看窗口内已告警的异常键；每轮成功审计后替换，避免周期性刷屏。
+	auditUnknown map[string]struct{}
+	auditMissing map[string]struct{}
 }
 
 func NewEngine(cfg Config, l accounting.Ledger, node NodeClassifier, w adapter.WalletAdapter, store BatchStore) *Engine {
@@ -108,7 +118,9 @@ func NewEngine(cfg Config, l accounting.Ledger, node NodeClassifier, w adapter.W
 	if cfg.DropGrace <= 0 {
 		cfg.DropGrace = 30 * time.Minute // 广播后 30min 仍不在 mempool/链上 = 确定丢失
 	}
-	e := &Engine{cfg: cfg, ledger: l, node: node, wallet: w, store: store, enabled: true}
+	e := &Engine{cfg: cfg, ledger: l, node: node, wallet: w, store: store, enabled: true,
+		auditUnknown: map[string]struct{}{}, auditMissing: map[string]struct{}{}}
+	e.chainAudit = NewChainToBookReconciler(cfg.Coin, w, store, l)
 	if rt, ok := w.(adapter.RawTxWallet); ok {
 		e.rawtx = rt
 	}
@@ -210,22 +222,22 @@ func (e *Engine) Params() Config {
 	return e.cfg
 }
 
-// Frozen 是否因守恒对账不平被冻结。
+// Frozen 是否因守恒对账或 chain-to-book 审计异常被冻结。
 func (e *Engine) Frozen() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.frozen
 }
 
-// Unfreeze 人工解冻（管理后台，对账修复后调用）。下一轮对账仍不平会再次冻结。
+// Unfreeze 人工解冻（管理后台，对账修复后调用）。下一轮任一审计仍异常会再次冻结。
 func (e *Engine) Unfreeze() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.frozen = false
-	log.Printf("[payout %s] 人工解冻打款（下一轮对账不平将再次冻结）", e.cfg.Coin)
+	log.Printf("[payout %s] 人工解冻打款（下一轮任一审计仍异常将再次冻结）", e.cfg.Coin)
 }
 
-// RunOnce 一轮：分类块 → 入账 → 守恒对账 → 打款。持锁串行。
+// RunOnce 一轮：分类块 → 守恒对账 → chain-to-book → 打款。持锁串行。
 func (e *Engine) RunOnce(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -246,6 +258,11 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 		log.Printf("[payout %s] ⚠ 守恒对账不平 delta=%s，冻结打款", e.cfg.Coin, delta)
 	}
 
+	// chain-to-book 反向审计：严格只读；只有确证未知出账才复用 frozen 冻结。
+	// 放在守恒对账之后，使两类异常同轮出现时各自事件都能发出；查链/查库失败与
+	// 能力不足均由 reconciler 记日志并跳过，绝不误冻结。
+	e.runChainAudit(ctx)
+
 	// 打款确认追踪：推进已广播批次的 confirmed/退款状态机 + 维护 confirmations 显示。
 	// 冻结时也追踪（只读查链 + 维护显示 + 对已丢失的退回余额，不发新款，安全）。
 	e.trackSent(ctx)
@@ -259,6 +276,50 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 	}
 	e.autoFeeCollect(ctx)
 	return nil
+}
+
+// runChainAudit 须持 e.mu。它只消费 reconciler 的确证结果并翻转统一 frozen 开关，
+// 不改 payout intent、ledger 或 blocks；missing round 本批次只告警，自动补建 round
+// 留 TODO（docs/05 场景 B）。
+func (e *Engine) runChainAudit(ctx context.Context) {
+	if e.chainAudit == nil {
+		return
+	}
+	result := e.chainAudit.Run(ctx)
+	if result.OutboundChecked {
+		current := make(map[string]struct{}, len(result.UnknownOutbound))
+		for _, tx := range result.UnknownOutbound {
+			key := strings.ToLower(tx.TxID)
+			current[key] = struct{}{}
+			if _, reported := e.auditUnknown[key]; !reported {
+				e.emit("chain_audit_unknown_outbound", "P0 未知钱包出账，打款已冻结", map[string]string{
+					"txid": tx.TxID, "confirmations": fmt.Sprint(tx.Confirmations),
+					"height": fmt.Sprint(tx.Height), "outputs": fmt.Sprint(len(tx.Outputs)),
+				})
+				log.Printf("[P0] [payout %s] chain_audit_unknown_outbound txid=%s confirmations=%d height=%d action=freeze",
+					e.cfg.Coin, tx.TxID, tx.Confirmations, tx.Height)
+			}
+			e.frozen = true
+		}
+		e.auditUnknown = current
+	}
+	if result.CoinbaseChecked {
+		current := make(map[string]struct{}, len(result.MissingRounds))
+		for _, receipt := range result.MissingRounds {
+			key := strings.ToLower(receipt.BlockHash)
+			current[key] = struct{}{}
+			if _, reported := e.auditMissing[key]; reported {
+				continue
+			}
+			e.emit("chain_audit_missing_round", "P0 钱包收到挖矿收入但 blocks 无 round", map[string]string{
+				"blockhash": receipt.BlockHash, "txid": receipt.TxID,
+				"height": fmt.Sprint(receipt.Height), "amount_units": fmt.Sprint(receipt.Amount),
+			})
+			log.Printf("[P0] [payout %s] chain_audit_missing_round blockhash=%s txid=%s height=%d（只告警，不自动补账）",
+				e.cfg.Coin, receipt.BlockHash, receipt.TxID, receipt.Height)
+		}
+		e.auditMissing = current
+	}
 }
 
 // maxTrackPerRound 每轮追踪的批次上限：平滑「首次部署时历史 sent 批次一次性回填
@@ -548,6 +609,7 @@ func (e *Engine) payoutOneBatch(ctx context.Context, payable map[string]string) 
 		Status:    core.PaymentCreated,
 		CreatedAt: time.Now(),
 	}
+	e.stampBatchPolicy(batch)
 	// ① 先扣余额（防双花第一步）
 	if err := e.ledger.DeductForPayout(ctx, e.cfg.Coin, payable, batch.ID); err != nil {
 		return fmt.Errorf("扣余额失败: %w", err)
@@ -803,6 +865,7 @@ func (e *Engine) sendBatchLocked(ctx context.Context, kind string, outputs map[s
 		return "", fmt.Errorf("取批次号: %w", err)
 	}
 	batch := &Batch{ID: batchID, Kind: kind, Outputs: outputs, Status: core.PaymentCreated, CreatedAt: time.Now()}
+	e.stampBatchPolicy(batch)
 	if err := e.store.Save(batch); err != nil {
 		// 意图未落库：未签名未广播，直接中止（fee 批次不动 ledger 余额，无需回滚）
 		return "", fmt.Errorf("批次意图落库失败: %w", err)
@@ -845,6 +908,20 @@ func (e *Engine) sendBatchLocked(ctx context.Context, kind string, outputs map[s
 	}
 	metrics.PayoutSent(e.cfg.Coin, kind, e.sumCoins(outputs))
 	return txid, nil
+}
+
+// stampBatchPolicy 生成由实际配置值决定的稳定版本串：费率/确认数任一变化都会得到新版本。
+// rounding 目前固定为最小单位向下取整、排序首地址承接余数，与现有结算实现一致。
+func (e *Engine) stampBatchPolicy(batch *Batch) {
+	solo := e.cfg.FeePercent
+	if e.cfg.SoloFeePercent != nil {
+		solo = *e.cfg.SoloFeePercent
+	}
+	batch.FeePolicyVersion = "fee-v1:pplns=" + strconv.FormatFloat(e.cfg.FeePercent, 'g', -1, 64) +
+		";solo=" + strconv.FormatFloat(solo, 'g', -1, 64) +
+		";rounding=floor_min_unit_sorted_remainder;decimals=" + strconv.Itoa(e.cfg.Decimals)
+	batch.ConfirmationPolicyVersion = "confirm-v1:maturity=" + strconv.FormatInt(e.cfg.Maturity, 10) +
+		";payout_finality=" + strconv.FormatInt(e.cfg.ConfirmThreshold, 10)
 }
 
 func short(s string) string {

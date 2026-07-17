@@ -8,6 +8,7 @@
   "dataDir": "data",
   "logDir": "logs",
   "logQuotaMB": 2048,
+  "protectedCidrs": ["127.0.0.1/32", "10.0.0.10/32"],
   "notify": {
     "webhookUrl": "",
     "telegramBotToken": "${NTMPOOL_TG_TOKEN}",

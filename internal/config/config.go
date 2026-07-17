@@ -8,8 +8,31 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"sync"
+	"time"
+)
+
+const (
+	DefaultMessageMaxBytes          = 32 * 1024
+	HardMessageMaxBytes             = 64 * 1024
+	DefaultJSONMaxDepth             = 16
+	DefaultUnauthMaxMessages        = 32
+	DefaultUnauthMaxBytes           = 128 * 1024
+	DefaultPreAuthViolationLimit    = 3
+	DefaultHandshakeTimeoutSeconds  = 10
+	DefaultAuthorizeTimeoutSeconds  = 30
+	DefaultPowVerifyConcurrency     = 4
+	DefaultPowVerifyQueue           = 64
+	DefaultPowBackpressureMillis    = 1000
+	DefaultCollapseMinConnections   = 20
+	DefaultCollapsePercent          = 90
+	DefaultBanRejectLogsPerIPMinute = 5
+	DefaultAutoBanMinSamples        = 10
+	DefaultAutoBanPercent           = 50
+	DefaultAutoBanBaseTTLSeconds    = 10 * 60
+	DefaultAutoBanMaxTTLSeconds     = 24 * 60 * 60
 )
 
 type VardiffConfig struct {
@@ -32,6 +55,95 @@ type PortConfig struct {
 	Enabled       bool          `json:"enabled"`
 	MaxConns      int           `json:"maxConns"`      // 端口在连上限（0 = 不限）
 	MaxConnsPerIP int           `json:"maxConnsPerIp"` // 每真实 IP 在连上限（0 = 不限）
+
+	// 连接攻击面护栏。零值在加载/启动端口时填为下列生产默认值；消息硬上限永远是 64 KiB。
+	MessageMaxBytes       int `json:"messageMaxBytes"`
+	JSONMaxDepth          int `json:"jsonMaxDepth"`
+	UnauthMaxMessages     int `json:"unauthMaxMessages"`
+	UnauthMaxBytes        int `json:"unauthMaxBytes"`
+	PreAuthViolationLimit int `json:"preAuthViolationLimit"`
+	HandshakeTimeoutSec   int `json:"handshakeTimeoutSeconds"`
+	AuthorizeTimeoutSec   int `json:"authorizeTimeoutSeconds"`
+
+	// 昂贵 PoW 校验的跨连接有界并发与等待队列。
+	PowVerifyConcurrency  int `json:"powVerifyConcurrency"`
+	PowVerifyQueue        int `json:"powVerifyQueue"`
+	PowBackpressureMillis int `json:"powBackpressureMillis"`
+
+	// 同一 verified IP 占据绝大多数活跃连接时，自动降级为仅断会话、不写 IP ban。
+	CollapseMinConnections int `json:"collapseMinConnections"`
+	CollapsePercent        int `json:"collapsePercent"`
+	BanRejectLogPerMinute  int `json:"banRejectLogPerIpPerMinute"`
+
+	// 自动 ban 判定与指数退避阈值。
+	AutoBanMinSamples     int `json:"autoBanMinSamples"`
+	AutoBanPercent        int `json:"autoBanPercent"`
+	AutoBanBaseTTLSeconds int `json:"autoBanBaseTtlSeconds"`
+	AutoBanMaxTTLSeconds  int `json:"autoBanMaxTtlSeconds"`
+}
+
+// WithPortDefaults 返回填好连接治理默认值的副本，避免旧配置因新增字段为零而失去护栏。
+func WithPortDefaults(p PortConfig) PortConfig {
+	if p.MessageMaxBytes == 0 {
+		p.MessageMaxBytes = DefaultMessageMaxBytes
+	}
+	if p.JSONMaxDepth == 0 {
+		p.JSONMaxDepth = DefaultJSONMaxDepth
+	}
+	if p.UnauthMaxMessages == 0 {
+		p.UnauthMaxMessages = DefaultUnauthMaxMessages
+	}
+	if p.UnauthMaxBytes == 0 {
+		p.UnauthMaxBytes = DefaultUnauthMaxBytes
+	}
+	if p.PreAuthViolationLimit == 0 {
+		p.PreAuthViolationLimit = DefaultPreAuthViolationLimit
+	}
+	if p.HandshakeTimeoutSec == 0 {
+		p.HandshakeTimeoutSec = DefaultHandshakeTimeoutSeconds
+	}
+	if p.AuthorizeTimeoutSec == 0 {
+		p.AuthorizeTimeoutSec = DefaultAuthorizeTimeoutSeconds
+	}
+	if p.PowVerifyConcurrency == 0 {
+		p.PowVerifyConcurrency = DefaultPowVerifyConcurrency
+	}
+	if p.PowVerifyQueue == 0 {
+		p.PowVerifyQueue = DefaultPowVerifyQueue
+	}
+	if p.PowBackpressureMillis == 0 {
+		p.PowBackpressureMillis = DefaultPowBackpressureMillis
+	}
+	if p.CollapseMinConnections == 0 {
+		p.CollapseMinConnections = DefaultCollapseMinConnections
+	}
+	if p.CollapsePercent == 0 {
+		p.CollapsePercent = DefaultCollapsePercent
+	}
+	if p.BanRejectLogPerMinute == 0 {
+		p.BanRejectLogPerMinute = DefaultBanRejectLogsPerIPMinute
+	}
+	if p.AutoBanMinSamples == 0 {
+		p.AutoBanMinSamples = DefaultAutoBanMinSamples
+	}
+	if p.AutoBanPercent == 0 {
+		p.AutoBanPercent = DefaultAutoBanPercent
+	}
+	if p.AutoBanBaseTTLSeconds == 0 {
+		p.AutoBanBaseTTLSeconds = DefaultAutoBanBaseTTLSeconds
+	}
+	if p.AutoBanMaxTTLSeconds == 0 {
+		p.AutoBanMaxTTLSeconds = DefaultAutoBanMaxTTLSeconds
+	}
+	return p
+}
+
+func (p PortConfig) HandshakeTimeout() time.Duration {
+	return time.Duration(WithPortDefaults(p).HandshakeTimeoutSec) * time.Second
+}
+
+func (p PortConfig) AuthorizeTimeout() time.Duration {
+	return time.Duration(WithPortDefaults(p).AuthorizeTimeoutSec) * time.Second
 }
 
 // ConsolidationConfig 钱包整备（note/UTXO 定时合并，docs/02 §6）。
@@ -75,10 +187,10 @@ type NodeEndpoint struct {
 
 // CoinConfig 一个币的完整配置。
 type CoinConfig struct {
-	ID          string         `json:"id"`      // 池内唯一，如 "btx"
-	Symbol      string         `json:"symbol"`  // 展示用
-	Adapter     string         `json:"adapter"` // "bitcoin-rpc" | "cryptonote-rpc" | "custom-http"
-	Algo        string         `json:"algo"`
+	ID      string `json:"id"`      // 池内唯一，如 "btx"
+	Symbol  string `json:"symbol"`  // 展示用
+	Adapter string `json:"adapter"` // "bitcoin-rpc" | "cryptonote-rpc" | "custom-http"
+	Algo    string `json:"algo"`
 	// StratumAlgo 对矿工声明的 wire 算法名（login 能力协商 + job.algo）。留空=用 Algo。
 	// 用于「内部算法标识 ≠ 通用矿工认识的标准名」的币：如 Brisvia 内部 algo=rx/brva（选 hasher），
 	// 但它是字节兼容 stock rx/0，故 stratumAlgo=rx/0 让 xmrig/SRBMiner 等通用 RandomX 锄头能连（池是主生意）。
@@ -113,11 +225,30 @@ type Config struct {
 	LogDir      string       `json:"logDir"`
 	LogQuotaMB  int          `json:"logQuotaMB"` // 全局日志磁盘配额（zoka 6.2GB 日志事故的教训）
 	Notify      NotifyConfig `json:"notify"`
-	Coins       []CoinConfig `json:"coins"`
+	// ProtectedCIDRs 同时作为受保护名单与 trusted-forwarder 名单：
+	// 中转机/节点/admin/VPN 永远不可 ban；只有这些 socket 对端发来的合法 PROXY 头才可信。
+	ProtectedCIDRs []string     `json:"protectedCidrs"`
+	Coins          []CoinConfig `json:"coins"`
+}
+
+// ApplyDefaults 为全部端口补齐新增治理阈值。
+func (c *Config) ApplyDefaults() {
+	for ci := range c.Coins {
+		for pi := range c.Coins[ci].Ports {
+			c.Coins[ci].Ports[pi] = WithPortDefaults(c.Coins[ci].Ports[pi])
+		}
+	}
 }
 
 // Validate 启动门禁。
 func (c *Config) Validate() error {
+	for _, rule := range c.ProtectedCIDRs {
+		if net.ParseIP(rule) == nil {
+			if _, _, err := net.ParseCIDR(rule); err != nil {
+				return fmt.Errorf("protectedCidrs 含非法 IP/CIDR: %q", rule)
+			}
+		}
+	}
 	seen := map[string]bool{}
 	for _, coin := range c.Coins {
 		if coin.ID == "" {
@@ -131,11 +262,29 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("[%s] 矿池地址与手续费地址不得相同（双地址分离铁律）", coin.ID)
 		}
 		ports := map[int]bool{}
-		for _, p := range coin.Ports {
+		for _, raw := range coin.Ports {
+			p := WithPortDefaults(raw)
 			if ports[p.Port] {
 				return fmt.Errorf("[%s] 端口重复: %d", coin.ID, p.Port)
 			}
 			ports[p.Port] = true
+			if p.MessageMaxBytes <= 0 || p.MessageMaxBytes > HardMessageMaxBytes {
+				return fmt.Errorf("[%s:%d] messageMaxBytes 必须在 1..%d", coin.ID, p.Port, HardMessageMaxBytes)
+			}
+			if p.JSONMaxDepth <= 0 || p.UnauthMaxMessages <= 0 || p.UnauthMaxBytes <= 0 ||
+				p.PreAuthViolationLimit <= 0 || p.HandshakeTimeoutSec <= 0 || p.AuthorizeTimeoutSec <= 0 {
+				return fmt.Errorf("[%s:%d] 分级校验阈值必须为正数", coin.ID, p.Port)
+			}
+			if p.PowVerifyConcurrency <= 0 || p.PowVerifyQueue <= 0 || p.PowBackpressureMillis <= 0 {
+				return fmt.Errorf("[%s:%d] PoW 有界队列阈值必须为正数", coin.ID, p.Port)
+			}
+			if p.CollapseMinConnections <= 0 || p.CollapsePercent < 1 || p.CollapsePercent > 100 {
+				return fmt.Errorf("[%s:%d] 坍缩阈值非法", coin.ID, p.Port)
+			}
+			if p.BanRejectLogPerMinute <= 0 || p.AutoBanMinSamples <= 0 || p.AutoBanPercent < 1 || p.AutoBanPercent > 100 ||
+				p.AutoBanBaseTTLSeconds <= 0 || p.AutoBanMaxTTLSeconds < p.AutoBanBaseTTLSeconds {
+				return fmt.Errorf("[%s:%d] autoban/拒连阈值非法", coin.ID, p.Port)
+			}
 		}
 	}
 	return nil
@@ -159,6 +308,7 @@ func Load(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("解析 %s: %w", path, err)
 	}
+	c.ApplyDefaults()
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}

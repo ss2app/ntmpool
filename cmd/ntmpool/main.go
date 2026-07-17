@@ -83,7 +83,7 @@ func main() {
 	defer stop()
 
 	// 跨币共享部件：ban 名单 + 矿工设置
-	bans, err := banlist.New(filepath.Join(dataDir, "bans.json"))
+	bans, err := banlist.New(filepath.Join(dataDir, "bans.json"), cfg.ProtectedCIDRs...)
 	if err != nil {
 		log.Fatalf("[boot] ban 名单加载失败: %v", err)
 	}

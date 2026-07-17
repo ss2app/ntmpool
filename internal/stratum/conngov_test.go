@@ -1,9 +1,12 @@
 package stratum
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,10 +15,10 @@ import (
 	"github.com/scashcc/ntmpool/internal/core"
 )
 
-// fakeBanner 内存 Banner。
 type fakeBanner struct {
-	mu     sync.Mutex
-	banned map[string]int
+	mu        sync.Mutex
+	banned    map[string]int
+	protected map[string]bool
 }
 
 func (f *fakeBanner) Ban(target, reason string, ttl time.Duration) error {
@@ -32,67 +35,72 @@ func (f *fakeBanner) Strikes(target string) int {
 	defer f.mu.Unlock()
 	return f.banned[target]
 }
+func (f *fakeBanner) IsProtected(target string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.protected[target]
+}
 func (f *fakeBanner) isBanned(ip string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.banned[ip] > 0
 }
 
-// 自动 ban 策略单元：良性拒绝（stale/lowdiff）不计，恶意（badpow/dup/malformed）
-// 占比超阈值触发，且连接被断开。
 func TestAutoBanPolicy(t *testing.T) {
-	b := &fakeBanner{}
-	ab := &autoBan{banner: b, ip: "9.9.9.9"}
-	// 9 条 badpow 不够样本数
-	for i := 0; i < autoBanMinSamples-1; i++ {
-		if ab.record(core.OutcomeBadPow) {
-			t.Fatalf("样本不足不应触发（第 %d 条）", i+1)
-		}
+	tests := []struct {
+		name      string
+		ip        string
+		protected bool
+		outcomes  []core.ShareOutcome
+		wantTrip  bool
+		wantIPBan bool
+	}{
+		{"样本不足", "9.9.9.9", false, repeatOutcome(core.OutcomeBadPow, autoBanMinSamples-1), false, false},
+		{"verified 恶意源", "9.9.9.9", false, repeatOutcome(core.OutcomeBadPow, autoBanMinSamples), true, true},
+		{"无 verified 仅断会话", "", false, repeatOutcome(core.OutcomeBadPow, autoBanMinSamples), true, false},
+		{"受保护目标仅断会话", "10.0.0.2", true, repeatOutcome(core.OutcomeBadPow, autoBanMinSamples), true, false},
+		{"良性 stale", "8.8.8.8", false, repeatOutcome(core.OutcomeStale, 100), false, false},
 	}
-	if !ab.record(core.OutcomeBadPow) {
-		t.Fatal("样本够且 100% 恶意应触发")
-	}
-	if !b.isBanned("9.9.9.9") {
-		t.Fatal("应已写入 ban 名单")
-	}
-
-	// 全 stale/lowdiff：永不触发
-	ab2 := &autoBan{banner: b, ip: "8.8.8.8"}
-	for i := 0; i < 100; i++ {
-		if ab2.record(core.OutcomeStale) || ab2.record(core.OutcomeLowDiff) {
-			t.Fatal("良性拒绝不应触发自动 ban")
-		}
-	}
-	if b.isBanned("8.8.8.8") {
-		t.Fatal("良性流量被误 ban")
-	}
-
-	// 掺一半 accepted：50% 阈值边界（violent*100 >= total*50 才触发）
-	ab3 := &autoBan{banner: b, ip: "7.7.7.7"}
-	for i := 0; i < 20; i++ {
-		ab3.record(core.OutcomeAccepted)
-	}
-	trig := false
-	for i := 0; i < 25 && !trig; i++ {
-		trig = ab3.record(core.OutcomeBadPow)
-	}
-	if !trig {
-		t.Fatal("恶意占比过半应触发")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := &fakeBanner{protected: map[string]bool{tt.ip: tt.protected}}
+			ab := &autoBan{banner: b, ip: tt.ip, coin: "test"}
+			tripped := false
+			for _, outcome := range tt.outcomes {
+				if ab.record(outcome) {
+					tripped = true
+					break
+				}
+			}
+			if tripped != tt.wantTrip {
+				t.Fatalf("tripped=%v want %v", tripped, tt.wantTrip)
+			}
+			if b.isBanned(tt.ip) != tt.wantIPBan {
+				t.Fatalf("banned=%v want %v", b.isBanned(tt.ip), tt.wantIPBan)
+			}
+		})
 	}
 }
 
-// CN 方言端到端：连发伪 share → 连接被断 + IP 进名单。
-func TestCNDialectAutoBanCloses(t *testing.T) {
+func repeatOutcome(outcome core.ShareOutcome, n int) []core.ShareOutcome {
+	out := make([]core.ShareOutcome, n)
+	for i := range out {
+		out[i] = outcome
+	}
+	return out
+}
+
+func TestCNDialectAutoBanClosesVerifiedOnly(t *testing.T) {
 	h := &fakeCNHandler{algo: "rx/0", outcome: core.OutcomeBadPow}
 	d := NewCNDialect("test", h)
 	b := &fakeBanner{}
 	d.SetAutoBan(b)
-
-	pc := config.PortConfig{
-		Port: 0, Mode: "pplns", Dialect: "cryptonote",
-		Vardiff: config.VardiffConfig{Enabled: true, StartDiff: 1000, MinDiff: 1, MaxDiff: 100000, TargetSeconds: 10},
-	}
-	srv, cli := net.Pipe()
+	pc := config.PortConfig{Port: 1, Mode: "pplns", Dialect: "cryptonote",
+		Vardiff: config.VardiffConfig{Enabled: true, StartDiff: 1000, MinDiff: 1, MaxDiff: 100000, TargetSeconds: 10}}
+	rawSrv, cli := net.Pipe()
+	srv := &proxyConn{Conn: rawSrv, identity: ConnectionIdentity{
+		TransportPeerIP: "10.0.0.2", VerifiedClientIP: "9.9.9.9", IPProvenance: IPProvenanceProxyV1,
+	}}
 	done := make(chan struct{})
 	go func() {
 		_ = d.Serve(context.Background(), srv, pc)
@@ -104,13 +112,10 @@ func TestCNDialectAutoBanCloses(t *testing.T) {
 	dec := json.NewDecoder(cli)
 	var resp map[string]any
 	_ = dec.Decode(&resp)
-
 	for i := 0; i < autoBanMinSamples+2; i++ {
-		if err := enc.Encode(map[string]any{
-			"id": 2, "method": "submit",
-			"params": map[string]any{"job_id": "j1", "nonce": nonceHexFor(i), "result": "ab"},
-		}); err != nil {
-			break // 连接已被断 = 预期
+		if err := enc.Encode(map[string]any{"id": 2, "method": "submit",
+			"params": map[string]any{"job_id": "j1", "nonce": nonceHexFor(i), "result": "ab"}}); err != nil {
+			break
 		}
 		var r map[string]any
 		if err := dec.Decode(&r); err != nil {
@@ -122,8 +127,8 @@ func TestCNDialectAutoBanCloses(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("恶意连接未被断开")
 	}
-	if !b.isBanned("pipe") { // net.Pipe 的 RemoteAddr 是 "pipe"
-		t.Fatal("恶意 IP 未进名单")
+	if !b.isBanned("9.9.9.9") || b.isBanned("10.0.0.2") {
+		t.Fatalf("必须只 ban verified client，banned=%v", b.banned)
 	}
 }
 
@@ -132,64 +137,142 @@ func nonceHexFor(i int) string {
 	return string([]byte{hexd[i%16], hexd[(i/16)%16]}) + "000000"
 }
 
-// PROXY protocol v1 解包：required/optional/伪造头/UNKNOWN 四路。
-func TestResolveProxy(t *testing.T) {
-	pipeWith := func(payload string) (net.Conn, net.Conn) {
-		srv, cli := net.Pipe()
-		go func() { _, _ = cli.Write([]byte(payload)) }()
-		return srv, cli
+func TestResolveProxyV1V2AndIdentity(t *testing.T) {
+	v2 := proxyV2TCP4("1.2.3.5", "5.6.7.8", 5555, 3333, []byte("hello\n"))
+	tests := []struct {
+		name, mode string
+		payload    []byte
+		trusted    bool
+		wantErr    bool
+		wantIP     string
+		wantProv   IPProvenance
+		wantTail   string
+	}{
+		{"v1", "required", []byte("PROXY TCP4 1.2.3.4 5.6.7.8 5555 3333\r\nhello\n"), true, false, "1.2.3.4", IPProvenanceProxyV1, "hello\n"},
+		{"v2", "required", v2, true, false, "1.2.3.5", IPProvenanceProxyV2, "hello\n"},
+		{"optional 直连无 verified", "optional", []byte("{\"id\":1}\n"), false, false, "", IPProvenanceDirect, "{\"id\":1}\n"},
+		{"required 无头", "required", []byte("{\"id\":1}\n"), true, true, "", "", ""},
+		{"非受信伪造 v1", "optional", []byte("PROXY TCP4 1.2.3.4 5.6.7.8 1 2\r\n"), false, true, "", "", ""},
+		{"非法 v1", "required", []byte("PROXY TCP4 notanip x y z\r\n"), true, true, "", "", ""},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, cli := net.Pipe()
+			go func() { _, _ = cli.Write(tt.payload) }()
+			trusted := func(string) bool { return tt.trusted }
+			conn, err := resolveProxy(srv, tt.mode, trusted)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tt.wantErr)
+			}
+			if err == nil {
+				id := connectionIdentity(conn)
+				if id.TransportPeerIP != "pipe" || id.VerifiedClientIP != tt.wantIP || id.IPProvenance != tt.wantProv {
+					t.Fatalf("identity=%+v", id)
+				}
+				if tt.wantTail != "" {
+					buf := make([]byte, len(tt.wantTail))
+					_, _ = ioReadFull(conn, buf)
+					if string(buf) != tt.wantTail {
+						t.Fatalf("tail=%q", buf)
+					}
+				}
+			}
+			_ = cli.Close()
+			_ = srv.Close()
+		})
+	}
+}
 
-	// 带头：真实 IP 换成头里的源地址，头后的字节原样可读
-	srv, cli := pipeWith("PROXY TCP4 1.2.3.4 5.6.7.8 5555 3333\r\nhello\n")
-	c, err := resolveProxy(srv, "required")
-	if err != nil {
-		t.Fatalf("required 带头应成功: %v", err)
-	}
-	if got := remoteHost(c); got != "1.2.3.4" {
-		t.Fatalf("真实 IP = %s, want 1.2.3.4", got)
-	}
-	buf := make([]byte, 6)
-	if n, _ := c.Read(buf); string(buf[:n]) != "hello\n" {
-		t.Fatalf("头后数据丢失: %q", buf[:n])
-	}
-	_ = cli.Close()
+func proxyV2TCP4(src, dst string, srcPort, dstPort uint16, tail []byte) []byte {
+	payload := make([]byte, 12)
+	copy(payload[0:4], net.ParseIP(src).To4())
+	copy(payload[4:8], net.ParseIP(dst).To4())
+	binary.BigEndian.PutUint16(payload[8:10], srcPort)
+	binary.BigEndian.PutUint16(payload[10:12], dstPort)
+	header := append([]byte(nil), proxyV2Magic...)
+	header = append(header, 0x21, 0x11, 0, byte(len(payload)))
+	return append(append(header, payload...), tail...)
+}
 
-	// required 无头：拒绝
-	srv, cli = pipeWith(`{"id":1,"method":"login"}` + "\n")
-	if _, err := resolveProxy(srv, "required"); err == nil {
-		t.Fatal("required 无头应拒绝")
+func ioReadFull(r net.Conn, b []byte) (int, error) {
+	n := 0
+	for n < len(b) {
+		m, err := r.Read(b[n:])
+		n += m
+		if err != nil {
+			return n, err
+		}
 	}
-	_ = cli.Close()
+	return n, nil
+}
 
-	// optional 无头：当直连，首字节不丢
-	srv, cli = pipeWith(`{"id":1}` + "\n")
-	c, err = resolveProxy(srv, "optional")
-	if err != nil {
-		t.Fatalf("optional 无头应放行: %v", err)
+func TestCollapseDetectorTriggersAndRecovers(t *testing.T) {
+	pc := config.WithPortDefaults(config.PortConfig{Port: 3333, CollapseMinConnections: 20, CollapsePercent: 90})
+	l := &Listener{coinID: "test", cfg: pc, perIP: map[string]int{}}
+	ids := make([]ConnectionIdentity, 0, 20)
+	for i := 0; i < 18; i++ {
+		ids = append(ids, ConnectionIdentity{VerifiedClientIP: "1.1.1.1"})
 	}
-	buf = make([]byte, 8)
-	if n, _ := c.Read(buf); string(buf[:n]) != `{"id":1}` {
-		t.Fatalf("直连首字节被吃: %q", buf[:n])
+	ids = append(ids, ConnectionIdentity{VerifiedClientIP: "2.2.2.2"}, ConnectionIdentity{VerifiedClientIP: "3.3.3.3"})
+	for _, id := range ids {
+		if ok, reason := l.acquire(id, pc); !ok {
+			t.Fatalf("acquire: %s", reason)
+		}
 	}
-	_ = cli.Close()
+	if l.ipAutobanAllowed() {
+		t.Fatal("90% 单 IP 应触发坍缩降级")
+	}
+	l.release(ConnectionIdentity{VerifiedClientIP: "1.1.1.1"}) // 17/19 < 90%
+	if !l.ipAutobanAllowed() {
+		t.Fatal("IP 分布恢复后应自动解除降级")
+	}
+}
 
-	// 伪造/非法头：拒绝
-	srv, cli = pipeWith("PROXY TCP4 notanip x y z\r\n")
-	if _, err := resolveProxy(srv, "required"); err == nil {
-		t.Fatal("非法头应拒绝")
-	}
-	_ = cli.Close()
-
-	// UNKNOWN（转发器健康检查）：放行、保留原地址
-	srv, cli = pipeWith("PROXY UNKNOWN\r\nping\n")
-	c, err = resolveProxy(srv, "optional")
-	if err != nil {
-		t.Fatalf("UNKNOWN 应放行: %v", err)
-	}
-	buf = make([]byte, 5)
-	if n, _ := c.Read(buf); string(buf[:n]) != "ping\n" {
-		t.Fatalf("UNKNOWN 后数据丢失: %q", buf[:n])
-	}
-	_ = cli.Close()
+func TestLayeredValidationBoundaries(t *testing.T) {
+	t.Run("JSON 深度", func(t *testing.T) {
+		for _, tt := range []struct {
+			raw     string
+			max     int
+			wantErr bool
+		}{
+			{`{"x":[1]}`, 2, false},
+			{`{"x":[{"y":1}]}`, 2, true},
+			{`{"x":"[[["}`, 1, false},
+		} {
+			if got := validateJSONDepth([]byte(tt.raw), tt.max); (got != nil) != tt.wantErr {
+				t.Fatalf("raw=%s err=%v", tt.raw, got)
+			}
+		}
+	})
+	t.Run("未授权预算边界", func(t *testing.T) {
+		g := newConnectionGuard(config.PortConfig{UnauthMaxMessages: 2, UnauthMaxBytes: 8, JSONMaxDepth: 4, PreAuthViolationLimit: 2})
+		if err := g.observe(`{}`, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := g.observe(`{}`, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := g.observe(`{}`, false); err == nil {
+			t.Fatal("超过消息数应断")
+		}
+		if err := g.unauthorized("submit"); err != nil {
+			t.Fatal(err)
+		}
+		if err := g.unauthorized("submit"); err != nil {
+			t.Fatal(err)
+		}
+		if err := g.unauthorized("submit"); err == nil {
+			t.Fatal("超过未授权 submit 次数应断")
+		}
+	})
+	t.Run("消息字节上限", func(t *testing.T) {
+		sc := newLineScanner(strings.NewReader(strings.Repeat("x", 17)+"\n"), 16)
+		if sc.Scan() || sc.Err() == nil {
+			t.Fatal("超过配置消息上限必须报错")
+		}
+		sc = newLineScanner(bytes.NewBufferString("1234567890\n"), config.HardMessageMaxBytes+1)
+		if !sc.Scan() {
+			t.Fatalf("硬上限钳制不应影响短消息: %v", sc.Err())
+		}
+	})
 }

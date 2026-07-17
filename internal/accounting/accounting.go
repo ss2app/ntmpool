@@ -73,6 +73,8 @@ type Ledger interface {
 
 	// Blocks 分页返回池找到的块（新→旧）与总数（公共 API /blocks）。
 	Blocks(ctx context.Context, coin string, offset, limit int) ([]core.FoundBlock, int, error)
+	// HasBlockHash 只读判断 blocks 是否已有该链上块 hash，供 coinbase→round 反向审计。
+	HasBlockHash(ctx context.Context, coin, blockHash string) (bool, error)
 
 	// MinerSummary 单矿工会计摘要（公共 API 矿工自查）。地址无任何记录时 ok=false。
 	MinerSummary(ctx context.Context, coin, addr string) (ms MinerSummary, ok bool, err error)

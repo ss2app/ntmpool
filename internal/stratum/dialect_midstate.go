@@ -109,12 +109,14 @@ type midstateConn struct {
 	worker     string
 	subscribed bool
 	ab         *autoBan
+	guard      *connectionGuard
 	remoteIP   string
 
 	seen sync.Map // jobid:nonce → 去重（fork 池没有；防重放双计，诚实矿工永不触发）
 }
 
 func (d *MidstateDialect) Serve(ctx context.Context, conn net.Conn, port config.PortConfig) error {
+	port = config.WithPortDefaults(port)
 	vcfg := vardiff.Config{
 		StartDiff:      port.Vardiff.StartDiff,
 		MinDiff:        port.Vardiff.MinDiff,
@@ -125,27 +127,19 @@ func (d *MidstateDialect) Serve(ctx context.Context, conn net.Conn, port config.
 	c := &midstateConn{
 		d: d, raw: conn, port: port,
 		vd:       vardiff.New(vcfg, time.Now()),
-		remoteIP: remoteHost(conn),
+		remoteIP: verifiedClientIP(conn),
+		guard:    newConnectionGuard(port),
 	}
-	c.ab = &autoBan{banner: d.banner, ip: c.remoteIP}
+	c.ab = newAutoBan(d.banner, conn, d.coinID, port)
 	d.conns.Store(c, struct{}{})
 	defer d.conns.Delete(c)
 
-	lines := make(chan string, 16)
-	go func() {
-		defer close(lines)
-		sc := newLineScanner(conn)
-		for sc.Scan() {
-			select {
-			case lines <- sc.Text():
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	lines := scanLines(ctx, conn, port.MessageMaxBytes)
 
 	idle := time.NewTimer(10 * time.Minute)
 	defer idle.Stop()
+	handshake := time.NewTimer(port.HandshakeTimeout())
+	defer handshake.Stop()
 
 	for {
 		select {
@@ -153,13 +147,22 @@ func (d *MidstateDialect) Serve(ctx context.Context, conn net.Conn, port config.
 			return nil
 		case <-idle.C:
 			return fmt.Errorf("[%s] midstate 连接空闲超时 %s", d.coinID, c.remoteIP)
-		case line, ok := <-lines:
+		case <-handshake.C:
+			return fmt.Errorf("[%s] midstate subscribe 超时 verified_client_ip=%q", d.coinID, c.remoteIP)
+		case frame, ok := <-lines:
 			if !ok {
 				return nil // 矿工 EOF
 			}
+			if frame.err != nil {
+				return fmt.Errorf("[%s] midstate 消息读取失败: %w", d.coinID, frame.err)
+			}
+			line := frame.text
 			idle.Reset(10 * time.Minute)
 			if strings.TrimSpace(line) == "" {
 				continue
+			}
+			if err := c.guard.observe(line, c.isSubscribed()); err != nil {
+				return fmt.Errorf("[%s] midstate 分级校验拒绝: %w", d.coinID, err)
 			}
 			var msg midstateReq
 			if err := json.Unmarshal([]byte(line), &msg); err != nil {
@@ -169,6 +172,14 @@ func (d *MidstateDialect) Serve(ctx context.Context, conn net.Conn, port config.
 			}
 			if err := c.dispatch(ctx, &msg); err != nil {
 				return err
+			}
+			if c.isSubscribed() {
+				if !handshake.Stop() {
+					select {
+					case <-handshake.C:
+					default:
+					}
+				}
 			}
 		}
 	}
@@ -282,7 +293,12 @@ func (c *midstateConn) onSubmit(ctx context.Context, msg *midstateReq) error {
 		FinalHashHex: p.FinalHash,
 		Judge:        func(d float64) (float64, bool) { return c.vd.Judge(d, time.Now()) },
 	}
+	release, ok := acquirePowSlot(ctx, c.d.coinID, c.port)
+	if !ok {
+		return c.replyErr(msg.ID, "server busy (verification queue full)")
+	}
 	res, warming := c.d.handler.HandleSubmit(ctx, sub)
+	release()
 	if warming {
 		return c.replyErr(msg.ID, "pool warming up")
 	}

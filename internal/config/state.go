@@ -60,6 +60,7 @@ func LoadAndApplyState(path string, c *Config) (applied bool, err error) {
 		applied = true
 	}
 	if applied {
+		c.ApplyDefaults()
 		if err := c.Validate(); err != nil {
 			return false, fmt.Errorf("热状态覆盖后配置非法: %w", err)
 		}

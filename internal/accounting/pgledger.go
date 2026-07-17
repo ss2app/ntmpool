@@ -877,6 +877,14 @@ func (l *PGLedger) Blocks(ctx context.Context, _ string, offset, limit int) ([]c
 	return out, total, rows.Err()
 }
 
+func (l *PGLedger) HasBlockHash(ctx context.Context, _ string, blockHash string) (bool, error) {
+	var exists bool
+	err := l.h.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM blocks WHERE poolid=$1 AND transactionconfirmationdata=$2)`,
+		l.coin, blockHash).Scan(&exists)
+	return exists, err
+}
+
 func (l *PGLedger) MinerSummary(ctx context.Context, _, addr string) (MinerSummary, bool, error) {
 	var balStr, paidStr, debtStr string
 	var hasAny bool

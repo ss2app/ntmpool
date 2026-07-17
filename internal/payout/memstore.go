@@ -2,6 +2,7 @@ package payout
 
 import (
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/scashcc/ntmpool/internal/core"
@@ -43,6 +44,18 @@ func (s *MemBatchStore) Load(id int64) (*Batch, bool, error) {
 	defer s.mu.Unlock()
 	b, ok := s.batches[id]
 	return b, ok, nil
+}
+
+func (s *MemBatchStore) FindByTxID(txid string) (*Batch, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range s.batches {
+		if (b.TxID != "" && strings.EqualFold(b.TxID, txid)) ||
+			(b.PlannedTxID != "" && strings.EqualFold(b.PlannedTxID, txid)) {
+			return b, true, nil
+		}
+	}
+	return nil, false, nil
 }
 
 func (s *MemBatchStore) Unfinished() ([]*Batch, error) {

@@ -43,6 +43,7 @@ func TestPGBatchStorePersistAndRecover(t *testing.T) {
 		ID: id, Kind: "payout",
 		Outputs: map[string]string{"addrA": "1.50000000", "addrB": "2.25000000"},
 		Status:  core.PaymentCreated, CreatedAt: time.Now(),
+		FeePolicyVersion: "fee-test-v1", ConfirmationPolicyVersion: "confirm-test-v1",
 	}
 	if err := s.Save(b); err != nil {
 		t.Fatal(err)
@@ -61,6 +62,9 @@ func TestPGBatchStorePersistAndRecover(t *testing.T) {
 	}
 	if got.Status != core.PaymentSent || got.TxID != "txid-1" {
 		t.Fatalf("批次状态未持久化: %+v", got)
+	}
+	if got.FeePolicyVersion != "fee-test-v1" || got.ConfirmationPolicyVersion != "confirm-test-v1" {
+		t.Fatalf("批次 policy version 未持久化: %+v", got)
 	}
 	if got.Outputs["addrA"] != "1.50000000" || got.Outputs["addrB"] != "2.25000000" {
 		t.Fatalf("输出未持久化: %+v", got.Outputs)

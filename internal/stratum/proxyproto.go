@@ -2,83 +2,202 @@ package stratum
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// PROXY protocol v1 解包（docs/01 R12：藏在转发器后拿矿工真实 IP）。
-// 行格式：`PROXY TCP4 <srcIP> <dstIP> <srcPort> <dstPort>\r\n`（haproxy 规范）。
-//
-// 模式（PortConfig.Proxy）：
-//   off      —— 不解包（默认）
-//   optional —— 有头就解、没头当直连（本机调试与转发流量共用一个端口）
-//   required —— 必须有头，没有直接断（端口只被转发器访问时用，防伪造直连）
+// IPProvenance 描述矿工 IP 的来源。DIRECT 只表示没有可信 PROXY 身份，
+// 不等于可拿 socket 对端做 IP 级处罚。
+type IPProvenance string
 
-const proxyHeaderTimeout = 5 * time.Second
+const (
+	IPProvenanceDirect  IPProvenance = "DIRECT"
+	IPProvenanceProxyV1 IPProvenance = "PROXY_V1"
+	IPProvenanceProxyV2 IPProvenance = "PROXY_V2"
+)
 
-// proxyConn 包装原始连接：RemoteAddr 换成 PROXY 头里的真实源地址，
-// 读走 bufio（头之后可能已缓冲的字节不能丢）。
+// ConnectionIdentity 显式分离 transport 与经 trusted edge 验证的真实矿工 IP。
+type ConnectionIdentity struct {
+	TransportPeerIP  string
+	VerifiedClientIP string
+	IPProvenance     IPProvenance
+}
+
+const (
+	proxyHeaderTimeout = 5 * time.Second
+	proxyV2MaxPayload  = 64 * 1024
+)
+
+var proxyV2Magic = []byte{'\r', '\n', '\r', '\n', 0, '\r', '\n', 'Q', 'U', 'I', 'T', '\n'}
+
+// proxyConn 保留头后已缓冲字节，并携带显式连接身份；RemoteAddr 始终仍是
+// socket 直接对端，杜绝把 PROXY 声明地址混成 transport peer。
 type proxyConn struct {
 	net.Conn
-	r    *bufio.Reader
-	real net.Addr
+	r        *bufio.Reader
+	identity ConnectionIdentity
 }
 
-func (p *proxyConn) Read(b []byte) (int, error) { return p.r.Read(b) }
-func (p *proxyConn) RemoteAddr() net.Addr {
-	if p.real != nil {
-		return p.real
+func (p *proxyConn) Read(b []byte) (int, error) {
+	if p.r != nil {
+		return p.r.Read(b)
 	}
-	return p.Conn.RemoteAddr()
+	return p.Conn.Read(b)
 }
 
-// resolveProxy 按模式处理一条新连接。返回（可能被包装的）连接；错误 = 调用方断开。
-func resolveProxy(conn net.Conn, mode string) (net.Conn, error) {
+func (p *proxyConn) ConnectionIdentity() ConnectionIdentity { return p.identity }
+
+type identityCarrier interface {
+	ConnectionIdentity() ConnectionIdentity
+}
+
+// resolveProxy 同时解析 PROXY v1 文本头与 v2 二进制头。
+// trustedForwarder 必须认可 socket 直接对端，声明的 client IP 才会进入 VerifiedClientIP。
+func resolveProxy(conn net.Conn, mode string, trustedForwarder ...func(string) bool) (net.Conn, error) {
 	switch mode {
 	case "", "off":
-		return conn, nil
+		return directIdentityConn(conn, nil), nil
 	case "optional", "required":
 	default:
-		return conn, fmt.Errorf("未知 proxyProtocol 模式 %q", mode)
+		return nil, fmt.Errorf("未知 proxyProtocol 模式 %q", mode)
+	}
+
+	transport := transportPeerIP(conn)
+	trusted := len(trustedForwarder) > 0 && trustedForwarder[0] != nil && trustedForwarder[0](transport)
+	if mode == "required" && !trusted {
+		return nil, fmt.Errorf("proxyProtocol=required 但 transport_peer_ip=%s 不在 trusted-forwarder 名单", transport)
 	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(proxyHeaderTimeout))
 	defer conn.SetReadDeadline(time.Time{})
-
 	r := bufio.NewReaderSize(conn, 4096)
-	peek, err := r.Peek(6)
+	first, err := r.Peek(1)
 	if err != nil {
 		return nil, fmt.Errorf("读 PROXY 头失败: %w", err)
 	}
-	if string(peek) != "PROXY " {
-		if mode == "required" {
-			return nil, fmt.Errorf("proxyProtocol=required 但无 PROXY 头（来自 %s 的直连？）", conn.RemoteAddr())
+
+	provenance := IPProvenanceDirect
+	switch first[0] {
+	case 'P':
+		peek, err := r.Peek(6)
+		if err != nil || string(peek) != "PROXY " {
+			return noProxyHeader(conn, r, mode, transport)
 		}
-		// optional：无头当直连，缓冲字节原样交给协议层
-		return &proxyConn{Conn: conn, r: r}, nil
+		provenance = IPProvenanceProxyV1
+	case '\r':
+		peek, err := r.Peek(len(proxyV2Magic))
+		if err != nil || !equalBytes(peek, proxyV2Magic) {
+			return noProxyHeader(conn, r, mode, transport)
+		}
+		provenance = IPProvenanceProxyV2
+	default:
+		return noProxyHeader(conn, r, mode, transport)
 	}
+	if !trusted {
+		return nil, fmt.Errorf("拒绝来自非受信 transport_peer_ip=%s 的 %s 头", transport, provenance)
+	}
+
+	var clientIP string
+	if provenance == IPProvenanceProxyV1 {
+		clientIP, err = parseProxyV1(r)
+	} else {
+		clientIP, err = parseProxyV2(r)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &proxyConn{Conn: conn, r: r, identity: ConnectionIdentity{
+		TransportPeerIP: transport, VerifiedClientIP: clientIP, IPProvenance: provenance,
+	}}, nil
+}
+
+func directIdentityConn(conn net.Conn, r *bufio.Reader) net.Conn {
+	return &proxyConn{Conn: conn, r: r, identity: ConnectionIdentity{
+		TransportPeerIP: transportPeerIP(conn), IPProvenance: IPProvenanceDirect,
+	}}
+}
+
+func noProxyHeader(conn net.Conn, r *bufio.Reader, mode, transport string) (net.Conn, error) {
+	if mode == "required" {
+		return nil, fmt.Errorf("proxyProtocol=required 但无 PROXY 头（transport_peer_ip=%s）", transport)
+	}
+	return directIdentityConn(conn, r), nil
+}
+
+func parseProxyV1(r *bufio.Reader) (string, error) {
 	line, err := r.ReadString('\n')
-	if err != nil || len(line) > 108 { // 规范上限 107 字节 + \n
-		return nil, fmt.Errorf("PROXY 头非法: %v", err)
+	if err != nil || len(line) > 108 {
+		return "", fmt.Errorf("PROXY v1 头非法: %v", err)
 	}
 	fields := strings.Fields(strings.TrimSpace(line))
-	// PROXY UNKNOWN（转发器本地健康检查）：无源地址，保留原样
 	if len(fields) >= 2 && fields[1] == "UNKNOWN" {
-		return &proxyConn{Conn: conn, r: r}, nil
+		return "", nil
 	}
 	if len(fields) != 6 || (fields[1] != "TCP4" && fields[1] != "TCP6") {
-		return nil, fmt.Errorf("PROXY 头非法: %q", strings.TrimSpace(line))
+		return "", fmt.Errorf("PROXY v1 头非法: %q", strings.TrimSpace(line))
 	}
 	ip := net.ParseIP(fields[2])
 	if ip == nil {
-		return nil, fmt.Errorf("PROXY 头源 IP 非法: %q", fields[2])
+		return "", fmt.Errorf("PROXY v1 源 IP 非法: %q", fields[2])
 	}
-	real := &net.TCPAddr{IP: ip}
-	if p, err := strconv.Atoi(fields[4]); err == nil && p > 0 && p < 65536 {
-		real.Port = p
+	if p, err := strconv.Atoi(fields[4]); err != nil || p < 1 || p > 65535 {
+		return "", fmt.Errorf("PROXY v1 源端口非法: %q", fields[4])
 	}
-	return &proxyConn{Conn: conn, r: r, real: real}, nil
+	return ip.String(), nil
+}
+
+func parseProxyV2(r *bufio.Reader) (string, error) {
+	header := make([]byte, 16)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return "", fmt.Errorf("PROXY v2 固定头不完整: %w", err)
+	}
+	if !equalBytes(header[:12], proxyV2Magic) || header[12]>>4 != 2 {
+		return "", fmt.Errorf("PROXY v2 签名/版本非法")
+	}
+	cmd := header[12] & 0x0f
+	length := int(binary.BigEndian.Uint16(header[14:16]))
+	if length > proxyV2MaxPayload {
+		return "", fmt.Errorf("PROXY v2 payload 过大: %d", length)
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return "", fmt.Errorf("PROXY v2 payload 不完整: %w", err)
+	}
+	if cmd == 0 { // LOCAL：不采信地址块
+		return "", nil
+	}
+	if cmd != 1 {
+		return "", fmt.Errorf("PROXY v2 command 非法: %d", cmd)
+	}
+	switch header[13] {
+	case 0x11: // AF_INET + STREAM
+		if len(payload) < 12 {
+			return "", fmt.Errorf("PROXY v2 TCP4 地址块过短: %d", len(payload))
+		}
+		return net.IP(payload[:4]).String(), nil
+	case 0x21: // AF_INET6 + STREAM
+		if len(payload) < 36 {
+			return "", fmt.Errorf("PROXY v2 TCP6 地址块过短: %d", len(payload))
+		}
+		return net.IP(payload[:16]).String(), nil
+	default:
+		return "", fmt.Errorf("PROXY v2 不支持 family/protocol=0x%02x", header[13])
+	}
+}
+
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

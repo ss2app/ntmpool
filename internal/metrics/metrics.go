@@ -37,6 +37,17 @@ type payoutKey struct {
 	kind string
 }
 
+type connectionKey struct {
+	coin  string
+	port  int
+	event string
+}
+
+type portKey struct {
+	coin string
+	port int
+}
+
 // Truth 会计层真值快照（每币一份）。来源是 Ledger/Postgres，重启不清零；
 // 金额转浮点仅供监控展示，绝不作结算依据（金额铁律）。
 type Truth struct {
@@ -51,13 +62,32 @@ type Truth struct {
 }
 
 var (
-	mu           sync.Mutex
-	shareCounts  = map[shareKey]uint64{}
-	blockCounts  = map[string]uint64{}     // coin → 爆块提交数（池找到并交节点）
-	payoutCounts = map[payoutKey]uint64{}  // (coin,kind) → 批次广播数
-	payoutAmount = map[payoutKey]float64{} // (coin,kind) → 累计币量（展示用，非结算依据）
-	truthSource  func() map[string]Truth   // coin → 真值；nil = 未接线（如无 DB 单测）
+	mu                  sync.Mutex
+	shareCounts         = map[shareKey]uint64{}
+	blockCounts         = map[string]uint64{}     // coin → 爆块提交数（池找到并交节点）
+	payoutCounts        = map[payoutKey]uint64{}  // (coin,kind) → 批次广播数
+	payoutAmount        = map[payoutKey]float64{} // (coin,kind) → 累计币量（展示用，非结算依据）
+	connectionCounts    = map[connectionKey]uint64{}
+	collapseTransitions = map[portKey]uint64{}
+	collapseState       = map[portKey]bool{}
+	truthSource         func() map[string]Truth // coin → 真值；nil = 未接线（如无 DB 单测）
 )
+
+// ConnectionEvent 记连接 accept/close/reject/proxy_error 等治理事件。
+func ConnectionEvent(coin string, port int, event string) {
+	mu.Lock()
+	connectionCounts[connectionKey{coin: coin, port: port, event: event}]++
+	mu.Unlock()
+}
+
+// CollapseTransition 记端口 IP 身份坍缩降级/恢复，并维护当前状态 gauge。
+func CollapseTransition(coin string, port int, collapsed bool) {
+	mu.Lock()
+	k := portKey{coin: coin, port: port}
+	collapseTransitions[k]++
+	collapseState[k] = collapsed
+	mu.Unlock()
+}
 
 // ShareResult 记一条 share 的终局结果（每个 outcome 唯一计一次）。
 func ShareResult(coin string, outcome core.ShareOutcome) {
@@ -146,6 +176,50 @@ func Render() string {
 	fmt.Fprintln(&sb, "# TYPE ntmpool_payout_coins_total counter")
 	for _, k := range pkeys {
 		fmt.Fprintf(&sb, "ntmpool_payout_coins_total{coin=%q,kind=%q} %g\n", k.coin, k.kind, payoutAmount[k])
+	}
+
+	fmt.Fprintln(&sb, "# HELP ntmpool_stratum_connection_events_total Stratum connection governance events.")
+	fmt.Fprintln(&sb, "# TYPE ntmpool_stratum_connection_events_total counter")
+	ckeys := make([]connectionKey, 0, len(connectionCounts))
+	for k := range connectionCounts {
+		ckeys = append(ckeys, k)
+	}
+	sort.Slice(ckeys, func(i, j int) bool {
+		if ckeys[i].coin != ckeys[j].coin {
+			return ckeys[i].coin < ckeys[j].coin
+		}
+		if ckeys[i].port != ckeys[j].port {
+			return ckeys[i].port < ckeys[j].port
+		}
+		return ckeys[i].event < ckeys[j].event
+	})
+	for _, k := range ckeys {
+		fmt.Fprintf(&sb, "ntmpool_stratum_connection_events_total{coin=%q,port=%q,event=%q} %d\n", k.coin, fmt.Sprint(k.port), k.event, connectionCounts[k])
+	}
+
+	fmt.Fprintln(&sb, "# HELP ntmpool_ip_identity_collapsed Whether a port is in session-only autoban mode.")
+	fmt.Fprintln(&sb, "# TYPE ntmpool_ip_identity_collapsed gauge")
+	pks := make([]portKey, 0, len(collapseState))
+	for k := range collapseState {
+		pks = append(pks, k)
+	}
+	sort.Slice(pks, func(i, j int) bool {
+		if pks[i].coin != pks[j].coin {
+			return pks[i].coin < pks[j].coin
+		}
+		return pks[i].port < pks[j].port
+	})
+	for _, k := range pks {
+		state := 0
+		if collapseState[k] {
+			state = 1
+		}
+		fmt.Fprintf(&sb, "ntmpool_ip_identity_collapsed{coin=%q,port=%q} %d\n", k.coin, fmt.Sprint(k.port), state)
+	}
+	fmt.Fprintln(&sb, "# HELP ntmpool_ip_identity_collapse_transitions_total Identity collapse/recovery transitions.")
+	fmt.Fprintln(&sb, "# TYPE ntmpool_ip_identity_collapse_transitions_total counter")
+	for _, k := range pks {
+		fmt.Fprintf(&sb, "ntmpool_ip_identity_collapse_transitions_total{coin=%q,port=%q} %d\n", k.coin, fmt.Sprint(k.port), collapseTransitions[k])
 	}
 
 	renderTruth(&sb, truth)

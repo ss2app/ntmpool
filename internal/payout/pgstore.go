@@ -45,13 +45,15 @@ func (s *PGBatchStore) Save(b *Batch) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO payment_batches (id, poolid, kind, status, plannedtxid, rawtx, txid, total, created)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::numeric,$9)
+		INSERT INTO payment_batches (id, poolid, kind, status, plannedtxid, rawtx, txid, total,
+		                             fee_policy_version, confirmation_policy_version, created)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::numeric,$9,$10,$11)
 		ON CONFLICT (id) DO UPDATE SET
 		  status=EXCLUDED.status, plannedtxid=EXCLUDED.plannedtxid, rawtx=EXCLUDED.rawtx,
 		  txid=EXCLUDED.txid, updated=now()`,
 		b.ID, s.coin, b.Kind, string(b.Status), nullStr(b.PlannedTxID), nullStr(b.RawTx),
-		nullStr(b.TxID), sum, batchTime(b)); err != nil {
+		nullStr(b.TxID), sum, policyVersion(b.FeePolicyVersion),
+		policyVersion(b.ConfirmationPolicyVersion), batchTime(b)); err != nil {
 		return err
 	}
 	for a, amt := range b.Outputs {
@@ -70,6 +72,17 @@ func (s *PGBatchStore) Save(b *Batch) error {
 
 func (s *PGBatchStore) Load(id int64) (*Batch, bool, error) {
 	b, err := s.loadOne(`WHERE poolid=$1 AND id=$2`, s.coin, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return b, true, nil
+}
+
+func (s *PGBatchStore) FindByTxID(txid string) (*Batch, bool, error) {
+	b, err := s.loadOne(`WHERE poolid=$1 AND (txid=$2 OR plannedtxid=$2) ORDER BY id DESC LIMIT 1`, s.coin, txid)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -102,7 +115,8 @@ func (s *PGBatchStore) MarkConfirmations(batchID, confirmations int64) error {
 	return err
 }
 
-const batchCols = `SELECT id, kind, status, COALESCE(plannedtxid,''), COALESCE(rawtx,''), COALESCE(txid,''), created FROM payment_batches `
+const batchCols = `SELECT id, kind, status, COALESCE(plannedtxid,''), COALESCE(rawtx,''), COALESCE(txid,''),
+                          fee_policy_version, confirmation_policy_version, created FROM payment_batches `
 
 func (s *PGBatchStore) loadOne(where string, args ...any) (*Batch, error) {
 	row := s.h.QueryRow(batchCols+where, args...)
@@ -132,7 +146,8 @@ func scanBatch(h *sql.DB, coin string, r batchScanner) (*Batch, error) {
 	b := &Batch{Outputs: map[string]string{}}
 	var status string
 	var created time.Time
-	if err := r.Scan(&b.ID, &b.Kind, &status, &b.PlannedTxID, &b.RawTx, &b.TxID, &created); err != nil {
+	if err := r.Scan(&b.ID, &b.Kind, &status, &b.PlannedTxID, &b.RawTx, &b.TxID,
+		&b.FeePolicyVersion, &b.ConfirmationPolicyVersion, &created); err != nil {
 		return nil, err
 	}
 	b.Status = core.PaymentStatus(status)
@@ -182,6 +197,13 @@ func sumOutputs(outputs map[string]string) (string, error) {
 func nullStr(s string) any {
 	if s == "" {
 		return nil
+	}
+	return s
+}
+
+func policyVersion(s string) string {
+	if s == "" {
+		return "legacy-unversioned"
 	}
 	return s
 }

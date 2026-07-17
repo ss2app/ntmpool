@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"strings"
 	"sync"
@@ -38,9 +39,11 @@ type Client struct {
 
 // 编译期接口断言：三个角色都必须实现完整。
 var (
-	_ adapter.NodeAdapter   = (*Client)(nil)
-	_ adapter.WalletAdapter = (*Client)(nil)
-	_ adapter.RawTxWallet   = (*Client)(nil)
+	_ adapter.NodeAdapter     = (*Client)(nil)
+	_ adapter.WalletAdapter   = (*Client)(nil)
+	_ adapter.RawTxWallet     = (*Client)(nil)
+	_ adapter.ChainAuditor    = (*Client)(nil)
+	_ adapter.CoinbaseAuditor = (*Client)(nil)
 )
 
 func New(name, url, user, pass string) *Client {
@@ -295,6 +298,212 @@ func (c *Client) TxConfirmations(ctx context.Context, txid string) (int64, error
 		return 0, err
 	}
 	return tx.Confirmations, nil
+}
+
+// walletHistoryEntry 保留 amount 的 JSON 原文，金额转换全程不经过 float64。
+type walletHistoryEntry struct {
+	Address       string          `json:"address"`
+	Category      string          `json:"category"`
+	Amount        json.RawMessage `json:"amount"`
+	TxID          string          `json:"txid"`
+	BlockHash     string          `json:"blockhash"`
+	BlockHeight   uint64          `json:"blockheight"`
+	Confirmations int64           `json:"confirmations"`
+}
+
+const chainAuditInitialLookback = uint64(1000)
+
+// recentWalletHistory 用 listsinceblock 取近期钱包流水。首次审计只回看最近 1000 块，
+// 避免升级时把建库前的历史钱包转账误判为未知出账；后续由审计器传入重叠游标。
+func (c *Client) recentWalletHistory(ctx context.Context, sinceHeight uint64) ([]walletHistoryEntry, error) {
+	start := sinceHeight
+	if start == 0 {
+		var tip uint64
+		if err := c.call(ctx, "getblockcount", []any{}, &tip); err != nil {
+			return nil, fmt.Errorf("getblockcount: %w", err)
+		}
+		if tip > chainAuditInitialLookback {
+			start = tip - chainAuditInitialLookback
+		}
+	} else {
+		// listsinceblock 不含锚块本身，回退一块保证 sinceHeight 是闭区间。
+		start--
+	}
+
+	var blockHash string
+	if err := c.call(ctx, "getblockhash", []any{start}, &blockHash); err != nil {
+		return nil, fmt.Errorf("getblockhash(%d): %w", start, err)
+	}
+	var result struct {
+		Transactions []walletHistoryEntry `json:"transactions"`
+	}
+	if err := c.call(ctx, "listsinceblock", []any{blockHash, 1, true}, &result); err != nil {
+		return nil, fmt.Errorf("listsinceblock: %w", err)
+	}
+	return result.Transactions, nil
+}
+
+// ListRecentOutbound 实现 adapter.ChainAuditor。listsinceblock 对同一 tx 的每个
+// send 明细各返回一行，这里按 txid 合并为一笔，并用 getaddressinfo/validateaddress
+// 标出自有地址，让上层安全排除找零和钱包内部整理。
+func (c *Client) ListRecentOutbound(ctx context.Context, sinceHeight uint64) ([]adapter.OutboundTx, error) {
+	entries, err := c.recentWalletHistory(ctx, sinceHeight)
+	if err != nil {
+		return nil, err
+	}
+	byTx := make(map[string]*adapter.OutboundTx)
+	order := make([]string, 0)
+	owned := make(map[string]bool)
+	ownedKnown := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.Category != "send" || entry.TxID == "" {
+			continue
+		}
+		units, err := jsonAmountToUnits(entry.Amount, c.decimals)
+		if err != nil {
+			return nil, fmt.Errorf("tx %s amount: %w", entry.TxID, err)
+		}
+		if units < 0 {
+			if units == -1<<63 {
+				return nil, fmt.Errorf("tx %s amount 绝对值溢出", entry.TxID)
+			}
+			units = -units
+		}
+		isMine := false
+		if entry.Address != "" {
+			if !ownedKnown[entry.Address] {
+				owned[entry.Address], err = c.isMineAddress(ctx, entry.Address)
+				if err != nil {
+					return nil, fmt.Errorf("tx %s address %s ownership: %w", entry.TxID, entry.Address, err)
+				}
+				ownedKnown[entry.Address] = true
+			}
+			isMine = owned[entry.Address]
+		}
+		tx := byTx[entry.TxID]
+		if tx == nil {
+			tx = &adapter.OutboundTx{TxID: entry.TxID, Confirmations: entry.Confirmations, Height: entry.BlockHeight}
+			byTx[entry.TxID] = tx
+			order = append(order, entry.TxID)
+		}
+		if entry.Confirmations > tx.Confirmations {
+			tx.Confirmations = entry.Confirmations
+		}
+		if entry.BlockHeight > tx.Height {
+			tx.Height = entry.BlockHeight
+		}
+		tx.Outputs = append(tx.Outputs, adapter.OutboundOutput{
+			Address: entry.Address, Amount: units, IsMine: isMine,
+		})
+	}
+	out := make([]adapter.OutboundTx, 0, len(order))
+	for _, txid := range order {
+		out = append(out, *byTx[txid])
+	}
+	return out, nil
+}
+
+// ListRecentCoinbase 实现方向 B：generate/immature 都是池钱包收到的 coinbase；
+// orphan 不构成受控资产，故不纳入 missing round 告警。
+func (c *Client) ListRecentCoinbase(ctx context.Context, sinceHeight uint64) ([]adapter.CoinbaseReceipt, error) {
+	entries, err := c.recentWalletHistory(ctx, sinceHeight)
+	if err != nil {
+		return nil, err
+	}
+	byTx := make(map[string]*adapter.CoinbaseReceipt)
+	order := make([]string, 0)
+	for _, entry := range entries {
+		if (entry.Category != "generate" && entry.Category != "immature") || entry.TxID == "" || entry.BlockHash == "" {
+			continue
+		}
+		units, err := jsonAmountToUnits(entry.Amount, c.decimals)
+		if err != nil {
+			return nil, fmt.Errorf("coinbase tx %s amount: %w", entry.TxID, err)
+		}
+		if units < 0 {
+			return nil, fmt.Errorf("coinbase tx %s 金额为负", entry.TxID)
+		}
+		r := byTx[entry.TxID]
+		if r == nil {
+			r = &adapter.CoinbaseReceipt{TxID: entry.TxID, BlockHash: entry.BlockHash,
+				Confirmations: entry.Confirmations, Height: entry.BlockHeight}
+			byTx[entry.TxID] = r
+			order = append(order, entry.TxID)
+		}
+		if units > 0 && r.Amount > int64(^uint64(0)>>1)-units {
+			return nil, fmt.Errorf("coinbase tx %s 金额溢出", entry.TxID)
+		}
+		r.Amount += units
+	}
+	out := make([]adapter.CoinbaseReceipt, 0, len(order))
+	for _, txid := range order {
+		out = append(out, *byTx[txid])
+	}
+	return out, nil
+}
+
+func (c *Client) isMineAddress(ctx context.Context, address string) (bool, error) {
+	var info struct {
+		IsMine bool `json:"ismine"`
+	}
+	err := c.call(ctx, "getaddressinfo", []any{address}, &info)
+	if code, ok := rpcCode(err); ok && code == -32601 {
+		err = c.call(ctx, "validateaddress", []any{address}, &info)
+	}
+	return info.IsMine, err
+}
+
+// jsonAmountToUnits 把 JSON 十进制金额精确转成最小单位整数；不接受指数形式，
+// 因 Bitcoin RPC 钱包金额契约是定点十进制，异常格式宁可使本轮审计不可用也不猜。
+func jsonAmountToUnits(raw json.RawMessage, decimals int) (int64, error) {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || decimals < 0 {
+		return 0, fmt.Errorf("非法金额 %q", s)
+	}
+	neg := false
+	if s[0] == '-' || s[0] == '+' {
+		neg = s[0] == '-'
+		s = s[1:]
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) > 2 || (parts[0] == "" && (len(parts) == 1 || parts[1] == "")) {
+		return 0, fmt.Errorf("非法金额 %q", string(raw))
+	}
+	whole := parts[0]
+	if whole == "" {
+		whole = "0"
+	}
+	frac := ""
+	if len(parts) == 2 {
+		frac = parts[1]
+	}
+	for _, digits := range []string{whole, frac} {
+		for _, ch := range digits {
+			if ch < '0' || ch > '9' {
+				return 0, fmt.Errorf("非法金额 %q", string(raw))
+			}
+		}
+	}
+	if len(frac) > decimals {
+		for _, ch := range frac[decimals:] {
+			if ch != '0' {
+				return 0, fmt.Errorf("金额精度超过 %d 位: %q", decimals, string(raw))
+			}
+		}
+		frac = frac[:decimals]
+	}
+	frac += strings.Repeat("0", decimals-len(frac))
+	n := new(big.Int)
+	if _, ok := n.SetString(whole+frac, 10); !ok {
+		return 0, fmt.Errorf("非法金额 %q", string(raw))
+	}
+	if neg {
+		n.Neg(n)
+	}
+	if !n.IsInt64() {
+		return 0, fmt.Errorf("金额溢出: %q", string(raw))
+	}
+	return n.Int64(), nil
 }
 
 // ---- RawTxWallet（拆步打款：崩溃恢复零歧义，docs/05 场景 A）----

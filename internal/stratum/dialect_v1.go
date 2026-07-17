@@ -142,11 +142,13 @@ type v1Conn struct {
 	subscribed bool
 	lastJobID  string
 	ab         *autoBan
+	guard      *connectionGuard
 
 	seen sync.Map // jobid:en2:ntime:nonce → 去重
 }
 
 func (d *V1Dialect) Serve(ctx context.Context, conn net.Conn, port config.PortConfig) error {
+	port = config.WithPortDefaults(port)
 	seq := d.connSeq.Add(1)
 	// extranonce1：4 字节，高位放 connId 段，保证每连接 nonce 空间不相交
 	en1 := make([]byte, 4)
@@ -169,30 +171,22 @@ func (d *V1Dialect) Serve(ctx context.Context, conn net.Conn, port config.PortCo
 		port:        port,
 		extraNonce1: en1,
 		vd:          vardiff.New(vcfg, time.Now()),
-		remoteIP:    remoteHost(conn),
+		remoteIP:    verifiedClientIP(conn),
+		guard:       newConnectionGuard(port),
 	}
-	c.ab = &autoBan{banner: d.banner, ip: c.remoteIP}
+	c.ab = newAutoBan(d.banner, conn, d.coinID, port)
 
 	d.conns.Store(c, struct{}{})
 	defer d.conns.Delete(c)
 
-	sc := bufio.NewScanner(conn)
-	sc.Buffer(make([]byte, 0, 4096), 64*1024) // 抗超大行（协议层洪水防护）
-	lines := make(chan string, 16)
-	go func() {
-		defer close(lines)
-		for sc.Scan() {
-			select {
-			case lines <- sc.Text():
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	lines := scanLines(ctx, conn, port.MessageMaxBytes)
 
 	// 看门狗：授权后若长时间无任何数据往来则断开（半死连接，pitfall C11）
 	idle := time.NewTimer(2 * time.Minute)
 	defer idle.Stop()
+	handshake := time.NewTimer(port.HandshakeTimeout())
+	defer handshake.Stop()
+	authorizeDeadlineArmed := false
 
 	for {
 		select {
@@ -200,13 +194,22 @@ func (d *V1Dialect) Serve(ctx context.Context, conn net.Conn, port config.PortCo
 			return nil
 		case <-idle.C:
 			return fmt.Errorf("[%s] 连接空闲超时 %s", d.coinID, c.remoteIP)
-		case line, ok := <-lines:
+		case <-handshake.C:
+			return fmt.Errorf("[%s] 握手/authorize 超时 verified_client_ip=%q", d.coinID, c.remoteIP)
+		case frame, ok := <-lines:
 			if !ok {
 				return nil // 对端关闭
 			}
+			if frame.err != nil {
+				return fmt.Errorf("[%s] 消息读取失败: %w", d.coinID, frame.err)
+			}
+			line := frame.text
 			idle.Reset(2 * time.Minute)
 			if strings.TrimSpace(line) == "" {
 				continue
+			}
+			if err := c.guard.observe(line, c.authorized); err != nil {
+				return fmt.Errorf("[%s] 分级校验拒绝: %w", d.coinID, err)
 			}
 			var msg rpcMsg
 			if err := json.Unmarshal([]byte(line), &msg); err != nil {
@@ -214,6 +217,17 @@ func (d *V1Dialect) Serve(ctx context.Context, conn net.Conn, port config.PortCo
 			}
 			if err := c.dispatch(ctx, &msg); err != nil {
 				return err
+			}
+			if c.authorized {
+				if !handshake.Stop() {
+					select {
+					case <-handshake.C:
+					default:
+					}
+				}
+			} else if c.subscribed && !authorizeDeadlineArmed {
+				resetTimer(handshake, port.AuthorizeTimeout())
+				authorizeDeadlineArmed = true
 			}
 		}
 	}
@@ -307,12 +321,18 @@ func (c *v1Conn) onAuthorize(msg *rpcMsg) error {
 
 func (c *v1Conn) onSubmit(ctx context.Context, msg *rpcMsg) error {
 	if !c.authorized {
+		if err := c.guard.unauthorized("submit"); err != nil {
+			return err
+		}
 		return c.reply(msg.ID, nil, stratumErr(24, "Unauthorized worker"))
 	}
 	// params = [worker, jobID, en2, ntime, nonce, (version_bits)]
 	var p []string
 	if err := json.Unmarshal(msg.Params, &p); err != nil || len(p) < 5 {
 		return c.rejectSubmit(msg.ID, core.OutcomeMalformed, stratumErr(20, "Malformed submit"))
+	}
+	if _, ok := c.d.handler.Registry().Get(p[1]); !ok {
+		return c.rejectSubmit(msg.ID, core.OutcomeStale, stratumErr(21, "Job not found (stale)"))
 	}
 	en2, err1 := hex.DecodeString(p[2])
 	ntime, err2 := parseHexU32(p[3])
@@ -345,7 +365,12 @@ func (c *v1Conn) onSubmit(ctx context.Context, msg *rpcMsg) error {
 		RequiredDiff: c.vd.Current(),
 		Solo:         c.port.Mode == "solo",
 	}
+	release, ok := acquirePowSlot(ctx, c.d.coinID, c.port)
+	if !ok {
+		return c.reply(msg.ID, nil, stratumErr(20, "Server busy (verification queue full)"))
+	}
 	res := c.d.handler.HandleSubmit(ctx, sub)
+	release()
 
 	switch res.Outcome {
 	case core.OutcomeAccepted, core.OutcomeBlock:

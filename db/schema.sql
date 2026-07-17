@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS blocks (
 );
 -- 老库迁移（幂等）：v2026-07-11 midstate 直付块（coinbase 直付，docs/07 §6）标记。
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS direct BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_blocks_pool_txdata ON blocks(poolid, transactionconfirmationdata);
 
 CREATE TABLE IF NOT EXISTS balances (
     poolid       TEXT        NOT NULL,
@@ -124,9 +125,18 @@ CREATE TABLE IF NOT EXISTS payment_batches (
     rawtx        TEXT        NULL,           -- 已签名原始交易：恢复时可原样重播（同 txid 天然幂等防双花）
     txid         TEXT        NULL,           -- 实际广播确认的 txid（正常 == plannedtxid）
     total        NUMERIC NOT NULL,
+    fee_policy_version TEXT NOT NULL DEFAULT 'legacy-unversioned', -- 创建时费率+取整策略快照版本
+    confirmation_policy_version TEXT NOT NULL DEFAULT 'legacy-unversioned', -- 创建时成熟/终态确认策略版本
     created      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 老库迁移（幂等）：B3 最小闭环。历史行无法可靠反推，诚实标为 legacy-unversioned。
+ALTER TABLE payment_batches ADD COLUMN IF NOT EXISTS fee_policy_version TEXT NOT NULL DEFAULT 'legacy-unversioned';
+ALTER TABLE payment_batches ADD COLUMN IF NOT EXISTS confirmation_policy_version TEXT NOT NULL DEFAULT 'legacy-unversioned';
+CREATE INDEX IF NOT EXISTS idx_payment_batches_pool_txid ON payment_batches(poolid, txid) WHERE txid IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_payment_batches_pool_plannedtxid ON payment_batches(poolid, plannedtxid) WHERE plannedtxid IS NOT NULL;
+-- TODO(B3): shares/blocks/block_credits 的 settlement/fee/rounding policy 版本需配套
+-- 不可变 policy registry 后再迁移，避免仅加空列却让历史记录看似已版本化。
 
 -- 矿工自助设置（-p mp=21 密码绑定，docs/01 R5）
 CREATE TABLE IF NOT EXISTS miner_settings (

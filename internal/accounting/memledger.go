@@ -498,6 +498,17 @@ func (l *MemLedger) Blocks(_ context.Context, _ string, offset, limit int) ([]co
 	return out, total, nil
 }
 
+func (l *MemLedger) HasBlockHash(_ context.Context, _, blockHash string) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, mb := range l.blocks {
+		if mb.b.Hash == blockHash {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // MinerSummary 单矿工摘要。余额/已付/欠款全为 0 且无记录 = ok=false。
 func (l *MemLedger) MinerSummary(_ context.Context, _ string, addr string) (MinerSummary, bool, error) {
 	l.mu.Lock()
