@@ -56,7 +56,7 @@ func buildVelkarFamily(_ context.Context, cfg config.CoinConfig, _ int, inst *In
 
 	return &familyParts{
 		status:     node,
-		hashps:     nil, // 第一期不报全网算力（velkar 有 estimate RPC，后续接；绝不反推 pitfall C7）
+		hashps:     node, // 节点原生 estimateNetworkHashesPerSecond 真值口径（2026-07-17 接通）
 		classifier: node,
 		wallet:     wallet, // 配了 walletd 则自动打款（Kaspa UTXO 签名走 walletd），否则 nil=accrue-only
 		jobs:       jm,

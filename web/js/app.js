@@ -450,6 +450,7 @@
           </div>
           ${links}
         </div>
+        ${meta && (lang === 'zh' ? meta.noticeZh : meta.noticeEn) ? `<div class="err-box" style="margin:14px 0 4px">${esc(lang === 'zh' ? meta.noticeZh : meta.noticeEn)}</div>` : ''}
         <div class="tabs" id="tabs">
           ${TABS.map((tb) => `<button data-tab="${tb}" class="${tb === state.tab ? 'active' : ''}">${esc(t('tab_' + tb))}</button>`).join('')}
         </div>
@@ -775,7 +776,7 @@
       <div class="panel">
         <h3>${esc(t('conn_payout_t'))}</h3>
         <div class="note" style="font-size:14px;color:var(--ink-2)">
-          <ul style="margin:6px 0;padding-left:20px">
+          ${meta.noPayout ? `<b>${esc(zh ? (meta.noticeZh || '') : (meta.noticeEn || ''))}</b>` : `<ul style="margin:6px 0;padding-left:20px">
             <li>${zh ? `分配方式 <b>${esc(pay.payoutScheme || 'PPLNS')}</b>，池费率 <b>${pool ? esc(String(pool.poolFeePercent)) : '—'}%</b>` : `Reward scheme <b>${esc(pay.payoutScheme || 'PPLNS')}</b>, pool fee <b>${pool ? esc(String(pool.poolFeePercent)) : '—'}%</b>`}</li>
             ${pool && pool.soloFeePercent != null ? `<li>${zh ? `SOLO 端口费率 <b>${esc(String(pool.soloFeePercent))}%</b>（爆块奖励扣费后全归爆块者本人）` : `SOLO port fee <b>${esc(String(pool.soloFeePercent))}%</b> (block reward minus fee goes entirely to the finder)`}</li>` : ''}
             ${meta.directPayout
@@ -784,7 +785,7 @@
               : `<li>${zh ? `起付额 <b>${esc(amtText(pay.minimumPayment, meta))}</b>，达到后自动打款到你的挖矿地址` : `Minimum payout <b>${esc(amtText(pay.minimumPayment, meta))}</b>, paid automatically to your mining address`}</li>
             <li>${zh ? `爆块 <b>${meta.confirmations || 10} 个确认</b>后计入余额` : `Blocks credit after <b>${meta.confirmations || 10} confirmations</b>`}</li>`}
             <li>${zh ? `NTMminer 当前 <b>0% 开发者抽水</b>` : `NTMminer currently has a <b>0% dev fee</b>`}</li>
-          </ul>
+          </ul>`}
         </div>
       </div>`;
 

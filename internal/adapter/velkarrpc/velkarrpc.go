@@ -49,8 +49,9 @@ type Adapter struct {
 }
 
 var (
-	_ adapter.NodeAdapter = (*Adapter)(nil)
-	_ adapter.Notifier    = (*velkarNotifier)(nil)
+	_ adapter.NodeAdapter  = (*Adapter)(nil)
+	_ adapter.Notifier     = (*velkarNotifier)(nil)
+	_ adapter.HashPSSource = (*Adapter)(nil)
 )
 
 // New 建 velkar 适配器并立即启动 gRPC 流（供 GetTemplate/SubmitBlock/Notifier 复用同一条流）。
@@ -97,6 +98,17 @@ func (a *Adapter) Status(ctx context.Context) (adapter.ChainStatus, error) {
 		Synced:    true,
 		Connected: true,
 	}, nil
+}
+
+// NetworkHashPS 全网算力真值口径 = 节点原生 estimateNetworkHashesPerSecond
+//（按最近 windowSize 个块的难度×实际时间窗计算，等价 bitcoin 系 getnetworkhashps；
+// 池端绝不自己反推）。startHash 传空 = 从 virtual(sink) 起算；window 1000 块 ≈ 2.8h。
+func (a *Adapter) NetworkHashPS(ctx context.Context) (float64, error) {
+	hps, err := a.c.estimateNetworkHashesPerSecond(ctx, 1000)
+	if err != nil {
+		return 0, err
+	}
+	return float64(hps), nil
 }
 
 // GetTemplate 拉最新模板：节点给完整 RpcBlock（含 coinbase），池取 header 算 pre_pow_hash + block target。

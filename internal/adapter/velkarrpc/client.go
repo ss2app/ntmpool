@@ -304,6 +304,24 @@ func (c *client) getDagInfo(ctx context.Context) (*protowire.GetBlockDagInfoResp
 	return resp, nil
 }
 
+func (c *client) estimateNetworkHashesPerSecond(ctx context.Context, windowSize uint32) (uint64, error) {
+	req := &protowire.VelkardMessage{Payload: &protowire.VelkardMessage_EstimateNetworkHashesPerSecondRequest{EstimateNetworkHashesPerSecondRequest: &protowire.EstimateNetworkHashesPerSecondRequestMessage{
+		WindowSize: windowSize, // StartHash 留空 = 从 virtual(sink) 起算
+	}}}
+	msg, err := c.call(ctx, req, func(m *protowire.VelkardMessage) bool {
+		_, ok := m.Payload.(*protowire.VelkardMessage_EstimateNetworkHashesPerSecondResponse)
+		return ok
+	})
+	if err != nil {
+		return 0, err
+	}
+	resp := msg.Payload.(*protowire.VelkardMessage_EstimateNetworkHashesPerSecondResponse).EstimateNetworkHashesPerSecondResponse
+	if e := resp.GetError(); e != nil {
+		return 0, fmt.Errorf("[%s] estimateNetworkHashesPerSecond: %s", c.name, e.GetMessage())
+	}
+	return resp.GetNetworkHashesPerSecond(), nil
+}
+
 func (c *client) getTemplate(ctx context.Context, payAddress, extraData string) (*protowire.GetBlockTemplateResponseMessage, error) {
 	req := &protowire.VelkardMessage{Payload: &protowire.VelkardMessage_GetBlockTemplateRequest{GetBlockTemplateRequest: &protowire.GetBlockTemplateRequestMessage{
 		PayAddress: payAddress,
