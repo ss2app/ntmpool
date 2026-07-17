@@ -807,15 +807,17 @@ func (l *PGLedger) Reconcile(ctx context.Context, _ string) (string, error) {
 	if err := l.FlushShares(ctx); err != nil {
 		return "", err
 	}
-	var confirmedStr, feesStr, balStr, debtStr, paidStr string
+	var confirmedStr, feesStr, balStr, debtStr, paidStr, writtenOffStr, manualAdjustmentStr string
 	err := l.h.QueryRowContext(ctx, `
 		SELECT
 		  COALESCE((SELECT SUM(reward)    FROM blocks   WHERE poolid=$1 AND status='confirmed'),0)::text,
 		  COALESCE((SELECT SUM(feeamount) FROM blocks   WHERE poolid=$1 AND status='confirmed'),0)::text,
 		  COALESCE((SELECT SUM(amount)    FROM balances WHERE poolid=$1),0)::text,
 		  COALESCE((SELECT SUM(remaining) FROM debts    WHERE poolid=$1),0)::text,
-		  COALESCE((SELECT -SUM(amount)   FROM balance_changes WHERE poolid=$1 AND usage IN ('payment','payment_refund')),0)::text`,
-		l.coin).Scan(&confirmedStr, &feesStr, &balStr, &debtStr, &paidStr)
+		  COALESCE((SELECT -SUM(amount)   FROM balance_changes WHERE poolid=$1 AND usage IN ('payment','payment_refund')),0)::text,
+		  COALESCE((SELECT SUM(amount) FROM journal_entry WHERE poolid=$1 AND account='orphan:loss'),0)::text,
+		  COALESCE((SELECT SUM(amount) FROM journal_entry WHERE poolid=$1 AND account='manual:adjustment'),0)::text`,
+		l.coin).Scan(&confirmedStr, &feesStr, &balStr, &debtStr, &paidStr, &writtenOffStr, &manualAdjustmentStr)
 	if err != nil {
 		return "", err
 	}
@@ -839,7 +841,17 @@ func (l *PGLedger) Reconcile(ctx context.Context, _ string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	delta := confirmed - paid - bal - fees + debt
+	writtenOff, err := l.parse(writtenOffStr)
+	if err != nil {
+		return "", err
+	}
+	manualAdjustment, err := l.parse(manualAdjustmentStr)
+	if err != nil {
+		return "", err
+	}
+	// 核销会减少 debts，但不会撤销历史多付；orphan:loss 的累计借方额补回该池损失。
+	// 人工 credit/debit 同理以 manual:adjustment 的带符号净额表达外部注入/扣回。
+	delta := confirmed - paid - bal - fees + debt + writtenOff + manualAdjustment
 	j4Delta, err := l.reconcileBalanceStream(ctx)
 	if err != nil {
 		return "", err
@@ -849,9 +861,10 @@ func (l *PGLedger) Reconcile(ctx context.Context, _ string) (string, error) {
 		delta = j4Delta
 	}
 	_, _ = l.h.ExecContext(ctx, `
-		INSERT INTO reconciliations (poolid, confirmed_rewards, total_paid, total_balances, total_fees, in_flight, debts_net, delta)
-		VALUES ($1,$2,$3,$4,$5,0,$6,$7)`,
-		l.coin, confirmedStr, l.toStr(paid), l.toStr(bal), l.toStr(fees), l.toStr(debt), l.toStr(delta))
+		INSERT INTO reconciliations (poolid, confirmed_rewards, total_paid, total_balances, total_fees, in_flight, debts_net, written_off, manual_adjustment, delta)
+		VALUES ($1,$2,$3,$4,$5,0,$6,$7,$8,$9)`,
+		l.coin, confirmedStr, l.toStr(paid), l.toStr(bal), l.toStr(fees), l.toStr(debt),
+		l.toStr(writtenOff), l.toStr(manualAdjustment), l.toStr(delta))
 	return l.toStr(delta), nil
 }
 

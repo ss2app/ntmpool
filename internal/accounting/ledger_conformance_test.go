@@ -175,6 +175,26 @@ func journalBusinessKeyCount(t *testing.T, ctx context.Context, l Ledger, coin, 
 	}
 }
 
+func balanceChangeCount(t *testing.T, ctx context.Context, l Ledger, coin string) int {
+	t.Helper()
+	switch ledger := l.(type) {
+	case *MemLedger:
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		return len(ledger.changes)
+	case *PGLedger:
+		var count int
+		if err := ledger.h.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM balance_changes WHERE poolid=$1`, coin).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	default:
+		t.Fatalf("未覆盖的 Ledger 实现 %T", l)
+		return 0
+	}
+}
+
 func TestJournalBuilderRejectsUnbalanced(t *testing.T) {
 	j := newJournalTx("test", "test:unbalanced", journalPolicyPreRegistry, "")
 	j.leg("block:revenue", "", 1)
@@ -736,6 +756,174 @@ func runLedgerConformance(t *testing.T, mk mkLedger) {
 			t.Fatalf("爆块者不应被虚记余额: %s", v)
 		}
 		assertDelta0(t, ctx, l, coin, "空分账直付块后")
+	})
+
+	t.Run("坏账核销后J3J4与守恒仍为零", func(t *testing.T) {
+		l, coin := mk(t)
+		_ = l.RecordShare(ctx, confShare(coin, "A", time.Now()), 1)
+		b := confBlock(coin, "writeoff-source", "A", "50.00000000", 112, 1, false)
+		_ = l.RecordBlock(ctx, b, "raw")
+		if err := l.ConfirmBlock(ctx, b, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.DeductForPayout(ctx, coin, map[string]string{"A": "40.00000000"}, 112); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.OrphanBlock(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+		changesBefore := balanceChangeCount(t, ctx, l, coin)
+		if err := l.WriteOffDebt(WithConfigAuditID(ctx, "writeoff-audit-1"), coin,
+			"A", "15.00000000", "确认无法追回"); err != nil {
+			t.Fatal(err)
+		}
+		snap, err := l.Snapshot(ctx, coin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snap.DebtsNet != "25.00000000" || snap.Balances["A"] != "0.00000000" {
+			t.Fatalf("部分核销投影错误: debts=%s balance=%s", snap.DebtsNet, snap.Balances["A"])
+		}
+		if count := journalBusinessKeyCount(t, ctx, l, coin, "debtwriteoff:A:writeoff-audit-1"); count != 1 {
+			t.Fatalf("核销 journal 数量=%d", count)
+		}
+		if changesAfter := balanceChangeCount(t, ctx, l, coin); changesAfter != changesBefore {
+			t.Fatalf("坏账核销不得写 balance_changes: before=%d after=%d", changesBefore, changesAfter)
+		}
+		mismatches, checked, err := l.JournalShadowAudit(ctx, coin)
+		if err != nil || !checked || len(mismatches) != 0 {
+			t.Fatalf("核销后 J3: checked=%t err=%v mismatch=%+v", checked, err, mismatches)
+		}
+		assertDelta0(t, ctx, l, coin, "部分坏账核销后")
+		if err := l.WriteOffDebt(WithConfigAuditID(ctx, "writeoff-audit-2"), coin,
+			"A", "26.00000000", "超额应拒"); err == nil {
+			t.Fatal("超过 remaining 的核销必须拒绝")
+		}
+		snap, _ = l.Snapshot(ctx, coin)
+		if snap.DebtsNet != "25.00000000" {
+			t.Fatalf("超额核销不得部分执行: %s", snap.DebtsNet)
+		}
+		if pg, ok := l.(*PGLedger); ok {
+			var writtenOff string
+			if err := pg.h.QueryRowContext(ctx, `
+				SELECT written_off::text FROM reconciliations
+				WHERE poolid=$1 ORDER BY id DESC LIMIT 1`, coin).Scan(&writtenOff); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := pg.parse(writtenOff); err != nil || got != 15*100_000_000 {
+				t.Fatalf("reconciliations written_off=%s err=%v", writtenOff, err)
+			}
+		}
+	})
+
+	t.Run("人工调账保持J3J4且禁止负余额", func(t *testing.T) {
+		l, coin := mk(t)
+		if err := l.ManualAdjust(WithConfigAuditID(ctx, "manual-credit-1"), coin,
+			"A", "10.00000000", true, "人工补发"); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.ManualAdjust(WithConfigAuditID(ctx, "manual-debit-1"), coin,
+			"A", "3.00000000", false, "人工冲回"); err != nil {
+			t.Fatal(err)
+		}
+		snap, err := l.Snapshot(ctx, coin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snap.Balances["A"] != "7.00000000" {
+			t.Fatalf("人工调账余额=%s", snap.Balances["A"])
+		}
+		switch ledger := l.(type) {
+		case *MemLedger:
+			ledger.mu.Lock()
+			if len(ledger.changes) != 2 || ledger.changes[0].usage != "manual_credit" ||
+				ledger.changes[0].tag != "admin:manual-credit-1" || ledger.changes[0].delta != 10*100_000_000 ||
+				ledger.changes[1].usage != "manual_debit" || ledger.changes[1].tag != "admin:manual-debit-1" ||
+				ledger.changes[1].delta != -3*100_000_000 {
+				t.Errorf("Mem 人工流水语义错误: %+v", ledger.changes)
+			}
+			ledger.mu.Unlock()
+		case *PGLedger:
+			var count int
+			if err := ledger.h.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM balance_changes WHERE poolid=$1 AND address='A' AND
+				 ((usage='manual_credit' AND amount=10 AND tags @> ARRAY['admin:manual-credit-1']) OR
+				  (usage='manual_debit' AND amount=-3 AND tags @> ARRAY['admin:manual-debit-1']))`, coin).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 2 {
+				t.Fatalf("PG 人工流水语义匹配数=%d", count)
+			}
+		}
+		if err := l.ManualAdjust(WithConfigAuditID(ctx, "manual-debit-2"), coin,
+			"A", "8.00000000", false, "超额扣减"); err == nil {
+			t.Fatal("人工 debit 超余额必须拒绝")
+		}
+		snap, _ = l.Snapshot(ctx, coin)
+		if snap.Balances["A"] != "7.00000000" {
+			t.Fatalf("失败 debit 不得改余额: %s", snap.Balances["A"])
+		}
+		assertDelta0(t, ctx, l, coin, "人工 credit/debit 后")
+		mismatches, checked, err := l.JournalShadowAudit(ctx, coin)
+		if err != nil || !checked || len(mismatches) != 0 {
+			t.Fatalf("人工调账后 J3: checked=%t err=%v mismatch=%+v", checked, err, mismatches)
+		}
+		if pg, ok := l.(*PGLedger); ok {
+			var manual string
+			if err := pg.h.QueryRowContext(ctx, `
+				SELECT manual_adjustment::text FROM reconciliations
+				WHERE poolid=$1 ORDER BY id DESC LIMIT 1`, coin).Scan(&manual); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := pg.parse(manual); err != nil || got != 7*100_000_000 {
+				t.Fatalf("reconciliations manual_adjustment=%s err=%v", manual, err)
+			}
+		}
+	})
+
+	t.Run("事故登记了结不触碰投影", func(t *testing.T) {
+		l, coin := mk(t)
+		before, err := l.Snapshot(ctx, coin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		changesBefore := balanceChangeCount(t, ctx, l, coin)
+		if err := l.RecordIncident(WithConfigAuditID(ctx, "incident-record-audit"), coin,
+			"incident-1", "wrong_address", "recipient-X", "10.00000000", "打错地址"); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.RecordIncident(ctx, coin, "incident-1", "wrong_address",
+			"recipient-X", "10.00000000", "重复"); err == nil {
+			t.Fatal("重复 incident id 必须拒绝")
+		}
+		if err := l.ResolveIncident(WithConfigAuditID(ctx, "incident-recover-audit"), coin,
+			"incident-1", "recovered", "4.00000000", "追回一部分"); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.ResolveIncident(WithConfigAuditID(ctx, "incident-over-audit"), coin,
+			"incident-1", "writeoff", "7.00000000", "超额了结"); err == nil {
+			t.Fatal("超过未了结余额必须拒绝")
+		}
+		if err := l.ResolveIncident(WithConfigAuditID(ctx, "incident-writeoff-audit"), coin,
+			"incident-1", "writeoff", "6.00000000", "剩余认赔"); err != nil {
+			t.Fatal(err)
+		}
+		after, err := l.Snapshot(ctx, coin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after.Balances) != len(before.Balances) || after.DebtsNet != before.DebtsNet ||
+			after.TotalPaid != before.TotalPaid || after.TotalFees != before.TotalFees {
+			t.Fatalf("事故 journal 不得改投影: before=%+v after=%+v", before, after)
+		}
+		if changesAfter := balanceChangeCount(t, ctx, l, coin); changesAfter != changesBefore {
+			t.Fatalf("事故登记/了结不得写 balance_changes: before=%d after=%d", changesBefore, changesAfter)
+		}
+		assertDelta0(t, ctx, l, coin, "事故登记与了结后")
+		mismatches, checked, err := l.JournalShadowAudit(ctx, coin)
+		if err != nil || !checked || len(mismatches) != 0 {
+			t.Fatalf("事故操作后 J3: checked=%t err=%v mismatch=%+v", checked, err, mismatches)
+		}
 	})
 
 	t.Run("opening幂等", func(t *testing.T) {

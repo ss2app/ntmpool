@@ -488,6 +488,24 @@ func (inst *Instance) FeeCollect(ctx context.Context, amount string) (string, er
 	return inst.engine.FeeCollect(ctx, inst.Cfg().FeeAddress, amount)
 }
 
+// WriteOffDebt / ManualAdjust / RecordIncident / ResolveIncident 是管理面到账本的薄穿透；
+// 所有金额校验、事务和复式分录语义都由 Ledger 双实现统一负责。
+func (inst *Instance) WriteOffDebt(ctx context.Context, address, amount, reason string) error {
+	return inst.ledger.WriteOffDebt(ctx, inst.Cfg().ID, address, amount, reason)
+}
+
+func (inst *Instance) ManualAdjust(ctx context.Context, address, amount string, credit bool, reason string) error {
+	return inst.ledger.ManualAdjust(ctx, inst.Cfg().ID, address, amount, credit, reason)
+}
+
+func (inst *Instance) RecordIncident(ctx context.Context, id, kind, recipient, amount, memo string) error {
+	return inst.ledger.RecordIncident(ctx, inst.Cfg().ID, id, kind, recipient, amount, memo)
+}
+
+func (inst *Instance) ResolveIncident(ctx context.Context, id, outcome, amount, memo string) error {
+	return inst.ledger.ResolveIncident(ctx, inst.Cfg().ID, id, outcome, amount, memo)
+}
+
 // UncollectedFees 未归集手续费（计提总费 − 已归集批次，含在途）。metrics/后台展示用。
 func (inst *Instance) UncollectedFees(ctx context.Context) (string, error) {
 	return inst.engine.UncollectedFees(ctx)

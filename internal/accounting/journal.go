@@ -87,8 +87,17 @@ func (j *journalBuilder) writeTx(ctx context.Context, tx *sql.Tx, l *PGLedger) e
 	return nil
 }
 
+// writeJournalHard 供「journal 本身是承重结构」的操作使用（B2：坏账核销/人工调账/
+// 事故登记与了结）：这些操作要么其投影效果被守恒式从 journal 取数抵消（written_off/
+// manual_adjustment），要么 journal 就是操作本体（incident）——journal 写不进去时**必须
+// 整笔失败回滚**，绝不能像影子事件那样跳过（跳过=守恒式误冻结或事故静默丢失）。
+func (l *PGLedger) writeJournalHard(ctx context.Context, tx *sql.Tx, j *journalBuilder) error {
+	return j.writeTx(ctx, tx, l)
+}
+
 // writeJournalShadow 在业务事务末尾追加 journal。校验或写库失败只发 P0 日志；
 // PostgreSQL 语句失败会污染事务，因此数据库写入始终包在 SAVEPOINT 中。
+// ⚠只用于影子事件（confirm/orphan/deduct/refund/direct）；B2 操作必须用 writeJournalHard。
 func (l *PGLedger) writeJournalShadow(ctx context.Context, tx *sql.Tx, j *journalBuilder) {
 	if err := j.validate(); err != nil {
 		log.Printf("[P0] [会计 %s] journal_write_skipped business_key=%s kind=%s err=%v",

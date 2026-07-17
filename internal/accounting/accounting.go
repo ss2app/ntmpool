@@ -9,7 +9,8 @@
 //
 // 不变量（Reconcile 每周期校验，破则冻结打款+告警）：
 //
-//	Σ已确认块奖励 = Σ已付 + Σ矿工余额 + Σ手续费 + Σ在途打款 + Σ债务净额
+//	Σ已确认块奖励 + Σ债务净额 + Σ坏账核销 + Σ人工调账对手额
+//	= Σ已付 + Σ矿工余额 + Σ手续费 + Σ在途打款
 //
 // 铁律：
 //   - 孤块判定用主链块 hash 逐字节比对（打款引擎侧，不是比高度）。
@@ -57,6 +58,16 @@ type Ledger interface {
 	DeductForPayout(ctx context.Context, coin string, outputs map[string]string, batchID int64) error
 	// RefundPayout 打款失败退回余额（仅当确证未广播）。
 	RefundPayout(ctx context.Context, coin string, outputs map[string]string, batchID int64) error
+
+	// WriteOffDebt 核销确认无法追回的孤块债务。它只减少 debts 投影，不改矿工余额。
+	WriteOffDebt(ctx context.Context, coin, address string, amount string, reason string) error
+	// ManualAdjust 是人工调整矿工余额的唯一合法通道；余额与 balance_changes 同步变更，
+	// journal 始终带 manual:adjustment 对手科目，禁止裸改单边余额。
+	ManualAdjust(ctx context.Context, coin, address string, amount string, credit bool, reason string) error
+	// RecordIncident / ResolveIncident 登记与了结错误打款事故，只写复式 journal，
+	// 绝不修改矿工余额或 debts 投影。
+	RecordIncident(ctx context.Context, coin, id, kind, recipient, amount, memo string) error
+	ResolveIncident(ctx context.Context, coin, id, outcome, amount, memo string) error
 
 	// DirectPlanInputs 直付分账（midstate coinbase 直付，docs/07 §6）的计划输入：
 	// PPLNS 窗口快照（windowWeight = pplnsN × 网络难度，与 ConfirmBlock 同口径）+

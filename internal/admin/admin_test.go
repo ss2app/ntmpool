@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/scashcc/ntmpool/internal/accounting"
 	"github.com/scashcc/ntmpool/internal/banlist"
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/core"
@@ -18,13 +20,17 @@ import (
 
 // fakeCoin 记录调用的 CoinControl 假实现。
 type fakeCoin struct {
-	cfg      config.CoinConfig
-	frozen   bool
-	unfroze  bool
-	ranPay   bool
-	delta    string
-	sweepTx  string
-	collects []string
+	cfg                       config.CoinConfig
+	frozen                    bool
+	unfroze                   bool
+	ranPay                    bool
+	delta                     string
+	sweepTx                   string
+	collects                  []string
+	ledger                    accounting.Ledger
+	ledgerCalls               []string
+	auditPath                 string
+	auditBeforeAllLedgerCalls bool
 }
 
 func (f *fakeCoin) Cfg() config.CoinConfig { return f.cfg }
@@ -73,8 +79,31 @@ func (f *fakeCoin) FeeCollect(_ context.Context, amount string) (string, error) 
 	f.collects = append(f.collects, amount)
 	return "collecttx", nil
 }
+func (f *fakeCoin) noteLedgerCall(name string) {
+	f.ledgerCalls = append(f.ledgerCalls, name)
+	b, err := os.ReadFile(f.auditPath)
+	if err != nil || len(strings.Split(strings.TrimSpace(string(b)), "\n")) != len(f.ledgerCalls) {
+		f.auditBeforeAllLedgerCalls = false
+	}
+}
+func (f *fakeCoin) WriteOffDebt(ctx context.Context, address, amount, reason string) error {
+	f.noteLedgerCall("debt.writeoff")
+	return f.ledger.WriteOffDebt(ctx, f.cfg.ID, address, amount, reason)
+}
+func (f *fakeCoin) ManualAdjust(ctx context.Context, address, amount string, credit bool, reason string) error {
+	f.noteLedgerCall("balance.adjust")
+	return f.ledger.ManualAdjust(ctx, f.cfg.ID, address, amount, credit, reason)
+}
+func (f *fakeCoin) RecordIncident(ctx context.Context, id, kind, recipient, amount, memo string) error {
+	f.noteLedgerCall("incident.record")
+	return f.ledger.RecordIncident(ctx, f.cfg.ID, id, kind, recipient, amount, memo)
+}
+func (f *fakeCoin) ResolveIncident(ctx context.Context, id, outcome, amount, memo string) error {
+	f.noteLedgerCall("incident.resolve")
+	return f.ledger.ResolveIncident(ctx, f.cfg.ID, id, outcome, amount, memo)
+}
 func (f *fakeCoin) UncollectedFees(context.Context) (string, error) { return "1.50000000", nil }
-func (f *fakeCoin) Connections() int                            { return 3 }
+func (f *fakeCoin) Connections() int                                { return 3 }
 func (f *fakeCoin) Network() core.NetworkSnapshot                   { return core.NetworkSnapshot{Height: 42} }
 
 type strErr string
@@ -96,6 +125,18 @@ func newTestAdmin(t *testing.T) (*Server, *fakeCoin, string) {
 		},
 		delta: "0.00000000",
 	}
+	ledger := accounting.NewMemLedger(8, 2)
+	ctx := context.Background()
+	_ = ledger.RecordShare(ctx, core.Share{Coin: "tst", Address: "debtor", At: time.Now()}, 1)
+	b := core.FoundBlock{Coin: "tst", Hash: "admin-debt-source", Finder: "debtor",
+		Reward: "10.00000000", NetDiff: 1, Status: core.BlockPending, FoundAt: time.Now()}
+	_ = ledger.RecordBlock(ctx, b, "raw")
+	_ = ledger.ConfirmBlock(ctx, b, 0)
+	_ = ledger.DeductForPayout(ctx, "tst", map[string]string{"debtor": "8.00000000"}, 991)
+	_ = ledger.OrphanBlock(ctx, b)
+	fc.ledger = ledger
+	fc.auditPath = filepath.Join(dir, "audit.jsonl")
+	fc.auditBeforeAllLedgerCalls = true
 	bans, _ := banlist.New(filepath.Join(dir, "bans.json"))
 	settings, _ := minersettings.New(filepath.Join(dir, "settings.json"), []byte("salt"))
 	s := New("test", "pool1", "tok123",
@@ -268,6 +309,110 @@ func TestOpsEndpoints(t *testing.T) {
 	if rec := req(t, h, "PATCH", "/admin/v1/coins/tst/newconns", "tok123",
 		`{"enabled":false}`); rec.Code != 200 || fc.cfg.NewConnsEnabled {
 		t.Fatalf("newconns: %d", rec.Code)
+	}
+}
+
+func TestLedgerOperationEndpointsAuditAndEndToEnd(t *testing.T) {
+	s, fc, dir := newTestAdmin(t)
+	h := s.Handler()
+	if rec := req(t, h, "POST", "/admin/v1/coins/tst/debt/writeoff", "wrong",
+		`{"address":"debtor","amount":"1.00000000","reason":"坏账"}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("新端点必须鉴权: %d", rec.Code)
+	}
+	if rec := req(t, h, "POST", "/admin/v1/coins/tst/debt/writeoff", "tok123",
+		`{"address":"debtor","amount":"1e2","reason":"坏账"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("浮点/指数金额必须 400: %d", rec.Code)
+	}
+	if len(fc.ledgerCalls) != 0 {
+		t.Fatalf("非法参数不得调用 Ledger: %v", fc.ledgerCalls)
+	}
+
+	requests := []struct {
+		path, body string
+	}{
+		{"/admin/v1/coins/tst/debt/writeoff", `{"address":"debtor","amount":"2.00000000","reason":"确认无法追回"}`},
+		{"/admin/v1/coins/tst/balance/adjust", `{"address":"admin-miner","amount":"3.00000000","credit":true,"reason":"人工补发"}`},
+		{"/admin/v1/coins/tst/balance/adjust", `{"address":"admin-miner","amount":"1.00000000","credit":false,"reason":"人工冲回"}`},
+		{"/admin/v1/coins/tst/incident/record", `{"id":"admin-incident-1","kind":"overpay","recipient":"recipient-X","amount":"5.00000000","memo":"重复打款"}`},
+		{"/admin/v1/coins/tst/incident/resolve", `{"id":"admin-incident-1","outcome":"recovered","amount":"2.00000000","memo":"追回部分"}`},
+	}
+	for _, item := range requests {
+		rec := req(t, h, "POST", item.path, "tok123", item.body)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"auditId"`) {
+			t.Fatalf("%s: code=%d body=%s", item.path, rec.Code, rec.Body.String())
+		}
+	}
+	if len(fc.ledgerCalls) != len(requests) {
+		t.Fatalf("端到端 Ledger 调用=%v", fc.ledgerCalls)
+	}
+	if !fc.auditBeforeAllLedgerCalls {
+		t.Fatal("每笔账本调用发生前必须已写入对应 config_audit")
+	}
+	snap, err := fc.ledger.Snapshot(context.Background(), "tst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.DebtsNet != "6.00000000" || snap.Balances["admin-miner"] != "2.00000000" {
+		t.Fatalf("端到端投影错误: debts=%s balance=%s", snap.DebtsNet, snap.Balances["admin-miner"])
+	}
+	if delta, err := fc.ledger.Reconcile(context.Background(), "tst"); err != nil || delta != "0.00000000" {
+		t.Fatalf("端点操作后守恒: delta=%s err=%v", delta, err)
+	}
+	if mismatch, checked, err := fc.ledger.JournalShadowAudit(context.Background(), "tst"); err != nil || !checked || len(mismatch) != 0 {
+		t.Fatalf("端点操作后 J3: checked=%t err=%v mismatch=%+v", checked, err, mismatch)
+	}
+
+	b, err := os.ReadFile(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != len(requests) {
+		t.Fatalf("每次有效调用应先落一条 config_audit: got=%d want=%d\n%s", len(lines), len(requests), b)
+	}
+	seen := map[string]struct{}{}
+	previousID := ""
+	for _, line := range lines {
+		var rec auditRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatal(err)
+		}
+		if rec.ID == "" || rec.Actor != "admin-token" || rec.Coin != "tst" || rec.Field == "" ||
+			!strings.Contains(rec.NewValue, rec.ID) {
+			t.Fatalf("config_audit 字段不完整: %+v", rec)
+		}
+		if _, duplicate := seen[rec.ID]; duplicate {
+			t.Fatalf("config_audit id 重复: %s", rec.ID)
+		}
+		if previousID != "" && rec.ID <= previousID {
+			t.Fatalf("config_audit id 非单调递增: previous=%s current=%s", previousID, rec.ID)
+		}
+		seen[rec.ID] = struct{}{}
+		previousID = rec.ID
+	}
+}
+
+func TestLedgerOperationEndpointValidation(t *testing.T) {
+	s, fc, dir := newTestAdmin(t)
+	h := s.Handler()
+	cases := []struct {
+		path, body string
+	}{
+		{"/admin/v1/coins/tst/debt/writeoff", `{"address":"debtor","amount":"1.00000000","reason":" "}`},
+		{"/admin/v1/coins/tst/balance/adjust", `{"address":"A","amount":"1.00000000","reason":"缺 credit"}`},
+		{"/admin/v1/coins/tst/incident/record", `{"id":"x","kind":"other","recipient":"R","amount":"1.00000000","memo":"x"}`},
+		{"/admin/v1/coins/tst/incident/resolve", `{"id":"x","outcome":"writeoff","amount":"0","memo":"x"}`},
+	}
+	for _, tc := range cases {
+		if rec := req(t, h, "POST", tc.path, "tok123", tc.body); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s 应 400，得到 %d", tc.path, rec.Code)
+		}
+	}
+	if len(fc.ledgerCalls) != 0 {
+		t.Fatalf("参数校验失败不得调用 Ledger: %v", fc.ledgerCalls)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "audit.jsonl")); err == nil && len(b) != 0 {
+		t.Fatalf("未进入业务的非法请求不应产生操作审计: %s", b)
 	}
 }
 

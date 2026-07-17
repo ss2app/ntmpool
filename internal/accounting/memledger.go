@@ -54,6 +54,7 @@ type memJournalLeg struct {
 type memJournalTx struct {
 	key  string
 	kind string
+	memo string
 	legs []memJournalLeg
 }
 
@@ -70,10 +71,14 @@ type MemLedger struct {
 	blocks   []*memBlock
 	journal  []memJournalTx
 
-	totalPaid  int64
-	totalFees  int64
-	paidOut    int64            // 已发出（可能未确认）；对账「在途」用
-	paidByAddr map[string]int64 // 地址→累计已付（API 矿工自查）
+	totalPaid int64
+	totalFees int64
+	// totalWrittenOff / totalManualAdjustment 对应 PG journal 的两个非投影对手科目累计。
+	// 二者进入旧守恒式，分别表示池损失与外部人工注入/扣回。
+	totalWrittenOff       int64
+	totalManualAdjustment int64
+	paidOut               int64            // 已发出（可能未确认）；对账「在途」用
+	paidByAddr            map[string]int64 // 地址→累计已付（API 矿工自查）
 }
 
 var _ Ledger = (*MemLedger)(nil)
@@ -117,7 +122,8 @@ func (l *MemLedger) appendJournal(coin string, j *journalBuilder) {
 			return
 		}
 	}
-	mt := memJournalTx{key: j.businessKey, kind: j.kind, legs: make([]memJournalLeg, 0, len(j.legs))}
+	mt := memJournalTx{key: j.businessKey, kind: j.kind, memo: j.memo,
+		legs: make([]memJournalLeg, 0, len(j.legs))}
 	for _, leg := range j.legs {
 		mt.legs = append(mt.legs, memJournalLeg{account: leg.account, address: leg.address, delta: leg.delta})
 	}
@@ -571,8 +577,10 @@ func (l *MemLedger) Reconcile(_ context.Context, coin string) (string, error) {
 	for _, v := range l.debts {
 		debtSum += v
 	}
-	// delta = 确认奖励 - 已付 - 余额 - 费 + 债务净额（债务是「已多付待收回」，抵账正号）
-	delta := confirmedRewards - l.totalPaid - balSum - l.totalFees + debtSum
+	// 债务是「已多付待收回」的抵账正项；核销后债务减少，但历史多付并未消失，
+	// 因此累计核销额必须以同号补回，才能继续表达完整资金去向。
+	delta := confirmedRewards - l.totalPaid - balSum - l.totalFees + debtSum +
+		l.totalWrittenOff + l.totalManualAdjustment
 
 	streamByAddr := make(map[string]int64)
 	for _, change := range l.changes {

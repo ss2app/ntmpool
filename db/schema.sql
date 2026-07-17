@@ -197,7 +197,7 @@ CREATE TABLE IF NOT EXISTS config_audit (
     created      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 守恒对账快照（R8）：Σ已确认奖励 = Σ已付 + Σ余额 + Σ手续费 + Σ在途 + Σ债务净额
+-- 守恒对账快照（R8）：累计坏账与人工调账对手科目补足投影外的池损失/外部注入。
 CREATE TABLE IF NOT EXISTS reconciliations (
     id           BIGSERIAL PRIMARY KEY,
     poolid       TEXT NOT NULL,
@@ -207,9 +207,13 @@ CREATE TABLE IF NOT EXISTS reconciliations (
     total_fees   NUMERIC NOT NULL,
     in_flight    NUMERIC NOT NULL,
     debts_net    NUMERIC NOT NULL,
+    written_off  NUMERIC NOT NULL DEFAULT 0,
+    manual_adjustment NUMERIC NOT NULL DEFAULT 0,
     delta        NUMERIC NOT NULL,      -- 应为 0，非 0 告警并冻结打款
     created      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS written_off NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS manual_adjustment NUMERIC NOT NULL DEFAULT 0;
 
 -- 阶段 1 复式账本影子 journal：纯追加，不替代任何现有投影表。
 CREATE TABLE IF NOT EXISTS journal_tx (
