@@ -31,7 +31,7 @@ type BatchStore interface {
 	Load(id int64) (*Batch, bool, error)
 	// FindByTxID 按实际/计划 txid 只读反查持久化 intent，供 chain-to-book 审计。
 	FindByTxID(txid string) (*Batch, bool, error)
-	Unfinished() ([]*Batch, error) // created/prepared/sent 但未 confirmed/failed
+	Unfinished() ([]*Batch, error) // created/prepared/sent 但未 confirmed/failed/voided
 	All() ([]*Batch, error)        // 全部批次（新→旧），公共 API /payments 用
 
 	// SentUnconfirmed 已广播待确认的 payout 批次（status∈{sent,confirming}、有 txid、
@@ -40,6 +40,7 @@ type BatchStore interface {
 	// MarkConfirmations 更新一个批次全部 payments 行的确认数（维护 payments.confirmations
 	// 显示——此前从不写该列恒为 0，网页/矿工自查显示「打款了但 0 确认」误导）。
 	MarkConfirmations(batchID, confirmations int64) error
+	MarkVoided(batchID int64) error // 批次 + 其 payments 行全部标 voided（PG 侧须同事务原子）
 }
 
 // Batch 一笔打款批次的完整状态（对应 payment_batches 表）。

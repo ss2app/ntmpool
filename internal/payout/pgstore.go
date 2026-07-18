@@ -93,7 +93,7 @@ func (s *PGBatchStore) FindByTxID(txid string) (*Batch, bool, error) {
 }
 
 func (s *PGBatchStore) Unfinished() ([]*Batch, error) {
-	return s.list(`WHERE poolid=$1 AND status NOT IN ('confirmed','failed') ORDER BY id`, s.coin)
+	return s.list(`WHERE poolid=$1 AND status NOT IN ('confirmed','failed','voided') ORDER BY id`, s.coin)
 }
 
 func (s *PGBatchStore) All() ([]*Batch, error) {
@@ -113,6 +113,35 @@ func (s *PGBatchStore) MarkConfirmations(batchID, confirmations int64) error {
 		`UPDATE payments SET confirmations=$1, updated=now() WHERE poolid=$2 AND batchid=$3`,
 		confirmations, s.coin, batchID)
 	return err
+}
+
+func (s *PGBatchStore) MarkVoided(batchID int64) error {
+	ctx := context.Background()
+	tx, err := s.h.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE payment_batches SET status='voided', updated=now() WHERE poolid=$1 AND id=$2`,
+		s.coin, batchID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("批次 %d 不存在", batchID)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE payments SET status='voided', updated=now() WHERE poolid=$1 AND batchid=$2`,
+		s.coin, batchID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 const batchCols = `SELECT id, kind, status, COALESCE(plannedtxid,''), COALESCE(rawtx,''), COALESCE(txid,''),

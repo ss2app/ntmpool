@@ -105,6 +105,7 @@ const (
 	PaymentConfirming PaymentStatus = "confirming"
 	PaymentConfirmed  PaymentStatus = "confirmed"
 	PaymentFailed     PaymentStatus = "failed"
+	PaymentVoided     PaymentStatus = "voided" // 幽灵批次人工作废（tx 从未上链，已 RefundPayout 退回余额）
 )
 
 // NetworkSnapshot 供公共 API 读的链上状态缓存（coininstance 周期刷新，API 零 RPC）。

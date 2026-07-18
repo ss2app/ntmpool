@@ -31,6 +31,9 @@ type fakeCoin struct {
 	ledgerCalls               []string
 	auditPath                 string
 	auditBeforeAllLedgerCalls bool
+	orphanHash                string
+	orphanHeight              int64
+	voidBatchID               int64
 }
 
 func (f *fakeCoin) Cfg() config.CoinConfig { return f.cfg }
@@ -93,6 +96,14 @@ func (f *fakeCoin) WriteOffDebt(ctx context.Context, address, amount, reason str
 func (f *fakeCoin) ManualAdjust(ctx context.Context, address, amount string, credit bool, reason string) error {
 	f.noteLedgerCall("balance.adjust")
 	return f.ledger.ManualAdjust(ctx, f.cfg.ID, address, amount, credit, reason)
+}
+func (f *fakeCoin) ForceOrphanBlock(_ context.Context, hash string, height int64) error {
+	f.orphanHash, f.orphanHeight = hash, height
+	return nil
+}
+func (f *fakeCoin) VoidPayoutBatch(_ context.Context, batchID int64) error {
+	f.voidBatchID = batchID
+	return nil
 }
 func (f *fakeCoin) RecordIncident(ctx context.Context, id, kind, recipient, amount, memo string) error {
 	f.noteLedgerCall("incident.record")
@@ -413,6 +424,69 @@ func TestLedgerOperationEndpointValidation(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, "audit.jsonl")); err == nil && len(b) != 0 {
 		t.Fatalf("未进入业务的非法请求不应产生操作审计: %s", b)
+	}
+}
+
+func TestForkSurgeryEndpoints(t *testing.T) {
+	s, fc, dir := newTestAdmin(t)
+	h := s.Handler()
+	cases := []struct {
+		path, valid, invalid string
+	}{
+		{"/admin/v1/coins/tst/blocks/orphan",
+			`{"hash":"dead-fork-block","height":701,"reason":"死叉毒块"}`,
+			`{"hash":"","height":0,"reason":" "}`},
+		{"/admin/v1/coins/tst/payout/void",
+			`{"batchId":42,"reason":"交易从未上链"}`,
+			`{"batchId":0,"reason":" "}`},
+	}
+	for _, tc := range cases {
+		if rec := req(t, h, "POST", tc.path, "wrong", tc.valid); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s 错 token 应 401，得到 %d", tc.path, rec.Code)
+		}
+		if rec := req(t, h, "POST", tc.path, "tok123", tc.invalid); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s 缺参数应 400，得到 %d", tc.path, rec.Code)
+		}
+		if rec := req(t, h, "POST", tc.path, "tok123", tc.valid); rec.Code != http.StatusOK ||
+			!strings.Contains(rec.Body.String(), `"result":"ok"`) {
+			t.Fatalf("%s 正常调用失败: code=%d body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+	}
+	if fc.orphanHash != "dead-fork-block" || fc.orphanHeight != 701 {
+		t.Fatalf("ForceOrphanBlock 参数错误: hash=%q height=%d", fc.orphanHash, fc.orphanHeight)
+	}
+	if fc.voidBatchID != 42 {
+		t.Fatalf("VoidPayoutBatch 参数错误: batchID=%d", fc.voidBatchID)
+	}
+
+	b, err := os.ReadFile(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("fork 手术应写 2 条 config_audit，得到 %d: %s", len(lines), b)
+	}
+	wants := []struct {
+		action string
+		fields []string
+	}{
+		{"blocks/orphan", []string{`"hash":"dead-fork-block"`, `"height":701`, `"reason":"死叉毒块"`}},
+		{"payout/void", []string{`"batchId":42`, `"reason":"交易从未上链"`}},
+	}
+	for i, line := range lines {
+		var rec auditRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatal(err)
+		}
+		if rec.Action != wants[i].action || rec.Coin != "tst" {
+			t.Fatalf("config_audit action/coin 错误: %+v", rec)
+		}
+		for _, field := range wants[i].fields {
+			if !strings.Contains(line, field) {
+				t.Fatalf("config_audit 缺字段 %s: %s", field, line)
+			}
+		}
 	}
 }
 

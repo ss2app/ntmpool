@@ -1,6 +1,7 @@
 package payout
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -64,7 +65,7 @@ func (s *MemBatchStore) Unfinished() ([]*Batch, error) {
 	var out []*Batch
 	for _, b := range s.batches {
 		switch b.Status {
-		case "confirmed", "failed":
+		case core.PaymentConfirmed, core.PaymentFailed, core.PaymentVoided:
 			// 完结
 		default:
 			out = append(out, b)
@@ -106,5 +107,16 @@ func (s *MemBatchStore) MarkConfirmations(batchID, confirmations int64) error {
 	if b, ok := s.batches[batchID]; ok {
 		b.Confirmations = confirmations
 	}
+	return nil
+}
+
+func (s *MemBatchStore) MarkVoided(batchID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.batches[batchID]
+	if !ok {
+		return fmt.Errorf("批次 %d 不存在", batchID)
+	}
+	b.Status = core.PaymentVoided
 	return nil
 }

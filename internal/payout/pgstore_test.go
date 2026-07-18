@@ -103,3 +103,51 @@ func TestPGBatchStorePersistAndRecover(t *testing.T) {
 		t.Fatalf("All 错误: err=%v n=%d", err, len(all))
 	}
 }
+
+func TestPGBatchStoreMarkVoided(t *testing.T) {
+	s, _ := pgStore(t)
+	id, err := s.NextBatchID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &Batch{
+		ID: id, Kind: "payout", Status: core.PaymentConfirmed, CreatedAt: time.Now(),
+		Outputs: map[string]string{"addrA": "1.50000000", "addrB": "2.25000000"},
+	}
+	if err := s.Save(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkVoided(id); err != nil {
+		t.Fatal(err)
+	}
+
+	var batchStatus string
+	if err := s.h.QueryRow(`SELECT status FROM payment_batches WHERE poolid=$1 AND id=$2`,
+		s.coin, id).Scan(&batchStatus); err != nil {
+		t.Fatal(err)
+	}
+	if batchStatus != "voided" {
+		t.Fatalf("payment_batches.status=%q", batchStatus)
+	}
+	var voidedPayments, allPayments int
+	if err := s.h.QueryRow(`SELECT COUNT(*) FILTER (WHERE status='voided'), COUNT(*)
+		FROM payments WHERE poolid=$1 AND batchid=$2`, s.coin, id).
+		Scan(&voidedPayments, &allPayments); err != nil {
+		t.Fatal(err)
+	}
+	if allPayments != len(b.Outputs) || voidedPayments != allPayments {
+		t.Fatalf("payments 未全部 voided: voided=%d all=%d", voidedPayments, allPayments)
+	}
+	unf, err := s.Unfinished()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range unf {
+		if got.ID == id {
+			t.Fatal("voided 批次不应出现在 Unfinished")
+		}
+	}
+	if err := s.MarkVoided(id + 1_000_000_000); err == nil {
+		t.Fatal("不存在批次 MarkVoided 应报错")
+	}
+}

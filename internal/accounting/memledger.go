@@ -513,6 +513,13 @@ func (l *MemLedger) DeductForPayout(_ context.Context, coin string, outputs map[
 func (l *MemLedger) RefundPayout(_ context.Context, coin string, outputs map[string]string, batchID int64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	tag := fmt.Sprintf("batch:%d", batchID)
+	// 与 PG 版一致按 batch 幂等：恢复重试或人工双调只允许退款一次。
+	for _, change := range l.changes {
+		if change.usage == "payment_refund" && change.tag == tag {
+			return nil
+		}
+	}
 	journal := newJournalTx("refund", fmt.Sprintf("refund:batch:%d", batchID), journalPolicyPreRegistry,
 		fmt.Sprintf("batchID=%d", batchID))
 	for a, s := range outputs {
@@ -521,7 +528,7 @@ func (l *MemLedger) RefundPayout(_ context.Context, coin string, outputs map[str
 			return err
 		}
 		l.balances[a] += amt
-		l.addBalanceChange(a, amt, "payment_refund", fmt.Sprintf("batch:%d", batchID))
+		l.addBalanceChange(a, amt, "payment_refund", tag)
 		l.paidOut -= amt
 		l.totalPaid -= amt
 		l.paidByAddr[a] -= amt

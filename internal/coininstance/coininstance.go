@@ -498,6 +498,40 @@ func (inst *Instance) ManualAdjust(ctx context.Context, address, amount string, 
 	return inst.ledger.ManualAdjust(ctx, inst.Cfg().ID, address, amount, credit, reason)
 }
 
+// ForceOrphanBlock 人工把一个已入账（confirmed）块按孤块回滚——fork 手术用：
+// 死叉毒块 credit 冲销，扣不动的转 debt。幂等（已 orphaned 返回 nil）。
+// height 仅用于 debt reason 展示（ledger 侧 orphaned block %d）。
+func (inst *Instance) ForceOrphanBlock(ctx context.Context, hash string, height int64) error {
+	return inst.ledger.OrphanBlock(ctx, core.FoundBlock{Hash: hash, Height: uint64(height)})
+}
+
+// VoidPayoutBatch 作废一笔「幽灵批次」（txid 从未上链但状态已 confirmed）：
+// RefundPayout（batch 级幂等）退回矿工余额 → 批次/payments 标 voided。
+// 只允许 kind=payout 且 status=confirmed；已 voided 幂等返回 nil；
+// failed 拒绝（失败批次已有引擎自动退款路径，勿双重退款语义）。
+func (inst *Instance) VoidPayoutBatch(ctx context.Context, batchID int64) error {
+	b, ok, err := inst.batches.Load(batchID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("批次 %d 不存在", batchID)
+	}
+	if b.Kind != "payout" {
+		return fmt.Errorf("批次 %d 类型为 %s，不是 payout", batchID, b.Kind)
+	}
+	if b.Status == core.PaymentVoided {
+		return nil
+	}
+	if b.Status != core.PaymentConfirmed {
+		return fmt.Errorf("批次 %d 状态为 %s，不是 confirmed", batchID, b.Status)
+	}
+	if err := inst.ledger.RefundPayout(ctx, inst.Cfg().ID, b.Outputs, batchID); err != nil {
+		return err
+	}
+	return inst.batches.MarkVoided(batchID)
+}
+
 func (inst *Instance) RecordIncident(ctx context.Context, id, kind, recipient, amount, memo string) error {
 	return inst.ledger.RecordIncident(ctx, inst.Cfg().ID, id, kind, recipient, amount, memo)
 }

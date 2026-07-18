@@ -419,6 +419,100 @@ func runLedgerConformance(t *testing.T, mk mkLedger) {
 		}
 	})
 
+	t.Run("fork手术退款与毒块冲销", func(t *testing.T) {
+		l, coin := mk(t)
+		base := time.Now().Add(-time.Minute)
+		blocks := []core.FoundBlock{
+			confBlock(coin, "fork-toxic-A", "A", "10.00000000", 701, 0.5, false),
+			confBlock(coin, "fork-toxic-B", "B", "20.00000000", 702, 0.5, false),
+		}
+		for i := range blocks {
+			at := base.Add(time.Duration(i*2) * time.Second)
+			blocks[i].FoundAt = at.Add(time.Second)
+			if err := l.RecordShare(ctx, confShare(coin, blocks[i].Finder, at), 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := l.RecordBlock(ctx, blocks[i], "raw"); err != nil {
+				t.Fatal(err)
+			}
+			if err := l.MarkBlockPending(ctx, coin, blocks[i].Hash); err != nil {
+				t.Fatal(err)
+			}
+			if err := l.ConfirmBlock(ctx, blocks[i], 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		ghostOutputs := map[string]string{"A": "4.00000000", "B": "5.00000000"}
+		if err := l.DeductForPayout(ctx, coin, ghostOutputs, 301); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.RefundPayout(ctx, coin, ghostOutputs, 301); err != nil {
+			t.Fatal(err)
+		}
+		refunded, err := l.Snapshot(ctx, coin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if refunded.Balances["A"] != "10.00000000" || refunded.Balances["B"] != "20.00000000" ||
+			refunded.TotalPaid != "0.00000000" {
+			t.Fatalf("幽灵批次退款错误: A=%s B=%s paid=%s",
+				refunded.Balances["A"], refunded.Balances["B"], refunded.TotalPaid)
+		}
+		if err := l.RefundPayout(ctx, coin, ghostOutputs, 301); err != nil {
+			t.Fatal(err)
+		}
+		refundedAgain, err := l.Snapshot(ctx, coin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if refundedAgain.Balances["A"] != refunded.Balances["A"] ||
+			refundedAgain.Balances["B"] != refunded.Balances["B"] ||
+			refundedAgain.TotalPaid != refunded.TotalPaid {
+			t.Fatalf("重复退款非幂等: before=%+v after=%+v", refunded, refundedAgain)
+		}
+
+		// 模拟退款后另有一笔真实付款已离账，使毒块 credit 无法从余额全额冲销。
+		settledOutputs := map[string]string{"A": "7.00000000", "B": "20.00000000"}
+		if err := l.DeductForPayout(ctx, coin, settledOutputs, 302); err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range blocks {
+			if err := l.OrphanBlock(ctx, b); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, b := range blocks {
+			if err := l.OrphanBlock(ctx, b); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		snap, err := l.Snapshot(ctx, coin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snap.Balances["A"] != "0.00000000" || snap.Balances["B"] != "0.00000000" ||
+			snap.DebtsNet != "27.00000000" || snap.TotalPaid != "27.00000000" {
+			t.Fatalf("fork 手术投影错误: A=%s B=%s debts=%s paid=%s",
+				snap.Balances["A"], snap.Balances["B"], snap.DebtsNet, snap.TotalPaid)
+		}
+		wantMiners := map[string]MinerSummary{
+			"A": {Balance: "0.00000000", TotalPaid: "7.00000000", Debt: "7.00000000"},
+			"B": {Balance: "0.00000000", TotalPaid: "20.00000000", Debt: "20.00000000"},
+		}
+		for address, want := range wantMiners {
+			got, ok, err := l.MinerSummary(ctx, coin, address)
+			if err != nil || !ok {
+				t.Fatalf("%s MinerSummary: ok=%v err=%v", address, ok, err)
+			}
+			if got != want {
+				t.Fatalf("%s 摘要错误: got=%+v want=%+v", address, got, want)
+			}
+		}
+		assertDelta0(t, ctx, l, coin, "fork 手术后")
+	})
+
 	t.Run("带费孤块守恒", func(t *testing.T) {
 		// M4 修的真 bug：confirm(fee>0) 后 orphan，计提费必须一并作废，否则 delta=-fee 误冻结
 		l, coin := mk(t)

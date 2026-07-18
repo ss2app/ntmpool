@@ -48,6 +48,10 @@ type CoinControl interface {
 	FeeCollect(ctx context.Context, amount string) (txid string, err error)
 	WriteOffDebt(ctx context.Context, address, amount, reason string) error
 	ManualAdjust(ctx context.Context, address, amount string, credit bool, reason string) error
+	// ForceOrphanBlock 人工按孤块回滚已确认块。
+	ForceOrphanBlock(ctx context.Context, hash string, height int64) error
+	// VoidPayoutBatch 退款并作废从未上链的已确认打款批次。
+	VoidPayoutBatch(ctx context.Context, batchID int64) error
 	RecordIncident(ctx context.Context, id, kind, recipient, amount, memo string) error
 	ResolveIncident(ctx context.Context, id, outcome, amount, memo string) error
 	UncollectedFees(ctx context.Context) (string, error)
@@ -98,6 +102,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/v1/coins/{id}/feecollect", s.handleFeeCollect)
 	mux.HandleFunc("POST /admin/v1/coins/{id}/debt/writeoff", s.handleDebtWriteOff)
 	mux.HandleFunc("POST /admin/v1/coins/{id}/balance/adjust", s.handleBalanceAdjust)
+	mux.HandleFunc("POST /admin/v1/coins/{id}/blocks/orphan", s.handleBlockOrphan)
+	mux.HandleFunc("POST /admin/v1/coins/{id}/payout/void", s.handlePayoutVoid)
 	mux.HandleFunc("POST /admin/v1/coins/{id}/incident/record", s.handleIncidentRecord)
 	mux.HandleFunc("POST /admin/v1/coins/{id}/incident/resolve", s.handleIncidentResolve)
 	mux.HandleFunc("POST /admin/v1/coins/{id}/ports", s.handlePortAdd)
@@ -555,6 +561,55 @@ func (s *Server) handleBalanceAdjust(w http.ResponseWriter, r *http.Request) {
 	}
 	err = p.ManualAdjust(ctx, body.Address, body.Amount, *body.Credit, body.Reason)
 	s.finishLedgerOperation(w, r, coin, "balance.adjust", auditID, err)
+}
+
+func (s *Server) handleBlockOrphan(w http.ResponseWriter, r *http.Request) {
+	p, coin, ok := s.coin(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Hash   string `json:"hash"`
+		Height int64  `json:"height"`
+		Reason string `json:"reason"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Hash) == "" || body.Height <= 0 || strings.TrimSpace(body.Reason) == "" {
+		http.Error(w, "hash/reason 必填，height 须大于 0", http.StatusBadRequest)
+		return
+	}
+	if err := p.ForceOrphanBlock(r.Context(), body.Hash, body.Height); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.commit(r, "blocks/orphan", coin, body)
+	writeJSON(w, map[string]string{"result": "ok"})
+}
+
+func (s *Server) handlePayoutVoid(w http.ResponseWriter, r *http.Request) {
+	p, coin, ok := s.coin(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		BatchID int64  `json:"batchId"`
+		Reason  string `json:"reason"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if body.BatchID <= 0 || strings.TrimSpace(body.Reason) == "" {
+		http.Error(w, "batchId 须大于 0，reason 必填", http.StatusBadRequest)
+		return
+	}
+	if err := p.VoidPayoutBatch(r.Context(), body.BatchID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.commit(r, "payout/void", coin, body)
+	writeJSON(w, map[string]string{"result": "ok"})
 }
 
 func (s *Server) handleIncidentRecord(w http.ResponseWriter, r *http.Request) {
