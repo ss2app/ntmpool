@@ -102,9 +102,13 @@ func TestBtc09ForkSurgery(t *testing.T) {
 		t.Fatal(err)
 	}
 	var toxic []core.FoundBlock
+	preOrphaned := 0
 	for _, b := range blocks {
-		if b.Status == core.BlockConfirmed {
+		switch b.Status {
+		case core.BlockConfirmed:
 			toxic = append(toxic, b)
+		case core.BlockOrphaned:
+			preOrphaned++ // 赛跑输掉的自然孤块（爆块竞争常态），与手术无关
 		}
 	}
 	if len(toxic) == 0 {
@@ -127,8 +131,8 @@ func TestBtc09ForkSurgery(t *testing.T) {
 		t.Fatalf("毒块冲销后余额=%s", balance)
 	}
 	if final.DebtsNet != "0.00000000" || final.TotalPaid != "0.00000000" || final.Confirmed != 0 ||
-		final.Orphaned != len(toxic) {
-		t.Fatalf("fork 手术后投影错误: %+v toxic=%d", final, len(toxic))
+		final.Orphaned != preOrphaned+len(toxic) {
+		t.Fatalf("fork 手术后投影错误: %+v preOrphaned=%d toxic=%d", final, preOrphaned, len(toxic))
 	}
 	if delta, err := inst.RunReconcile(ctx); err != nil || delta != "0.00000000" {
 		t.Fatalf("fork 手术后守恒: delta=%s err=%v", delta, err)
