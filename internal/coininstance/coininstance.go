@@ -145,7 +145,8 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	// 用 2^32 口径会把 1.2 KH/s 显成 964 GH/s（矿池网页只放真实数据铁律）。
 	hrCfg := hashrate.Config{}
 	if cfg.Adapter == "custom-http" || cfg.Adapter == "cryptonote-rpc" || cfg.Adapter == "dragonx-rpc" ||
-		cfg.Adapter == "brisvia-rpc" || cfg.Adapter == "noctari-rpc" || cfg.Adapter == "midstate-rpc" {
+		cfg.Adapter == "brisvia-rpc" || cfg.Adapter == "noctari-rpc" || cfg.Adapter == "midstate-rpc" ||
+		cfg.Adapter == "dom-rpc" {
 		// midstate：难度=期望 VDF 次数（连续标尺），算力单位 ext/s（2026-07-11
 		// 生产实测坑：漏加这行 → 34K ext/s 被 2^32 口径显成 168 TH/s，zoka 同款）
 		hrCfg.Multiplier = 1

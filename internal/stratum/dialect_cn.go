@@ -41,6 +41,39 @@ type CNWireJob struct {
 	Algo     string `json:"algo"`
 	Height   uint64 `json:"height"`
 	SeedHash string `json:"seed_hash,omitempty"`
+
+	// DOM（RandomX + Mimblewimble）复用 CN login/submit/vardiff 外壳，但 job
+	// 不是 CryptoNote blob。以下字段仅 DOM handler 填；omitempty 保证既有币
+	// 的 wire JSON 逐字段保持不变。CleanJobs 用指针以便 DOM 显式下发 false。
+	Preimage    string `json:"preimage,omitempty"`
+	ShareTarget string `json:"share_target,omitempty"`
+	CleanJobs   *bool  `json:"clean_jobs,omitempty"`
+	ExtraNonce1 string `json:"extranonce1,omitempty"`
+}
+
+// MarshalJSON 保证既有 CryptoNote job 的 JSON 形状逐字段不变；DOM job 则只发
+// 契约字段（另保留 algo/height 供现有 rx 锄头能力协商与状态展示）。
+func (j CNWireJob) MarshalJSON() ([]byte, error) {
+	if j.Preimage == "" {
+		return json.Marshal(struct {
+			JobID    string `json:"job_id"`
+			Blob     string `json:"blob"`
+			Target   string `json:"target"`
+			Algo     string `json:"algo"`
+			Height   uint64 `json:"height"`
+			SeedHash string `json:"seed_hash,omitempty"`
+		}{j.JobID, j.Blob, j.Target, j.Algo, j.Height, j.SeedHash})
+	}
+	return json.Marshal(struct {
+		JobID       string `json:"job_id"`
+		Preimage    string `json:"preimage"`
+		SeedHash    string `json:"seed_hash"`
+		ShareTarget string `json:"share_target"`
+		CleanJobs   *bool  `json:"clean_jobs"`
+		ExtraNonce1 string `json:"extranonce1"`
+		Algo        string `json:"algo,omitempty"`
+		Height      uint64 `json:"height,omitempty"`
+	}{j.JobID, j.Preimage, j.SeedHash, j.ShareTarget, j.CleanJobs, j.ExtraNonce1, j.Algo, j.Height})
 }
 
 // CNSubmission 一条已解析的 CN submit。
@@ -70,6 +103,19 @@ type CNShareHandler interface {
 	ConnJob(connID uint32, difficulty float64) (CNWireJob, bool)
 	// HandleSubmit 校验一条提交（池端重算 + badpow tripwire + 命中检测 + 组块提交 + 记账）。
 	HandleSubmit(ctx context.Context, sub CNSubmission) SubmitResult
+}
+
+// CNJobCleanAware 是 DOM 的可选扩展。新节点 work 广播时 clean=true；仅 vardiff
+// 调档重推同 job 时 clean=false。普通 CN handler 不实现它，行为完全不变。
+type CNJobCleanAware interface {
+	ConnJobWithClean(connID uint32, difficulty float64, clean bool) (CNWireJob, bool)
+}
+
+// CNConnectionIDAllocator 是需要严格连接分片的 handler 可选扩展。DOM 用它
+// 分配/回收 24-bit extranonce1；普通 CN handler 继续使用单调 connSeq。
+type CNConnectionIDAllocator interface {
+	AcquireConnectionID() (uint32, bool)
+	ReleaseConnectionID(connID uint32)
 }
 
 // CNDialect 实现 stratum.Dialect。每个币一个实例。
@@ -138,6 +184,15 @@ type cnConn struct {
 func (d *CNDialect) Serve(ctx context.Context, conn net.Conn, port config.PortConfig) error {
 	port = config.WithPortDefaults(port)
 	seq := d.connSeq.Add(1)
+	connID := uint32(seq)
+	if allocator, ok := d.handler.(CNConnectionIDAllocator); ok {
+		allocated, acquired := allocator.AcquireConnectionID()
+		if !acquired {
+			return fmt.Errorf("[%s] 连接 ID/extranonce1 空间已满", d.coinID)
+		}
+		connID = allocated
+		defer allocator.ReleaseConnectionID(connID)
+	}
 	vcfg := vardiff.Config{
 		StartDiff:      port.Vardiff.StartDiff,
 		MinDiff:        port.Vardiff.MinDiff,
@@ -149,7 +204,7 @@ func (d *CNDialect) Serve(ctx context.Context, conn net.Conn, port config.PortCo
 		d:        d,
 		raw:      conn,
 		port:     port,
-		connID:   uint32(seq), // 连接 tag（nonce 高位/分片字节的来源）
+		connID:   connID, // 连接 tag（nonce 高位/分片字节的来源）
 		sessID:   strconv.FormatUint(seq, 16),
 		vd:       vardiff.New(vcfg, time.Now()),
 		remoteIP: verifiedClientIP(conn),
@@ -242,7 +297,7 @@ func (c *cnConn) dispatch(ctx context.Context, msg *cnReq) error {
 		if !c.authed() {
 			return c.replyErr(msg.ID, "Unauthenticated")
 		}
-		if job, ok := c.d.handler.ConnJob(c.connID, c.vd.Current()); ok {
+		if job, ok := c.connJob(true); ok {
 			return c.reply(msg.ID, job, nil)
 		}
 		return c.replyErr(msg.ID, "No job available")
@@ -295,7 +350,7 @@ func (c *cnConn) onLogin(msg *cnReq) error {
 		}
 	}
 
-	job, ok := c.d.handler.ConnJob(c.connID, c.vd.Current())
+	job, ok := c.connJob(true)
 	if !ok {
 		return c.replyErr(msg.ID, "No job available (pool starting)")
 	}
@@ -396,16 +451,20 @@ func (c *cnConn) maybeRetarget() {
 	// 池按新（更高）Current 判定 → 旧难度 share 全被拒「Low difficulty share」。
 	// （2026-07-13 noctari 实测：漏推新 job → 6.22MH/s 矿工 2/3 share 被拒。）
 	if _, changed := c.vd.MaybeRetarget(time.Now()); changed {
-		_ = c.pushJob()
+		_ = c.pushJobWithClean(false)
 	}
 }
 
 // pushJob 推送当前 job（登录后、新块广播、vardiff 调档时）。
 func (c *cnConn) pushJob() error {
+	return c.pushJobWithClean(true)
+}
+
+func (c *cnConn) pushJobWithClean(clean bool) error {
 	if !c.authed() {
 		return nil
 	}
-	job, ok := c.d.handler.ConnJob(c.connID, c.vd.Current())
+	job, ok := c.connJob(clean)
 	if !ok {
 		return nil
 	}
@@ -414,6 +473,13 @@ func (c *cnConn) pushJob() error {
 		"method":  "job",
 		"params":  job,
 	})
+}
+
+func (c *cnConn) connJob(clean bool) (CNWireJob, bool) {
+	if h, ok := c.d.handler.(CNJobCleanAware); ok {
+		return h.ConnJobWithClean(c.connID, c.vd.Current(), clean)
+	}
+	return c.d.handler.ConnJob(c.connID, c.vd.Current())
 }
 
 func (c *cnConn) authed() bool {

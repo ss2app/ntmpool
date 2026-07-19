@@ -41,6 +41,23 @@ func TestSeedRotation(t *testing.T) {
 	}
 }
 
+func TestPrewarmKeyBuildsReusableVM(t *testing.T) {
+	h := New()
+	seed := make([]byte, 32)
+	for i := range seed {
+		seed[i] = byte(i)
+	}
+	if err := h.PrewarmKey(seed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.HashKeyed(seed, []byte("DOM prewarmed seed")); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.PrewarmKey([]byte("short")); err == nil {
+		t.Fatal("short prewarm seed should be rejected")
+	}
+}
+
 // 注册表启动门禁路径：SelfTestAll 走 keyed 注册表。
 func TestRegisteredInKeyedRegistry(t *testing.T) {
 	if _, err := hasher.GetKeyed("rx/0"); err != nil {

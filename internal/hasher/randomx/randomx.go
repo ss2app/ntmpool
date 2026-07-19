@@ -78,6 +78,17 @@ func New() *Hasher {
 
 func (h *Hasher) Name() string { return "rx/0" }
 
+// PrewarmKey 提前为 seed 建好 cache/VM，不执行伪 hash。DOM 的 ntm_get_work
+// 会在 epoch 临界窗口给 next_seed_hash，job manager 通过这个可选能力消除轮换时
+// 首条 share 的 RandomX cache 初始化停顿。
+func (h *Hasher) PrewarmKey(key []byte) error {
+	if len(key) != 32 {
+		return fmt.Errorf("randomx: prewarm key 长度 %d ≠ 32", len(key))
+	}
+	_, err := h.vmFor(key)
+	return err
+}
+
 // vmFor 取/建该 seed 的 VM；LRU 保留 keepSeeds 个。
 func (h *Hasher) vmFor(key []byte) (*rxVM, error) {
 	k := string(key)
