@@ -280,6 +280,11 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 			defer inst.wg.Done()
 			inst.runStatsPersist(ctx, deps.DB)
 		}()
+		inst.wg.Add(1)
+		go func() {
+			defer inst.wg.Done()
+			inst.runSharePrune(ctx)
+		}()
 	}
 	// 恢复扫描（崩溃恢复；内存实现无持久化，Postgres 实现时真正生效）
 	_ = inst.engine.Recover(ctx)

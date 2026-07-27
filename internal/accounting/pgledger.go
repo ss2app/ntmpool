@@ -141,10 +141,66 @@ func (l *PGLedger) insertShares(ctx context.Context, buf []core.Share, wts []flo
 }
 
 // PruneShares 删除窗口重建不再需要的旧 share（默认保 3 天，docs/05 场景B 补建 round 用）。
-func (l *PGLedger) PruneShares(ctx context.Context, retain time.Duration) error {
-	_, err := l.h.ExecContext(ctx,
-		`DELETE FROM shares WHERE poolid = $1 AND created < $2`, l.coin, time.Now().Add(-retain).UTC())
-	return err
+// 返回实际删除的行数。
+//
+// 三道闸，全部满足才删：
+//  1. 时间：created 早于 now()-retain。
+//  2. 条数：至少保留最近 keepRows 条。PPLNS 窗口是「从最新 share 往回累加 difficulty
+//     到 pplnsFactor×netDiff」，它覆盖的时间与池 PPLNS 算力成反比——btc09 实测算力低谷
+//     时窗口跨 7.3 小时，再跌一个数量级就超过任何固定天数，时间不能是唯一闸门。
+//  3. 分批：单条 DELETE 最多 batch 行。首次清理要面对上百万行积压，一把梭的长事务会
+//     持锁到影响 RecordShare 与窗口查询。
+//
+// 少删只是占点磁盘，误删窗口内的 share 会让矿工在下一个块少拿钱——两者代价不对称，
+// 所以每道闸都往保守一侧取。边界在循环外算一次并固定：期间新插入的 share 只会把真实
+// 边界往更新处推，用旧边界删得更少，方向安全。
+func (l *PGLedger) PruneShares(ctx context.Context, retain time.Duration, keepRows int64, batch int) (int64, error) {
+	if retain <= 0 {
+		return 0, fmt.Errorf("[pgledger] prune retain 必须为正（收到 %v）", retain)
+	}
+	if keepRows <= 0 {
+		return 0, fmt.Errorf("[pgledger] prune keepRows 必须为正（收到 %d）", keepRows)
+	}
+	if batch <= 0 {
+		return 0, fmt.Errorf("[pgledger] prune batch 必须为正（收到 %d）", batch)
+	}
+	// 第 keepRows+1 新的那条 share 的 id：它及更老的才是候选。不足 keepRows 条时
+	// 子查询无行，COALESCE 成 -1 ⇒ id <= -1 恒假 ⇒ 一行都不删。
+	var boundary int64
+	if err := l.h.QueryRowContext(ctx,
+		`SELECT COALESCE((SELECT id FROM shares WHERE poolid = $1
+		                  ORDER BY id DESC OFFSET $2 LIMIT 1), -1)`,
+		l.coin, keepRows).Scan(&boundary); err != nil {
+		return 0, err
+	}
+	if boundary < 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-retain).UTC()
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		res, err := l.h.ExecContext(ctx, `
+			DELETE FROM shares WHERE id IN (
+			    SELECT id FROM shares
+			    WHERE poolid = $1 AND created < $2 AND id <= $3
+			    ORDER BY id
+			    LIMIT $4)`,
+			l.coin, cutoff, boundary, batch)
+		if err != nil {
+			return total, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n < int64(batch) {
+			return total, nil
+		}
+	}
 }
 
 // ---- blocks ----
