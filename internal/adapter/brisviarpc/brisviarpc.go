@@ -14,9 +14,12 @@
 //   - rx_hash 视作 256-bit LE 整数 ≤ target 即有效 → HashBigEndian=false（monero 惯例）。
 //   - seed = 高度 h 的祖先块（2048 epoch / 64 延迟）hash 的【内部序】；h<64 用初始 seed。
 //   - 块 hash = SHA256d(header80) ≠ PoW → PowIsBlockHash=false。
-//   - RandomX 算力低（每核数千 H/s），4 字节 nonce 空间数小时够用 → 无需 extranonce 滚动，
-//     全 nonce 给单连接（SearchLen=NonceLen=4，无连接 tag）。⚠ 上生产若单机算力极大或
-//     >数百连接同挖，再评估 per-connection extranonce / ntime 滚动（TODO，非冒烟阻塞）。
+//   - nonce 4 字节拆成【低 3 字节=矿工搜索区】+【最高 1 字节=连接 tag】（SearchLen=3）。
+//     tag 由 cnjob 按 connID 写入，是矿工之间唯一的区分手段；曾经 SearchLen=4（tagBytes=0）
+//     让所有连接拿到逐字节相同的 blob → 各家锄头都从 nonce 0 起扫、算出完全相同的 hash 序列，
+//     池的有效算力被压成单机（重复 share 因去重是 per-connection 的而照收照计分，指标全正常）。
+//     每连接搜索空间 2^24，连接数上限 256（family_brisvia 调 SetConnIDSpace(256) 池化保证不撞）。
+//     ⚠ 若日后需要 >256 并发连接，改走 per-connection coinbase extranonce（BuildCoinbase 已留参数）。
 package brisviarpc
 
 import (
@@ -37,6 +40,13 @@ import (
 const (
 	seedPeriod = 2048 // 每 2048 块轮换
 	seedDelay  = 64   // 延迟 64 块
+
+	// nonce 字段布局（比特币 80 字节头）。★searchLen 必须 < nonceLen，差值即【连接 tag】字节数：
+	// tag 是矿工之间唯一的区分手段，tagBytes=0 会让所有连接拿到逐字节相同的 blob（详见
+	// GetTemplate 里 SearchLen 的注释）。锄头侧对应契约 = 只滚低 searchLen 字节、原样保留高位。
+	nonceOffset = 76
+	nonceLen    = 4
+	searchLen   = 3
 )
 
 // brisviaInitialSeedHex 高度 0..63 用的固定初始 seed = 32 × 0x54（main/test 相同，spec §6）。
@@ -173,10 +183,17 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 	}
 
 	bt.Raw = &adapter.BlobWork{
-		HashingBlob:     header80,
-		NonceOffset:     76,
-		NonceLen:        4,
-		SearchLen:       4, // 全 nonce 给单连接（RandomX 低算力足够；无连接 tag）
+		HashingBlob: header80,
+		NonceOffset: nonceOffset,
+		NonceLen:    nonceLen,
+		// ★SearchLen=3 → 最高 1 字节留作【连接 tag】（cnjob materialize 按 connID 写入）。
+		// 曾是 4（全 nonce 给单连接）＝ tagBytes 0 ＝ 所有连接拿到逐字节相同的 blob，
+		// 而锄头每换 job 都从 nonce 0 起扫 → N 台矿机算出完全相同的 hash 序列。
+		// 去重是 per-connection 的，重复 share 照收照计分，但池实际覆盖的 nonce 空间
+		// 只等于一台矿机，爆块率不随接入算力增长（矿工侧完全看不出异常）。
+		// 每连接搜索空间 2^24：20 kH/s 需 ~838s、9654 满速 ~266s 才扫完，均远长于
+		// 一个 job 的寿命（目标块 120s）。连接数上限 256，由 SetConnIDSpace 池化保证不撞。
+		SearchLen:       searchLen,
 		SeedHash:        seedHex,
 		Algo:            "rx/brva",
 		NetworkTarget:   netTarget,

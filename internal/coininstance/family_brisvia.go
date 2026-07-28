@@ -43,6 +43,10 @@ func buildBrisviaFamily(_ context.Context, cfg config.CoinConfig, decimals int, 
 		wireAlgo = cfg.Algo
 	}
 	jm := cnjob.New(cfg.ID, wireAlgo, c, kh)
+	// BRVA 的 nonce 字段只有 4 字节，SearchLen=3 → 连接 tag 仅剩 1 字节 = 256 个取值。
+	// 池化分配保证在线连接的 tag 互不重复；不池化的话自增序号回绕就会让两个矿工拿到
+	// 相同 blob、扫相同 nonce，池的有效算力被压成单机（详见 brisviarpc 的 SearchLen 注释）。
+	jm.SetConnIDSpace(256)
 	dialect := stratum.NewCNDialect(cfg.ID, jm)
 	sink := inst.blockSink()
 	jm.SetCallbacks(dialect.BroadcastJob,

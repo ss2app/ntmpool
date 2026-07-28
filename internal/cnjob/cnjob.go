@@ -64,6 +64,8 @@ type Manager struct {
 	order     []string
 	current   string
 	lastFetch time.Time
+
+	conns connIDAllocator
 }
 
 // keepJobs 保留最近 N 个 job 供 share 归属。够大以覆盖「矿工网络延迟 + 池换 job」
@@ -82,6 +84,76 @@ func New(coinID, algo string, node nodeIface, hsh hasher.KeyedHasher) *Manager {
 		coinID: coinID, algo: algo, node: node, hsh: hsh,
 		jobs: map[string]*cnJob{},
 	}
+}
+
+// SetConnIDSpace 声明连接 tag 的可用空间大小，启用「在线连接 tag 互不重复」的池化分配。
+//
+// 为什么需要：materialize 把 nonce 字段拆成【低 SearchLen 字节=矿工搜索区】+【高位=连接 tag】。
+// tag 是矿工之间唯一的区分手段——tag 相同的两个连接会拿到逐字节相同的 blob，而锄头都从 nonce 0
+// 起扫，于是它们算出完全相同的 hash 序列。share 去重是 per-connection 的，两边都会被正常接受、
+// 正常计分，**但池实际覆盖的 nonce 空间只等于一台矿机**，爆块率不随算力增长。矿工侧毫无异样，
+// 只会发现收益远低于预期。
+//
+// tag 很宽时（dragonx: NonceLen 8 - SearchLen 4 = 4 字节 = 2^32）自增序号撞不上；tag 只有 1 字节
+// （BRVA: 4-3=1 → 256 个）时，按生日问题 20 个在线连接就有过半概率撞。故窄 tag 的币必须调本方法。
+//
+// space=0（默认）= 不限：走纯自增，行为与调用方原先的 connSeq 等价。
+func (m *Manager) SetConnIDSpace(space uint32) { m.conns.setSpace(space) }
+
+// AcquireConnectionID / ReleaseConnectionID 实现 stratum.CNConnectionIDAllocator。
+// 空间满时返回 false，stratum 层会拒绝新连接（宁可拒连，也好过默默发重复工作）。
+func (m *Manager) AcquireConnectionID() (uint32, bool) { return m.conns.acquire() }
+func (m *Manager) ReleaseConnectionID(connID uint32)   { m.conns.release(connID) }
+
+// connIDAllocator 分配在线唯一的连接 tag，断开即归还复用。
+type connIDAllocator struct {
+	mu     sync.Mutex
+	space  uint32 // 0 = 不限（纯自增，不入 active）
+	next   uint32
+	active map[uint32]struct{}
+}
+
+func (a *connIDAllocator) setSpace(space uint32) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.space = space
+	if space > 0 && a.active == nil {
+		a.active = map[uint32]struct{}{}
+	}
+}
+
+func (a *connIDAllocator) acquire() (uint32, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.space == 0 {
+		a.next++
+		return a.next, true
+	}
+	if a.active == nil {
+		a.active = map[uint32]struct{}{}
+	}
+	if uint32(len(a.active)) >= a.space {
+		return 0, false
+	}
+	for attempts := uint32(0); attempts < a.space; attempts++ {
+		id := a.next % a.space
+		a.next++
+		if _, used := a.active[id]; used {
+			continue
+		}
+		a.active[id] = struct{}{}
+		return id, true
+	}
+	return 0, false
+}
+
+func (a *connIDAllocator) release(connID uint32) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.space == 0 || a.active == nil {
+		return
+	}
+	delete(a.active, connID)
 }
 
 // SetCallbacks 注入广播与会计回调。
