@@ -262,12 +262,13 @@ func (m *Manager) ConnJob(connID uint32, difficulty float64) (stratum.CNWireJob,
 	}
 	blob := materialize(j.work, connID, 0)
 	return stratum.CNWireJob{
-		JobID:    j.id,
-		Blob:     hex.EncodeToString(blob),
-		Target:   cnwork.EncodeTargetForDiff(difficulty, j.work.TargetCompactLE),
-		Algo:     m.algo,
-		Height:   j.height,
-		SeedHash: j.work.SeedHash,
+		JobID:       j.id,
+		Blob:        hex.EncodeToString(blob),
+		Target:      cnwork.EncodeTargetForDiff(difficulty, j.work.TargetCompactLE),
+		Algo:        m.algo,
+		Height:      j.height,
+		SeedHash:    j.work.SeedHash,
+		BrvaJobMode: j.work.BrvaJobMode,
 	}, true
 }
 

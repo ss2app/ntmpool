@@ -41,6 +41,9 @@ type CNWireJob struct {
 	Algo     string `json:"algo"`
 	Height   uint64 `json:"height"`
 	SeedHash string `json:"seed_hash,omitempty"`
+	// BrvaJobMode xmrig-brisvia 专用：任务模式声明。"pplns" = 跳过其 solo
+	// coinbase 收款校验（矿池 coinbase 付池地址，缺失该字段任务被拒 code 8）。
+	BrvaJobMode string `json:"brva_job_mode,omitempty"`
 }
 
 // CNSubmission 一条已解析的 CN submit。

@@ -199,6 +199,14 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 		NetworkTarget:   netTarget,
 		HashBigEndian:   false, // rx_hash 是 LE（monero 惯例）
 		TargetCompactLE: true,  // 下发 8-hex compact LE（NTMminer rx 系认）
+		// xmrig-brisvia 兼容双件套：
+		// ① Nicehash → login extensions 声明 "nicehash"，XMRig 只滚低 3 字节、保留
+		//    blob[79] 的连接 tag（NTMminer 是硬编码契约不看扩展；stock XMRig 不声明
+		//    就会滚满 4 字节覆盖 tag → 池端按 connID 重建 tag 重算 → 100% badpow）。
+		// ② BrvaJobMode="pplns" → 跳过 xmrig-brisvia 的 solo coinbase 收款校验
+		//    （矿池 coinbase 付池地址，不带该字段任务直接被拒 code 8）。
+		Nicehash:        true,
+		BrvaJobMode:     "pplns",
 		PowIsBlockHash:  false, // 块 hash = sha256d(header) ≠ rx_hash
 		HeightHint:      g.Height,
 		JobKey:          fmt.Sprintf("%d-%s", g.Height, g.PreviousBlockHash),

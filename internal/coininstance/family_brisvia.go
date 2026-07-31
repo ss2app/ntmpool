@@ -36,8 +36,10 @@ func buildBrisviaFamily(_ context.Context, cfg config.CoinConfig, decimals int, 
 	c := brisviarpc.New(cfg.ID, n.URL, n.User, n.Pass, cfg.PoolAddress)
 	c.SetDecimals(decimals)
 
-	// wire 算法名（对矿工声明）：默认=内部 algo；BRVA 设 stratumAlgo=rx/0 让通用 RandomX 锄头能连。
-	// hasher 路由仍用 cfg.Algo（rx/brva → brisviarx），wire 与内部标识解耦。
+	// wire 算法名（对矿工声明）：默认=内部 algo。⚠BRVA 严禁配 stratumAlgo=rx/0：
+	// xmrig-brisvia 按 job.algo 决定 nonce 偏移（rx/brva→76，rx/0→门罗式 39），
+	// 发 rx/0 会让它把 nonce 写错位 → 100% badpow；NTMminer login 也只报 ["rx/brva"]，
+	// wire=rx/0 时 algo 协商直接拒登录。hasher 路由仍用 cfg.Algo（rx/brva → brisviarx）。
 	wireAlgo := cfg.StratumAlgo
 	if wireAlgo == "" {
 		wireAlgo = cfg.Algo

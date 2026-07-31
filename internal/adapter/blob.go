@@ -45,6 +45,11 @@ type BlobWork struct {
 	// login extensions 要声明 "nicehash"（XMRig 据此只滚低 3 字节）。
 	Nicehash bool
 
+	// BrvaJobMode 非空时随 job 下发 "brva_job_mode" 字段。xmrig-brisvia 对 rx/brva
+	// 任务默认按 solo 语义校验「coinbase 全额付给矿工本人」（验不过拒任务 code 8）；
+	// 值为 "pplns" 时跳过该校验——矿池 coinbase 付池地址，必须声明此值。
+	BrvaJobMode string
+
 	// WireNonceLen 矿工 submit 里回显的 nonce 字段字节数（0 = 与 NonceLen 相同）。
 	// dragonx 类：块头 nonce 字段 32B，矿工只滚低 4 字节但回显完整 32B——池只滚
 	// 低 NonceLen(8) 字节做搜索区+连接 tag，[NonceLen:WireNonceLen) 为模板保留区

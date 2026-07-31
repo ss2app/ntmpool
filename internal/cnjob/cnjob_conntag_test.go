@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"math/big"
 	"testing"
 
@@ -31,6 +32,9 @@ func (n *narrowTagNode) GetTemplate(_ context.Context) (*adapter.BlockTemplate, 
 			HashingBlob: blob, NonceOffset: 76, NonceLen: 4, SearchLen: 3,
 			SeedHash: seedHex, Algo: "rx/test",
 			NetworkTarget: target, HashBigEndian: true,
+			// 与 brisviarpc 生产模板对齐：nicehash 分片声明 + pplns 任务模式
+			// （xmrig-brisvia 兼容双件套，见 brisviarpc.GetTemplate 注释）。
+			Nicehash: true, BrvaJobMode: "pplns",
 			HeightHint: n.height + 1, SubmitRef: "tpl-narrow",
 		},
 	}, nil
@@ -164,6 +168,42 @@ func TestConnIDAllocatorUniqueReuseAndExhaustion(t *testing.T) {
 	}
 	if got != ids[7] {
 		t.Fatalf("复用的 id = %d，want %d", got, ids[7])
+	}
+}
+
+// xmrig-brisvia 兼容 wire 契约：
+//   - login extensions 必须含 "nicehash"（否则 stock XMRig 滚满 4 字节 nonce，
+//     覆盖 blob[79] 的连接 tag → 池端重建 tag 重算 → 100% badpow）；
+//   - job JSON 必须含 "brva_job_mode":"pplns"（否则 xmrig-brisvia 按 solo 语义
+//     校验 coinbase 收款人，矿池 coinbase 付池地址 → 任务被拒 code 8）。
+func TestNarrowTagWireContractForXmrigBrisvia(t *testing.T) {
+	m := newNarrowManager(t)
+
+	ext := m.LoginExtensions()
+	hasNicehash := false
+	for _, e := range ext {
+		if e == "nicehash" {
+			hasNicehash = true
+		}
+	}
+	if !hasNicehash {
+		t.Fatalf("login extensions = %v，缺 \"nicehash\"：stock XMRig 会滚满 4 字节覆盖连接 tag", ext)
+	}
+
+	job, ok := m.ConnJob(0x11, 1)
+	if !ok {
+		t.Fatal("无 job")
+	}
+	raw, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["brva_job_mode"] != "pplns" {
+		t.Fatalf("job JSON brva_job_mode = %v，want \"pplns\"（缺失 = xmrig-brisvia 拒任务）", wire["brva_job_mode"])
 	}
 }
 
