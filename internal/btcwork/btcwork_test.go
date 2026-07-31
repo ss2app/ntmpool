@@ -80,9 +80,19 @@ func TestDiffTarget(t *testing.T) {
 }
 
 func TestScriptPushNum(t *testing.T) {
+	// 必须逐字节等于 Bitcoin Core 的 `CScript() << nHeight`（节点 ContextualCheckBlock
+	// 拿它构造 expect 比对 coinbase scriptSig 前缀，差一字节 = bad-cb-height）。
+	// ★ 1..16 是单字节操作码 OP_1..OP_16，不是 push——本用例曾把 1 写成 "0101"（push 形式），
+	//   把实现的 bug 固化成了期望值，于是测试长期通过却漏掉「任何新链前 16 块挖不到」。
+	//   1 和 20 两行是 brisvia 节点 regtest 实测真值（coinbase scriptSig 分别为 5100 / 011400）。
 	cases := map[uint64]string{
-		0:      "00",
-		1:      "0101",
+		0:      "00", // OP_0
+		1:      "51", // OP_1  ← 节点实测锚
+		2:      "52",
+		15:     "5f",
+		16:     "60",   // OP_16（最后一个操作码形式）
+		17:     "0111", // 17 起才是 push 形式
+		20:     "0114", // ← 节点实测锚
 		127:    "017f",
 		128:    "028000",
 		265:    "020901",

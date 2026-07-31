@@ -163,10 +163,24 @@ func varInt(n uint64) []byte {
 	}
 }
 
-// scriptPushNum BIP34 高度 push（最小编码 CScriptNum + 前置长度字节）。
+// scriptPushNum BIP34 高度 push，必须逐字节等于 Bitcoin Core 的 `CScript() << nHeight`——
+// 节点 ContextualCheckBlock 就是用它构造 expect 再和 coinbase scriptSig 前缀比对，差一字节
+// 即 bad-cb-height。CScript::push_int64 的三段规则：
+//
+//	n == 0        → OP_0（0x00）
+//	1 <= n <= 16  → OP_1..OP_16（0x51..0x60），【单字节操作码，不是 push】
+//	n > 16        → 前置长度字节 + 最小编码 CScriptNum（小端，最高位为 1 时补 0x00）
+//
+// ★ 曾漏掉中间那段：高度 1..16 被编成 push 形式（如高度 1 → 0x01 0x01 而非 0x51），
+// 于是【任何新链的前 16 个块】都会被节点判 bad-cb-height 而挖不到——链一旦过了高度 16
+// 就再也复现不了，所以在老链上完全看不出来（2026-07-31 BRVA 主网上线前 regtest 实测抓到，
+// 主网正是从 height 1 起步）。
 func scriptPushNum(n uint64) []byte {
 	if n == 0 {
 		return []byte{0x00} // OP_0
+	}
+	if n <= 16 {
+		return []byte{byte(0x50 + n)} // OP_1..OP_16
 	}
 	var payload []byte
 	for v := n; v > 0; v >>= 8 {

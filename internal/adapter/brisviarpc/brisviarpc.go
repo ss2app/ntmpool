@@ -27,6 +27,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,8 +50,14 @@ const (
 	searchLen   = 3
 )
 
-// brisviaInitialSeedHex 高度 0..63 用的固定初始 seed = 32 × 0x54（main/test 相同，spec §6）。
+// brisviaInitialSeedHex 高度 0..63 的固定初始 seed，仅在节点不下发权威 seed 时兜底。
+// ⚠ 该常量【按链不同】：main/testnet = 0x54×32，但 regtest = 0x42×32
+// （节点 src/kernel/chainparams.cpp 的 consensus.brisviaInitialSeed 三处各自定义）。
+// 这里只能取一个值 → 正是不能靠自算的原因，权威来源见 seedHash 的注释。
 var brisviaInitialSeedHex = strings.Repeat("54", 32)
+
+// seedFallbackWarn 保证「节点没下发权威 seed，回退自算」只告警一次（每进程）。
+var seedFallbackWarn sync.Once
 
 // poolTag coinbase scriptSig 尾部品牌标记。
 var poolTag = []byte("/NTMPool/")
@@ -98,6 +105,15 @@ type gbtView struct {
 		TxID string `json:"txid"`
 		Hash string `json:"hash"` // 非 segwit 链（PIVX/Noctari）GBT 不出 txid，只出 hash（== txid）
 	} `json:"transactions"`
+	// Brisvia 节点在 GBT 里下发的 RandomX 挖矿契约（src/rpc/mining.cpp，fPowRandomX 时才有）。
+	// randomx_seed_hash 是【显示序】uint256.GetHex()，用前需 Reverse 成内部序。
+	Brisvia *struct {
+		PowVersion      int64  `json:"pow_version"`
+		RandomXSeedHash string `json:"randomx_seed_hash"`
+		SeedHeight      int64  `json:"seed_height"`
+		NonceOffset     int    `json:"nonce_offset"`
+		NonceSize       int    `json:"nonce_size"`
+	} `json:"brisvia"`
 }
 
 // GetTemplate override：标准 GBT → blob 作业（adapter.BlobWork）。
@@ -169,7 +185,7 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 	header80 := btcwork.SerializeHeader(uint32(g.Version), btcwork.Reverse(prevBE), merkleRoot,
 		uint32(g.CurTime), bits, 0)
 
-	seedHex, err := c.seedHash(ctx, g.Height)
+	seedHex, err := c.seedHash(ctx, g.Height, &g)
 	if err != nil {
 		return nil, err
 	}
@@ -205,12 +221,12 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 		//    就会滚满 4 字节覆盖 tag → 池端按 connID 重建 tag 重算 → 100% badpow）。
 		// ② BrvaJobMode="pplns" → 跳过 xmrig-brisvia 的 solo coinbase 收款校验
 		//    （矿池 coinbase 付池地址，不带该字段任务直接被拒 code 8）。
-		Nicehash:        true,
-		BrvaJobMode:     "pplns",
-		PowIsBlockHash:  false, // 块 hash = sha256d(header) ≠ rx_hash
-		HeightHint:      g.Height,
-		JobKey:          fmt.Sprintf("%d-%s", g.Height, g.PreviousBlockHash),
-		SubmitRef:       &submitRef{coinbaseWitness: cbWitness, rawTxs: rawTxs},
+		Nicehash:       true,
+		BrvaJobMode:    "pplns",
+		PowIsBlockHash: false, // 块 hash = sha256d(header) ≠ rx_hash
+		HeightHint:     g.Height,
+		JobKey:         fmt.Sprintf("%d-%s", g.Height, g.PreviousBlockHash),
+		SubmitRef:      &submitRef{coinbaseWitness: cbWitness, rawTxs: rawTxs},
 	}
 	return bt, nil
 }
@@ -250,9 +266,34 @@ func (c *Client) BuildBlockHex(ctx context.Context) (string, uint64, error) {
 	return btcwork.AssembleBlock(work.HashingBlob, ref.coinbaseWitness, ref.rawTxs), work.HeightHint, nil
 }
 
-// seedHash 按高度算 RandomX seed（内部序 64 hex）。h<64 用固定初始 seed；否则取
-// seedHeight=((h-64)/2048)*2048 的块 hash 的内部序（= reverse(display)）。
-func (c *Client) seedHash(ctx context.Context, height uint64) (string, error) {
+// seedHash 取本高度的 RandomX seed（内部序 64 hex）。
+//
+// ★权威来源 = 节点 GBT 的 brisvia.randomx_seed_hash。节点源码 rpc/mining.cpp 注释明写
+// 「The node (Core) is the authority for the seed」，且它按【活跃分支的父块 + 高度】解析，
+// 跨 seed 轮换边界（64、2112、…）与重组时都与验证端一致。
+//
+// 池按高度自算会在两处偏离节点（2026-07-31 regtest 实测踩到）：
+//
+//	① 初始 seed（h<64）是【每条链各自的 chainparams 常量】——regtest 是 0x42×32，
+//	   main/testnet 才是 0x54×32。硬编码 0x54 会让 regtest 的 h<64 全程算错 seed：
+//	   池算出的 hash 与节点不一致，而 regtest target 极松（0x207fffff）→ 错的 hash 仍有
+//	   约一半概率满足 target，于是「一半爆块成功、一半 bad-randomx-pow」，池侧
+//	   badpow=0 照旧（那只证明矿工↔池一致，从不证明池↔节点一致）→ 极难察觉。
+//	② 自算走主链 BlockHashAt，重组时可能取到与节点解析分支不同的块。
+//
+// 节点未下发该字段（旧版节点）时回退自算，并告警一次。
+func (c *Client) seedHash(ctx context.Context, height uint64, g *gbtView) (string, error) {
+	if g != nil && g.Brisvia != nil && g.Brisvia.RandomXSeedHash != "" {
+		b, err := hex.DecodeString(g.Brisvia.RandomXSeedHash)
+		if err != nil || len(b) != 32 {
+			return "", fmt.Errorf("brisviarpc: GBT randomx_seed_hash 非法 %q", g.Brisvia.RandomXSeedHash)
+		}
+		return hex.EncodeToString(btcwork.Reverse(b)), nil // 显示序 → 内部序 = RandomX key
+	}
+	seedFallbackWarn.Do(func() {
+		log.Printf("[brisviarpc] ⚠ 节点 GBT 未下发 brisvia.randomx_seed_hash，回退按高度自算 seed；"+
+			"若本链的初始 seed 不是 %s… 则 h<%d 的块会被节点判 bad-randomx-pow", brisviaInitialSeedHex[:8], seedDelay)
+	})
 	if height < seedDelay {
 		return brisviaInitialSeedHex, nil
 	}
