@@ -62,6 +62,25 @@ type CNSubmission struct {
 	Solo  bool
 }
 
+// CNConnectionIDAllocator 是 CNShareHandler 的【可选】能力：池化分配连接 tag。
+//
+// 为什么需要：连接 tag 写在 nonce 字段高位，是矿工之间唯一的区分手段（见
+// cnjob.SetConnIDSpace）。窄 tag 的币（BRVA：nonce 4 字节 - 搜索区 3 字节 = tag
+// 只有 1 字节 = 256 个取值）若用纯自增序号当 tag，**累计第 257 个连接就与第 1 个
+// 撞上**——两个在线矿工拿到逐字节相同的 blob、从 nonce 0 扫出完全相同的 hash 序列，
+// 池的有效算力被压成单机，而池侧所有指标（share/算力/分账）全都正常，只有爆块率
+// 不随算力增长。⚠ 是【累计】连接数不是并发数：断线重连、vardiff 调档、网络抖动
+// 都在累加，繁忙的池一天轻松破 256。
+//
+// handler 实现本接口时，Serve 用它分配/归还 tag（在线唯一、断开即还、满员拒连）；
+// 不实现则回退纯自增（宽 tag 的币如 dragonx 行为不变）。
+type CNConnectionIDAllocator interface {
+	// AcquireConnectionID 取一个当前在线唯一的 tag；空间满时返回 false。
+	AcquireConnectionID() (uint32, bool)
+	// ReleaseConnectionID 连接结束时归还 tag 供复用。
+	ReleaseConnectionID(connID uint32)
+}
+
 // CNShareHandler 是 CN 方言与作业管线的解耦点（internal/cnjob 实现）。
 type CNShareHandler interface {
 	// Algo 本币算法名（login 能力协商 + job.algo）。
@@ -141,6 +160,23 @@ type cnConn struct {
 func (d *CNDialect) Serve(ctx context.Context, conn net.Conn, port config.PortConfig) error {
 	port = config.WithPortDefaults(port)
 	seq := d.connSeq.Add(1)
+	remoteIP := verifiedClientIP(conn)
+
+	// 连接 tag：handler 支持池化分配就用它（在线唯一、断开归还、满员拒连），
+	// 否则回退纯自增。⚠ sessID 始终用自增序号——它是会话标识，复用会让归还后的
+	// 新连接与旧会话撞 id；tag 可复用，sessID 不可。
+	connID := uint32(seq)
+	if alloc, ok := d.handler.(CNConnectionIDAllocator); ok {
+		id, got := alloc.AcquireConnectionID()
+		if !got {
+			// 宁可拒连，也好过发出重复 tag 让两个矿工挖同一段 nonce
+			// （那种情况池侧毫无异常，只有爆块率不涨，极难发现）。
+			return fmt.Errorf("[%s] CN 连接 tag 空间已满，拒绝新连接 %s", d.coinID, remoteIP)
+		}
+		connID = id
+		defer alloc.ReleaseConnectionID(id)
+	}
+
 	vcfg := vardiff.Config{
 		StartDiff:      port.Vardiff.StartDiff,
 		MinDiff:        port.Vardiff.MinDiff,
@@ -152,10 +188,10 @@ func (d *CNDialect) Serve(ctx context.Context, conn net.Conn, port config.PortCo
 		d:        d,
 		raw:      conn,
 		port:     port,
-		connID:   uint32(seq), // 连接 tag（nonce 高位/分片字节的来源）
+		connID:   connID, // 连接 tag（nonce 高位/分片字节的来源）
 		sessID:   strconv.FormatUint(seq, 16),
 		vd:       vardiff.New(vcfg, time.Now()),
-		remoteIP: verifiedClientIP(conn),
+		remoteIP: remoteIP,
 		guard:    newConnectionGuard(port),
 	}
 	c.ab = newAutoBan(d.banner, conn, d.coinID, port)
