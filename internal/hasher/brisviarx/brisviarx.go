@@ -39,6 +39,9 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"runtime"
+	"strconv"
 	"sync"
 	"unsafe"
 
@@ -48,19 +51,53 @@ import (
 // keepSeeds 保留最近几个 epoch 的 VM（seed 每 2048 块轮换，窗口内新旧 share 并存）。
 const keepSeeds = 2
 
+// vmsPerSeed 每个 seed 建多少个 RandomX VM = PoW 验证的真实并发上限。
+//
+// ★血泪（2026-08-02 BRVA 主网）：RandomX VM 非线程安全，一个 VM 同时只能算一条
+// hash。初版每 seed 只建 1 个 VM + mutex 串行，于是 powVerifyConcurrency 完全是
+// 摆设——拿到并发槽的 goroutine 全堵在同一把锁上。32 核生产机实测池进程恒定
+// 100% CPU（= 恰好 1 核），share 稍密就排队超时，矿工侧刷屏
+// "Server busy (verification queue full)"。当时把 concurrency 4→24、queue 64→1024
+// 只是把队列加长，症状缓解而根因未动。
+//
+// cache 是只读的，可被多个 VM 共享；官方多线程用法就是「1 cache + 每线程 1 VM」，
+// 每个 light-mode VM 仅额外占 ~2MB scratchpad。
+func vmsPerSeed() int {
+	if s := os.Getenv("NTM_RX_VMS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 128 {
+			return n
+		}
+	}
+	n := runtime.NumCPU()
+	if n < 2 {
+		n = 2
+	}
+	if n > 32 {
+		n = 32
+	}
+	return n
+}
+
 type rxVM struct {
-	mu    sync.Mutex
+	// mu RLock=计算中（多路并发）；Lock=销毁（独占，等所有在途算完）。
+	mu    sync.RWMutex
+	dead  bool
 	cache *C.randomx_cache
-	vm    *C.randomx_vm
+	idle  chan *C.randomx_vm // 空闲 VM 池：取用—归还，保证一个 VM 同时只被一方持有
+	all   []*C.randomx_vm    // 全量句柄，仅 destroy 用
 }
 
 func (v *rxVM) destroy() {
-	v.mu.Lock()
+	v.mu.Lock() // 等所有在途 hash 结束，避免销毁正在跑的 VM
 	defer v.mu.Unlock()
-	if v.vm != nil {
-		C.randomx_destroy_vm(v.vm)
-		v.vm = nil
+	if v.dead {
+		return
 	}
+	v.dead = true
+	for _, vm := range v.all {
+		C.randomx_destroy_vm(vm)
+	}
+	v.all = nil
 	if v.cache != nil {
 		C.randomx_release_cache(v.cache)
 		v.cache = nil
@@ -104,12 +141,20 @@ func (h *Hasher) vmFor(key []byte) (*rxVM, error) {
 		kp = unsafe.Pointer(&key[0])
 	}
 	C.randomx_init_cache(cache, kp, C.size_t(len(key)))
-	vm := C.randomx_create_vm(flags, cache, nil)
-	if vm == nil {
-		C.randomx_release_cache(cache)
-		return nil, fmt.Errorf("rx/brva: create_vm 失败")
+	n := vmsPerSeed()
+	v := &rxVM{cache: cache, idle: make(chan *C.randomx_vm, n)}
+	for i := 0; i < n; i++ {
+		vm := C.randomx_create_vm(flags, cache, nil)
+		if vm == nil {
+			if len(v.all) == 0 {
+				C.randomx_release_cache(cache)
+				return nil, fmt.Errorf("rx/brva: create_vm 失败")
+			}
+			break // 已建出至少一个：内存紧张时降级带伤跑，不整池挂掉
+		}
+		v.all = append(v.all, vm)
+		v.idle <- vm
 	}
-	v := &rxVM{cache: cache, vm: vm}
 	h.entries[k] = v
 	h.order = append(h.order, k)
 	for len(h.order) > keepSeeds {
@@ -124,7 +169,7 @@ func (h *Hasher) vmFor(key []byte) (*rxVM, error) {
 }
 
 // HashKeyed RandomX_stock(key=seed, input=header80)。返回 rx_hash 原始 32B（LE）。
-// VM 非线程安全，每 seed 一把锁串行。
+// VM 非线程安全 → 从该 seed 的空闲池借一个 VM 独占使用，用完归还；并发度 = vmsPerSeed()。
 func (h *Hasher) HashKeyed(key, input []byte) ([]byte, error) {
 	if len(input) == 0 {
 		return nil, fmt.Errorf("rx/brva: 空输入")
@@ -133,13 +178,15 @@ func (h *Hasher) HashKeyed(key, input []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, 32)
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.vm == nil {
+	v.mu.RLock() // 与 destroy 互斥；彼此之间不互斥 → 真并行
+	defer v.mu.RUnlock()
+	if v.dead {
 		return nil, fmt.Errorf("rx/brva: VM 已销毁（seed 已过轮换窗口）")
 	}
-	C.randomx_calculate_hash(v.vm,
+	vm := <-v.idle
+	defer func() { v.idle <- vm }()
+	out := make([]byte, 32)
+	C.randomx_calculate_hash(vm,
 		unsafe.Pointer(&input[0]), C.size_t(len(input)),
 		unsafe.Pointer(&out[0]))
 	return out, nil
