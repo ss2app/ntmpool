@@ -3,6 +3,7 @@ package coininstance
 import (
 	"context"
 
+	"github.com/scashcc/ntmpool/internal/adapter"
 	"github.com/scashcc/ntmpool/internal/adapter/brisviarpc"
 	"github.com/scashcc/ntmpool/internal/cnjob"
 	"github.com/scashcc/ntmpool/internal/config"
@@ -64,5 +65,11 @@ func buildBrisviaFamily(_ context.Context, cfg config.CoinConfig, decimals int, 
 		jobs:       jm,
 		dialects:   map[string]stratum.Dialect{"cryptonote": dialect},
 		connCount:  dialect.ConnCount,
+		// 模板 longpoll：把 GBT 请求预先挂在节点上，链头一动立即带着新模板返回。
+		// ⚠ 此前漏接线（btc09/dragonx 都有、唯独 brisvia 没有）→ BRVA 一直退化成
+		// coininstance 的 2s 轮询兜底：实测 UpdateTip→CreateNewBlock 平均滞后 0.78s，
+		// 在开网初期 4s/块的节奏下 ≈ 19.5% 的算力在挖已作废的高度，孤块率高达 25%
+		// （同期全网同高度冲突率仅 0.4%，即这份损失是我们独有、可修的）。
+		notifiers: []adapter.Notifier{c.LongPollNotifier()},
 	}, nil
 }
