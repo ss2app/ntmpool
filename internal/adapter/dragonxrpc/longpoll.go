@@ -33,11 +33,24 @@ type LongPoll struct {
 	// lphc 挂等专用 HTTP client：无总超时（挂等本身就是长时间连接），
 	// 生命周期完全由 ctx 控制。与 c.hc（150s 超时）分开，绝不共用。
 	lphc *http.Client
+	// label 写进 TipEvent.Source。多节点竞速时每条通道给不同 label，
+	// 日志才能看出「哪个节点先感知到新块」——同一高度两条日志的墙钟差
+	// ＝纯粹的相对传播延迟（不含挖矿耗时，不依赖块头时间戳）。
+	label string
 }
 
-// LongPollNotifier 返回本节点的 GBT longpoll 通知器。
+// LongPollNotifier 返回本节点的 GBT longpoll 通知器（Source="longpoll"）。
 func (c *Client) LongPollNotifier() *LongPoll {
-	return &LongPoll{c: c, lphc: &http.Client{}}
+	return c.LongPollNotifierLabeled("longpoll")
+}
+
+// LongPollNotifierLabeled 同 LongPollNotifier，但自定义 TipEvent.Source。
+// 用于多节点竞速：每个节点一条通道、各自一个 label。
+func (c *Client) LongPollNotifierLabeled(label string) *LongPoll {
+	if label == "" {
+		label = "longpoll"
+	}
+	return &LongPoll{c: c, lphc: &http.Client{}, label: label}
 }
 
 // Run 阻塞运行：循环挂等 GBT，链头变化即发 TipEvent。失败退避重试（自带重连）。
@@ -49,7 +62,7 @@ func (n *LongPoll) Run(ctx context.Context, ch chan<- core.TipEvent) error {
 				return ctx.Err()
 			}
 			if errors.Is(err, errNoLongPoll) {
-				log.Printf("[%s] longpoll 通道退出：%v（轮询兜底继续）", n.c.name, err)
+				log.Printf("[%s] %s 通道退出：%v（轮询兜底继续）", n.c.name, n.label, err)
 				return err
 			}
 			select {
@@ -59,7 +72,7 @@ func (n *LongPoll) Run(ctx context.Context, ch chan<- core.TipEvent) error {
 			}
 			continue
 		}
-		ev := core.TipEvent{Coin: n.c.name, Height: height, Hash: hash, Source: "longpoll", At: time.Now()}
+		ev := core.TipEvent{Coin: n.c.name, Height: height, Hash: hash, Source: n.label, At: time.Now()}
 		select {
 		case ch <- ev:
 		case <-ctx.Done():
