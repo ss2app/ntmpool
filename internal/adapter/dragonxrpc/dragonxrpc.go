@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"strings"
@@ -71,6 +72,9 @@ type Client struct {
 	cachedSeedHash string // 内部序 64 hex
 	seedValid      bool
 	lastLongPollID string // GBT longpollid（挂等通知用，GetTemplate/waitTip 都会刷新）
+	// bcast 爆块并发广播的伙伴节点（见 SetBroadcastPeers）。启动接线时写一次，
+	// 之后只读；仍走 mu 保护，免得 -race 在「写在 main、读在爆块 goroutine」上报警。
+	bcast []*Client
 }
 
 var (
@@ -312,6 +316,56 @@ func (c *Client) seedForHeight(ctx context.Context, height uint64) (string, erro
 	return s, nil
 }
 
+// SetBroadcastPeers 设置「爆块并发广播」的伙伴节点（方案⑤）。
+//
+// 爆到块后，除了交给本节点，同时也把同一份块 hex 推给这些节点，让它从多个
+// 地理位置同时向各自的 peer 集合扩散——我们的块传得越快，被同高度的块顶掉的
+// 概率越低。
+//
+// ⚠ 伙伴节点【只收块】：不供模板、不出账、不碰钱包，本次爆块的结论完全由
+// 本节点（nodes[0]）的 submitblock 决定，伙伴的成败一律不影响返回值。
+// 幂等安全：同一个块提交多次不会双花，节点重复收到只返回 duplicate。
+//
+// 只在启动接线时调用一次（buildDragonXFamily），早于任何 goroutine 启动。
+func (c *Client) SetBroadcastPeers(peers []*Client) {
+	c.mu.Lock()
+	c.bcast = append([]*Client(nil), peers...)
+	c.mu.Unlock()
+}
+
+// fanoutBlock 把已组好的块并发推给广播伙伴，不阻塞主提交路径。
+//
+// ⚠ 用独立 ctx 而不是调用方的：主提交一返回，调用方的 ctx 就可能被取消，
+// 而我们要的恰恰是「无论如何都把块推出去」。
+func (c *Client) fanoutBlock(blockHex string, height uint64) {
+	c.mu.Lock()
+	peers := c.bcast
+	c.mu.Unlock()
+	for i, p := range peers {
+		i, p := i+1, p
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			t0 := time.Now()
+			var result *string
+			err := p.call(ctx, "submitblock", []any{blockHex}, &result)
+			ms := time.Since(t0).Milliseconds()
+			switch {
+			case err != nil:
+				log.Printf("[%s] 爆块广播#%d height=%d 失败(%dms): %v", c.name, i, height, ms, err)
+			case result == nil || *result == "" || strings.HasPrefix(*result, "duplicate"):
+				log.Printf("[%s] 爆块广播#%d height=%d ok(%dms)", c.name, i, height, ms)
+			case strings.HasPrefix(*result, "inconclusive"):
+				// inconclusive ≠ 拒绝（PoW 无效会返 high-hash，见 brisvia 血泪）；
+				// 伙伴节点链头与我们不同步时很常见，不当异常报。
+				log.Printf("[%s] 爆块广播#%d height=%d inconclusive(%dms)", c.name, i, height, ms)
+			default:
+				log.Printf("[%s] 爆块广播#%d height=%d 被拒(%dms): %s", c.name, i, height, ms, *result)
+			}
+		}()
+	}
+}
+
 // SubmitBlob 组块 → submitblock → 返回权威块 hash（= reverse(pow)，PowIsBlockHash 链）。
 func (c *Client) SubmitBlob(ctx context.Context, sol *adapter.BlobSolution) (string, error) {
 	ref, ok := sol.Work.SubmitRef.(*drgSubmitRef)
@@ -322,8 +376,12 @@ func (c *Client) SubmitBlob(ctx context.Context, sol *adapter.BlobSolution) (str
 	if err != nil {
 		return "", fmt.Errorf("[%s] 组块: %w", c.name, err)
 	}
+	blockHex := hex.EncodeToString(block)
+	// 先撒出去再自己提交：goroutine 起完立刻返回，两边实际是并发的。
+	// 谁先传到网上都算数，本节点的结果才决定本次爆块的结论。
+	c.fanoutBlock(blockHex, sol.Work.HeightHint)
 	var result *string
-	if err := c.call(ctx, "submitblock", []any{hex.EncodeToString(block)}, &result); err != nil {
+	if err := c.call(ctx, "submitblock", []any{blockHex}, &result); err != nil {
 		return "", err
 	}
 	if result != nil && *result != "" && !strings.HasPrefix(*result, "duplicate") {

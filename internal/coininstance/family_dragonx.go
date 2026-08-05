@@ -22,8 +22,9 @@ import (
 //   - poolAddress = 金库 zs 地址（打款出账源 + z_shieldcoinbase 目标）
 //   - nodes[0] = dragonxd RPC（节点即钱包）；部署铁律：DRAGONX.conf 钉 pubkey=
 //     到池 R 地址（否则 GBT coinbasetxn 缺失/付错地址，见 _knowledge/地址簿.md）
-//   - nodes[1:] = 可选的异地「感知副节点」，只订阅 longpoll 抢先报新块，
-//     不出账、不供模板、无需钱包/pubkey（详见下方接线处注释）
+//   - nodes[1:] = 可选的异地副节点，两个用途：① 订阅 longpoll 抢先报新块；
+//     ② 爆块时并发广播加速扩散。**不出账、不供模板、无需钱包/pubkey**
+//     （详见下方接线处注释）
 //   - payout.confirmations=10（用户拍板：10 确认即垫付，coinbase 100 确认成熟后
 //     Maintainer 自动 shield 回补金库）
 func buildDragonXFamily(_ context.Context, cfg config.CoinConfig, _ int, inst *Instance) (*familyParts, error) {
@@ -46,11 +47,18 @@ func buildDragonXFamily(_ context.Context, cfg config.CoinConfig, _ int, inst *I
 	// （Refresh 绑的是 jm→c），所以副节点即便落后/分叉也只会多一次幂等 GBT，
 	// 绝不会把坏模板喂给矿工，更不参与任何出账。
 	// 副产品：各通道 Source 带节点序号，同高度两条日志的墙钟差＝真实相对传播延迟。
+	//
+	// 同一批副节点还兼「爆块并发广播」（方案⑤）：爆到块时除了交给主节点，
+	// 同时推给它们，从多个地理位置一起向各自 peer 扩散，减少被同高度块顶掉。
+	// 伙伴节点只收块，不供模板、不出账（见 dragonxrpc.SetBroadcastPeers）。
 	notis := []adapter.Notifier{c.LongPollNotifierLabeled("longpoll#0")}
+	var peers []*dragonxrpc.Client
 	for i, extra := range cfg.Nodes[1:] {
 		ec := dragonxrpc.New(cfg.ID, extra.URL, extra.User, extra.Pass, cfg.PoolAddress)
+		peers = append(peers, ec)
 		notis = append(notis, ec.LongPollNotifierLabeled(fmt.Sprintf("longpoll#%d", i+1)))
 	}
+	c.SetBroadcastPeers(peers)
 
 	jm := cnjob.New(cfg.ID, cfg.Algo, c, kh)
 	dialect := stratum.NewCNDialect(cfg.ID, jm)
