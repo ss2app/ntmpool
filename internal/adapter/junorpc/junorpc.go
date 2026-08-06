@@ -65,6 +65,7 @@ type Client struct {
 	mu             sync.Mutex
 	lastLongPollID string // GBT longpollid（挂等通知用，GetTemplate/waitTip 都会刷新）
 	vaultAcct      int    // 金库 UA 的账户号缓存（acctUnknown=未解析）
+	txIndexOK      bool   // txindex 探针已证可用（只缓存成功态）
 	// cbCacheKey/cbCacheZats 最近一次 coinbase 金额解析缓存（同一模板 curtime 刷新
 	// 时 coinbasetxn.data 不变，免得每次 GBT 都多一发 decoderawtransaction）。
 	cbCacheKey  string
@@ -79,6 +80,7 @@ var (
 	_ adapter.WalletAdapter    = (*Client)(nil)
 	_ adapter.WalletMaintainer = (*Client)(nil)
 	_ adapter.HashPSSource     = (*Client)(nil)
+	_ adapter.TxTracker        = (*Client)(nil)
 )
 
 func New(name, url, user, pass, vaultUA string) *Client {
@@ -574,14 +576,73 @@ func isUnifiedAddr(addr string) bool {
 	return false
 }
 
+// TxConfirmations ⚠ juno 把 gettransaction 也 DISABLED 了（同 getnewaddress，
+// regtest e2e 实测 error -1 method disabled → 追踪器会永远卡在 sent）。
+// 改走不弃用的 getrawtransaction verbose（节点必须配 txindex=1，见部署文档）。
 func (c *Client) TxConfirmations(ctx context.Context, txid string) (int64, error) {
+	conf, _, err := c.TxStatus(ctx, txid)
+	return conf, err
+}
+
+// TxStatus 实现 adapter.TxTracker（精确 known 语义，engine 优先用它）：
+//   - 在链上 → (confirmations, true)；在 mempool → (0, true)
+//   - 确定不在 mempool 也不在链（-5 且 txindex 已证可用）→ (0, false)：engine 据此
+//     安全退款重付
+//   - txindex 不可用时对 -5 返回 error（追踪器下轮再试，绝不误判丢失——误判会
+//     触发退款重付 = 双付事故，宁可卡住人工看）
+func (c *Client) TxStatus(ctx context.Context, txid string) (int64, bool, error) {
 	var tx struct {
-		Confirmations int64 `json:"confirmations"`
+		BlockHash     string `json:"blockhash"`
+		Confirmations int64  `json:"confirmations"`
 	}
-	if err := c.call(ctx, "gettransaction", []any{txid}, &tx); err != nil {
-		return 0, err
+	err := c.call(ctx, "getrawtransaction", []any{txid, 1}, &tx)
+	if err == nil {
+		if tx.BlockHash == "" {
+			return 0, true, nil // mempool 排队中
+		}
+		return tx.Confirmations, true, nil
 	}
-	return tx.Confirmations, nil
+	if code, ok := rpcCode(err); ok && code == rpcNotFound {
+		// -5 = 不在 mempool/索引。只有证明了 txindex 真的可用（能查到任意历史
+		// 已确认 tx），-5 才等价「确定丢失」。
+		if c.txIndexUsable(ctx) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("[%s] getrawtransaction -5 且 txindex 不可用——节点须配 txindex=1（原始错误: %w）", c.name, err)
+	}
+	return 0, false, err
+}
+
+// txIndexUsable 探针：拿创世后第一个块的 coinbase txid 查 getrawtransaction，
+// 查得到 = txindex 在工作（结果缓存，进程内只探一次成功态；失败态每次重探，
+// 容忍 -reindex 进行中逐渐可用）。
+func (c *Client) txIndexUsable(ctx context.Context) bool {
+	c.mu.Lock()
+	if c.txIndexOK {
+		c.mu.Unlock()
+		return true
+	}
+	c.mu.Unlock()
+	var hash string
+	if err := c.call(ctx, "getblockhash", []any{1}, &hash); err != nil {
+		return false
+	}
+	var blk struct {
+		Tx []string `json:"tx"`
+	}
+	if err := c.call(ctx, "getblock", []any{hash}, &blk); err != nil || len(blk.Tx) == 0 {
+		return false
+	}
+	var probe struct {
+		BlockHash string `json:"blockhash"`
+	}
+	if err := c.call(ctx, "getrawtransaction", []any{blk.Tx[0], 1}, &probe); err != nil || probe.BlockHash == "" {
+		return false
+	}
+	c.mu.Lock()
+	c.txIndexOK = true
+	c.mu.Unlock()
+	return true
 }
 
 // waitOperation 轮询【自己发起的】opid 直到 success/failed（opid-safe：
