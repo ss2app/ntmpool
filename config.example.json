@@ -117,6 +117,44 @@
       "newConnectionsEnabled": true
     },
     {
+      "id": "juno",
+      "symbol": "JUNO",
+      "adapter": "juno-rpc",
+      "algo": "rx/juno",
+      "decimals": 8,
+      "nodes": [
+        { "url": "http://127.0.0.1:8232", "user": "RPC_USER", "pass": "RPC_PASS" }
+      ],
+      "poolAddress": "JUNO_VAULT_UNIFIED_ADDRESS_j1_HERE",
+      "feeAddress": "",
+      "ports": [
+        {
+          "port": 15321, "mode": "pplns", "dialect": "cryptonote", "enabled": true,
+          "maxConns": 5000,
+          "vardiff": { "enabled": true, "startDiff": 80000, "minDiff": 20000, "maxDiff": 100000000000, "targetSeconds": 12 }
+        },
+        {
+          "port": 15322, "mode": "solo", "dialect": "cryptonote", "enabled": true,
+          "maxConns": 2000,
+          "vardiff": { "enabled": true, "startDiff": 200000, "minDiff": 50000, "maxDiff": 100000000000, "targetSeconds": 15 }
+        }
+      ],
+      "payout": {
+        "enabled": false,
+        "scheme": "pplns",
+        "pplnsFactor": 2.0,
+        "feePercent": 1.0,
+        "soloFeePercent": 1.0,
+        "minPayout": "0.1",
+        "confirmations": 110,
+        "intervalSeconds": 600,
+        "orphanDebts": true,
+        "feeCollect": { "enabled": false, "minAmount": "" }
+      },
+      "miningEnabled": true,
+      "newConnectionsEnabled": true
+    },
+    {
       "id": "midstate",
       "symbol": "MDS",
       "adapter": "midstate-rpc",

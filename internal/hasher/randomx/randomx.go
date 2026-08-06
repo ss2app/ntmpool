@@ -6,7 +6,13 @@
 // （BSD，含 NTMminer 扩展 randomx_init_cache_salted）——矿工、矿池用同一份
 // 共识引擎，跨实现逐字节一致由源头保证。
 //
-// 本包只注册 stock 配置 = "rx/0"（Monero 标准参数，zoka/门罗系用）。
+// 本包只链 stock 配置库（Monero 标准参数），注册两个名字：
+//   - "rx/0"    zoka/门罗系
+//   - "rx/juno" Juno Cash（Zcash 系 140B 头 + 标准 RandomX；算法名不同但引擎
+//     参数与 rx/0 逐项相同——junorig RxAlgo.cpp 里 RX_JUNO 落 default 分支即
+//     MoneroConfig，节点 vendored tevador 库 salt 也是标准 "RandomX\x03"）
+//
+// 两个名字各自独立实例（独立 seed→VM 缓存），互不串状态。
 // 构建要求（CI ci.yml / 本地 linux）：
 //
 //	cmake -S third_party/randomx -B third_party/randomx/build-stock \
@@ -17,7 +23,7 @@
 //
 // ⚠ vendored configuration.h 默认是 dragonx 常量，-DRANDOMX_STOCK 才是 rx/0；
 // 链错构建 = 挖废块，SelfTest 的官方向量金锚会当场拦下（启动门禁）。
-// rx/dragonx 变体要第二份库 + 符号前缀隔离（NTMminer zkrx_ 先例），M3-6 迁移时加。
+// rx/dragonx 变体要第二份库 + 符号前缀隔离（NTMminer zkrx_ 先例）。
 //
 // 模式：light 模式（cache-only，~毫秒级/hash）。池端验 share 是低频操作，
 // 不需要矿工的 full-dataset 模式；省 2GiB 内存。
@@ -35,6 +41,9 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"runtime"
+	"strconv"
 	"sync"
 	"unsafe"
 
@@ -44,27 +53,59 @@ import (
 // keepSeeds 保留最近几个 epoch 的 VM（seed 轮换窗口内新旧 share 并存）。
 const keepSeeds = 2
 
+// vmsPerSeed 每个 seed 建多少个 RandomX VM = PoW 验证的真实并发上限。
+//
+// ★血泪（2026-08-02 BRVA 主网，rx/brva 同款修复）：RandomX VM 非线程安全，一个 VM
+// 同时只能算一条 hash。旧版每 seed 只建 1 个 VM + mutex 串行，powVerifyConcurrency
+// 完全是摆设——拿到并发槽的 goroutine 全堵在同一把锁上，多核机恒定 1 核 100%。
+// cache 是只读的，可被多个 VM 共享；官方多线程用法就是「1 cache + 每线程 1 VM」，
+// 每个 light-mode VM 仅额外占 ~2MB scratchpad。
+func vmsPerSeed() int {
+	if s := os.Getenv("NTM_RX_VMS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 128 {
+			return n
+		}
+	}
+	n := runtime.NumCPU()
+	if n < 2 {
+		n = 2
+	}
+	if n > 32 {
+		n = 32
+	}
+	return n
+}
+
 type rxVM struct {
-	mu    sync.Mutex
+	// mu RLock=计算中（多路并发）；Lock=销毁（独占，等所有在途算完）。
+	mu    sync.RWMutex
+	dead  bool
 	cache *C.randomx_cache
-	vm    *C.randomx_vm
+	idle  chan *C.randomx_vm // 空闲 VM 池：取用—归还，保证一个 VM 同时只被一方持有
+	all   []*C.randomx_vm    // 全量句柄，仅 destroy 用
 }
 
 func (v *rxVM) destroy() {
-	v.mu.Lock()
+	v.mu.Lock() // 等所有在途 hash 结束，避免销毁正在跑的 VM
 	defer v.mu.Unlock()
-	if v.vm != nil {
-		C.randomx_destroy_vm(v.vm)
-		v.vm = nil
+	if v.dead {
+		return
 	}
+	v.dead = true
+	for _, vm := range v.all {
+		C.randomx_destroy_vm(vm)
+	}
+	v.all = nil
 	if v.cache != nil {
 		C.randomx_release_cache(v.cache)
 		v.cache = nil
 	}
 }
 
-// Hasher 实现 hasher.KeyedHasher（"rx/0"）。key = epoch seed（seed_hash 的字节）。
+// Hasher 实现 hasher.KeyedHasher。key = epoch seed（seed_hash 的字节）。
+// name 决定注册名（"rx/0" / "rx/juno"），引擎与参数完全相同。
 type Hasher struct {
+	name    string
 	mu      sync.Mutex
 	entries map[string]*rxVM
 	order   []string
@@ -73,12 +114,17 @@ type Hasher struct {
 var _ hasher.KeyedHasher = (*Hasher)(nil)
 
 func New() *Hasher {
-	return &Hasher{entries: map[string]*rxVM{}}
+	return NewNamed("rx/0")
 }
 
-func (h *Hasher) Name() string { return "rx/0" }
+// NewNamed 同一 stock 引擎挂别的算法名（如 "rx/juno"）。实例间状态完全独立。
+func NewNamed(name string) *Hasher {
+	return &Hasher{name: name, entries: map[string]*rxVM{}}
+}
 
-// vmFor 取/建该 seed 的 VM；LRU 保留 keepSeeds 个。
+func (h *Hasher) Name() string { return h.name }
+
+// vmFor 取/建该 seed 的 VM 组；LRU 保留 keepSeeds 个 seed。
 func (h *Hasher) vmFor(key []byte) (*rxVM, error) {
 	k := string(key)
 	h.mu.Lock()
@@ -93,7 +139,7 @@ func (h *Hasher) vmFor(key []byte) (*rxVM, error) {
 		flags = C.RANDOMX_FLAG_DEFAULT
 		cache = C.randomx_alloc_cache(flags)
 		if cache == nil {
-			return nil, fmt.Errorf("randomx: alloc_cache 失败")
+			return nil, fmt.Errorf("%s: alloc_cache 失败", h.name)
 		}
 	}
 	var kp unsafe.Pointer
@@ -101,12 +147,20 @@ func (h *Hasher) vmFor(key []byte) (*rxVM, error) {
 		kp = unsafe.Pointer(&key[0])
 	}
 	C.randomx_init_cache(cache, kp, C.size_t(len(key)))
-	vm := C.randomx_create_vm(flags, cache, nil)
-	if vm == nil {
-		C.randomx_release_cache(cache)
-		return nil, fmt.Errorf("randomx: create_vm 失败")
+	n := vmsPerSeed()
+	v := &rxVM{cache: cache, idle: make(chan *C.randomx_vm, n)}
+	for i := 0; i < n; i++ {
+		vm := C.randomx_create_vm(flags, cache, nil)
+		if vm == nil {
+			if len(v.all) == 0 {
+				C.randomx_release_cache(cache)
+				return nil, fmt.Errorf("%s: create_vm 失败", h.name)
+			}
+			break // 已建出至少一个：内存紧张时降级带伤跑，不整池挂掉
+		}
+		v.all = append(v.all, vm)
+		v.idle <- vm
 	}
-	v := &rxVM{cache: cache, vm: vm}
 	h.entries[k] = v
 	h.order = append(h.order, k)
 	for len(h.order) > keepSeeds {
@@ -120,22 +174,25 @@ func (h *Hasher) vmFor(key []byte) (*rxVM, error) {
 	return v, nil
 }
 
-// HashKeyed RandomX(key=seed, input=blob)。VM 非线程安全，每 seed 一把锁串行。
+// HashKeyed RandomX(key=seed, input=blob)。返回 rx_hash 原始 32B（LE）。
+// VM 非线程安全 → 从该 seed 的空闲池借一个 VM 独占使用，用完归还；并发度 = vmsPerSeed()。
 func (h *Hasher) HashKeyed(key, input []byte) ([]byte, error) {
 	if len(input) == 0 {
-		return nil, fmt.Errorf("randomx: 空输入")
+		return nil, fmt.Errorf("%s: 空输入", h.name)
 	}
 	v, err := h.vmFor(key)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, 32)
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.vm == nil {
-		return nil, fmt.Errorf("randomx: VM 已销毁（seed 已过轮换窗口）")
+	v.mu.RLock() // 与 destroy 互斥；彼此之间不互斥 → 真并行
+	defer v.mu.RUnlock()
+	if v.dead {
+		return nil, fmt.Errorf("%s: VM 已销毁（seed 已过轮换窗口）", h.name)
 	}
-	C.randomx_calculate_hash(v.vm,
+	vm := <-v.idle
+	defer func() { v.idle <- vm }()
+	out := make([]byte, 32)
+	C.randomx_calculate_hash(vm,
 		unsafe.Pointer(&input[0]), C.size_t(len(input)),
 		unsafe.Pointer(&out[0]))
 	return out, nil
@@ -143,6 +200,8 @@ func (h *Hasher) HashKeyed(key, input []byte) ([]byte, error) {
 
 // SelfTest 官方 RandomX 公开测试向量（与 NTMminer rx_kat.c STOCK 段同一组）。
 // 这既锚引擎正确性，也锚「链的是 stock 配置」——链错 dragonx 配置库当场失败。
+// rx/0 与 rx/juno 两实例各自跑（同引擎同向量；rx/juno 的真链块锚在主网节点
+// 同步后补进部署验证，见 coins/junocash/PLAN-矿池.md WP4）。
 func (h *Hasher) SelfTest() error {
 	vectors := []struct{ key, in, exp string }{
 		{"test key 000", "This is a test",
@@ -157,11 +216,11 @@ func (h *Hasher) SelfTest() error {
 	for i, v := range vectors {
 		got, err := h.HashKeyed([]byte(v.key), []byte(v.in))
 		if err != nil {
-			return fmt.Errorf("rx/0 金锚[%d]: %w", i, err)
+			return fmt.Errorf("%s 金锚[%d]: %w", h.name, i, err)
 		}
 		exp, _ := hex.DecodeString(v.exp)
 		if !bytes.Equal(got, exp) {
-			return fmt.Errorf("rx/0 金锚[%d] 失配: got %x want %s", i, got, v.exp)
+			return fmt.Errorf("%s 金锚[%d] 失配: got %x want %s", h.name, i, got, v.exp)
 		}
 	}
 	return nil
@@ -169,4 +228,5 @@ func (h *Hasher) SelfTest() error {
 
 func init() {
 	hasher.RegisterKeyed(New())
+	hasher.RegisterKeyed(NewNamed("rx/juno"))
 }
