@@ -56,6 +56,21 @@ type BlobWork struct {
 	// （适配器可写实例盐），提交时逐字节回显校验（防伪造/坏矿工，miningcore 同款）。
 	WireNonceLen int
 
+	// WireNonceLenient 放宽 wire nonce 回显校验：只取矿工回传的搜索区，
+	// [SearchLen:WireNonceLen) 是否与下发一致【不作要求】。
+	//
+	// ★为什么需要（2026-08-07 JUNO 生产实抓）：官方锄头 junorig 在 commit ecb9b8f1
+	// （随 v6.24.0-juno.6 发布）之前，rx/juno 的 stratum share 走 uint nonce 构造器，
+	// 把 nonce 字段重建成「只填低 8 字节、其余 24 字节全零」再上报——连接 tag 与
+	// 实例盐被抹零。但它【实际参与哈希的仍是池下发的完整 blob】，只是回传丢了信息。
+	// 严格回显校验会把这些老锄头的每一个 share 判 malformed，进而触发 autoban，
+	// 矿工侧表现为「连上就被踢、no active pools」。
+	//
+	// 放宽是安全的：连接 tag 与保留区本就由池侧记录重建（materialize），从不信矿工；
+	// 真正的防线是「池端重算 hash 必须与矿工上报的 result 逐字节一致」——回显校验
+	// 只是更早一步的诊断性拦截，去掉它不降低任何安全性，坏 blob 照样落 badpow。
+	WireNonceLenient bool
+
 	// PowIsBlockHash true 时 PoW hash 反转即链上块 hash（dragonx：块 id =
 	// reverse(sha256d(173B))）。爆块落库占位直接用显示序真块 hash——即使提交
 	// 失败/崩溃，分类器也能按链上 hash 归位（免 blob 链"先交后记"的两难）。

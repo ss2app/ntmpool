@@ -299,11 +299,23 @@ func (m *Manager) HandleSubmit(ctx context.Context, sub stratum.CNSubmission) st
 	} else {
 		// 宽 wire nonce（dragonx 类）：矿工回显完整字段，池只滚低 NonceLen 字节
 		wb, err := hex.DecodeString(strings.TrimSpace(sub.NonceHex))
-		if err != nil || len(wb) != wireLen || sub.ResultHex == "" {
+		if err != nil || sub.ResultHex == "" {
 			return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
 		}
-		wireBytes = wb
-		search = cnwork.NonceFieldLE(wireBytes, 0, work.NonceLen) & searchMask(work.SearchLen)
+		switch {
+		case len(wb) == wireLen:
+			wireBytes = wb
+		case work.WireNonceLenient && len(wb) >= work.SearchLen && len(wb) < wireLen:
+			// 老锄头只回传低位 nonce（不带池的 tag/保留区）——搜索区够用即可，
+			// 其余字节池侧重建；见 adapter.BlobWork.WireNonceLenient。
+		default:
+			return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
+		}
+		n := work.NonceLen
+		if len(wb) < n {
+			n = len(wb)
+		}
+		search = cnwork.NonceFieldLE(wb, 0, n) & searchMask(work.SearchLen)
 	}
 
 	// 只信矿工的搜索区；连接 tag 用池侧记录重建（防伪造，CRB/zoka 先例同款）
@@ -312,7 +324,10 @@ func (m *Manager) HandleSubmit(ctx context.Context, sub stratum.CNSubmission) st
 
 	// 宽 wire nonce 回显校验：矿工必须原样带回池下发的整个 nonce 字段。
 	// 回显被改 = 矿工实际 hash 的 blob 与池重建不同——与其困惑地 badpow 不如明确 malformed。
-	if wireBytes != nil && !bytes.Equal(wireBytes, candidate[work.NonceOffset:work.NonceOffset+wireLen]) {
+	// WireNonceLenient 的链跳过本校验（老锄头回传会丢 tag/保留区，但哈希用的是完整 blob），
+	// 正确性仍由下面的「池端重算 hash == 矿工上报 result」兜底。
+	if wireBytes != nil && !work.WireNonceLenient &&
+		!bytes.Equal(wireBytes, candidate[work.NonceOffset:work.NonceOffset+wireLen]) {
 		return stratum.SubmitResult{Outcome: core.OutcomeMalformed}
 	}
 

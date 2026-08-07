@@ -301,6 +301,9 @@ func (c *Client) GetTemplate(ctx context.Context) (*adapter.BlockTemplate, error
 		HashingBlob: blob,
 		NonceOffset: nonceOffset, NonceLen: 8, SearchLen: 4,
 		WireNonceLen:    nonceFieldLen,
+		// 官方锄头 junorig < v6.24.0-juno.6 回传 share 时会把 tag/保留区抹零
+		// （哈希用的仍是完整 blob）——放宽回显校验兼容全部在野版本，见字段注释。
+		WireNonceLenient: true,
 		PowIsBlockHash:  true, // 单段：pow = RandomX hash = 链上块 hash（GetHash=nSolution）
 		SeedHash:        t.RandomXSeedHash,
 		Algo:            "rx/juno",
