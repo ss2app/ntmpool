@@ -192,6 +192,13 @@ type paymentInfo struct {
 	Created                     string          `json:"created"`
 }
 
+// paymentLite 自查 7 日窗口的轻量打款行（前端图表数据源，只带画图所需字段）。
+type paymentLite struct {
+	Amount  json.RawMessage `json:"amount"`
+	Created string          `json:"created"`
+	Status  string          `json:"status"`
+}
+
 type minerRow struct {
 	Miner           string  `json:"miner"`
 	MinerID         string  `json:"minerId"`
@@ -221,6 +228,7 @@ type minerDetail struct {
 	LastPaymentAmount  json.RawMessage `json:"lastPaymentAmount,omitempty"`
 	LastPaymentStatus  string          `json:"lastPaymentStatus,omitempty"`
 	RecentPayments     []paymentInfo   `json:"recentPayments,omitempty"` // 最近 N 笔（自查：不脱敏自己的地址）
+	Payments7d         []paymentLite   `json:"payments7d"`               // 近 7 日到账明细（无 omitempty：空数组=窗口内无打款，字段缺失=旧版池）
 	Performance        *perfSample     `json:"performance,omitempty"`
 	PerformanceSamples []perfSample    `json:"performanceSamples"`
 }
@@ -474,6 +482,7 @@ func (s *Server) handleMinerDetail(w http.ResponseWriter, r *http.Request) {
 		PendingBalance:     num(sum.Balance),
 		TotalPaid:          num(sum.TotalPaid),
 		PerformanceSamples: []perfSample{},
+		Payments7d:         []paymentLite{},
 	}
 	if sum.Debt != "" && !isZeroNum(sum.Debt) {
 		d.Debt = num(sum.Debt)
@@ -513,12 +522,41 @@ func (s *Server) handleMinerDetail(w http.ResponseWriter, r *http.Request) {
 		d.LastPaymentTxid = last.TransactionConfirmationData
 		d.LastPaymentAmount = last.Amount
 		d.LastPaymentStatus = last.Status
+		d.Payments7d = payments7d(pays, now)
 		if len(pays) > 10 {
 			pays = pays[:10]
 		}
 		d.RecentPayments = pays
 	}
 	writeJSON(w, d)
+}
+
+// payments7d 从全量打款行（新→旧）筛出近 7 日图表数据。
+// 窗口取 8 天：保证任意时区（UTC±14）下「最近 7 个自然日」都有完整数据，日界由
+// 前端按浏览器本地时区切。只计已广播批次（sent/confirming/confirmed）——failed 从未
+// 上链、voided 已退回余额、created/awaiting_response 还没出门，都不算「到账」。
+// 上限 2000 笔防超大响应：现役最密打款间隔 10 分钟 → 8 天理论上限 1152 笔（生产
+// 实测 2026-08-08 各币最大 339 笔），2000 留足余量；真截断时牺牲的是最旧的行。
+func payments7d(pays []paymentInfo, now time.Time) []paymentLite {
+	const maxRows = 2000
+	cutoff := now.Add(-8 * 24 * time.Hour)
+	out := []paymentLite{}
+	for _, pi := range pays {
+		switch core.PaymentStatus(pi.Status) {
+		case core.PaymentSent, core.PaymentConfirming, core.PaymentConfirmed:
+		default:
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, pi.Created)
+		if err != nil || t.Before(cutoff) {
+			continue
+		}
+		out = append(out, paymentLite{Amount: pi.Amount, Created: pi.Created, Status: pi.Status})
+		if len(out) == maxRows {
+			break
+		}
+	}
+	return out
 }
 
 func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
