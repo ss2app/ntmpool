@@ -1,0 +1,130 @@
+/* 事故公告弹窗（2026-08-02 起：中转线路持续遭 DDoS + 三条新线路上线）
+   ★ 站点 CSP 是 style-src 'self'，内联 <style> 会被浏览器拦掉 —— 必须走独立文件。
+   ★ 配色跟随 app CSS 的低饱和中性基调，不加任何 glow（见 07-19 配色教训）。 */
+
+.ntc-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, .72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.ntc-mask[hidden] { display: none; }
+
+.ntc-card {
+  background: var(--surface-1, #16171d);
+  border: 1px solid var(--line-strong, #414550);
+  border-radius: 14px;
+  max-width: 680px;
+  width: 100%;
+  max-height: 88vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-2, 0 8px 24px #00000040);
+  font-family: var(--font-sans);
+}
+
+.ntc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 13px;
+  border-bottom: 1px solid var(--line-subtle, #2a2c34);
+  position: sticky;
+  top: 0;
+  background: var(--surface-1, #16171d);
+}
+.ntc-head h2 {
+  font-size: 16px;
+  line-height: 1.45;
+  margin: 0;
+  color: var(--warning, #d1ad6a);
+  font-weight: 600;
+}
+.ntc-x {
+  flex: none;
+  background: transparent;
+  border: 1px solid var(--line-strong, #414550);
+  border-radius: 8px;
+  padding: 4px 11px;
+  color: var(--text-muted, #9297a2);
+  font-size: 13px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.ntc-x:hover { background: var(--surface-hover, #2b2e38); }
+
+.ntc-body {
+  padding: 16px 20px 20px;
+  font-size: 13.5px;
+  line-height: 1.62;
+  color: var(--text-secondary, #b3b7c0);
+}
+.ntc-body p { margin: 0 0 12px; }
+.ntc-body b { color: var(--text-primary, #d1d4db); font-weight: 600; }
+.ntc-ok { color: var(--success, #7fb99a); }
+
+.ntc-block {
+  background: var(--bg-sunken, #101116);
+  border: 1px solid var(--line-subtle, #2a2c34);
+  border-radius: 10px;
+  padding: 13px 14px;
+  margin-bottom: 12px;
+}
+.ntc-block-t {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--brand-cyan, #61e9fc);
+  margin-bottom: 8px;
+}
+
+.ntc-eps { display: flex; flex-direction: column; gap: 7px; }
+.ntc-ep { display: flex; gap: 10px; align-items: baseline; }
+.ntc-ep-loc {
+  flex: none;
+  min-width: 74px;
+  font-size: 12.5px;
+  color: var(--text-primary, #d1d4db);
+}
+.ntc-ep-host {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--brand-cyan, #61e9fc);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.ntc-ports {
+  font-size: 12px;
+  color: var(--text-muted, #9297a2);
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line-subtle, #2a2c34);
+}
+.ntc-ports .mono { font-family: var(--font-mono); color: var(--text-secondary, #b3b7c0); }
+
+.ntc-hint { font-size: 12px; color: var(--text-muted, #9297a2); }
+
+.ntc-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+.ntc-ok-btn {
+  background: var(--surface-3, #252731);
+  border: 1px solid var(--line-strong, #414550);
+  border-radius: 8px;
+  padding: 7px 18px;
+  color: var(--text-primary, #d1d4db);
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.ntc-ok-btn:hover { background: var(--surface-hover, #2b2e38); }
+
+@media (max-width: 560px) {
+  .ntc-ep { flex-direction: column; gap: 2px; }
+  .ntc-ep-loc { min-width: 0; }
+}
