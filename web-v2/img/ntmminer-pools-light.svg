@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 256" role="img" aria-labelledby="title desc">
+  <title id="title">NTMminer Pools</title>
+  <desc id="desc">NTMminer Pools circuit pickaxe mark and wordmark, light background variant.</desc>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset=".48" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#6d5ce8"/>
+    </linearGradient>
+    <linearGradient id="deep" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#09173F"/>
+      <stop offset="1" stop-color="#060723"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(24 32) scale(.25)" stroke="#12306b" stroke-width="8" stroke-linejoin="miter">
+    <path fill="url(#brand)" d="M48 248C152 137 285 78 452 48L405 101C266 133 154 181 48 248Z"/>
+    <path fill="url(#brand)" d="M522 42C699 53 862 117 976 248C831 166 711 129 565 123Z"/>
+    <path fill="url(#brand)" d="M452 48H522L565 123L548 140V350H504V148L472 116L420 116Z"/>
+    <path fill="url(#deep)" d="M522 42H560L596 92L690 103L650 135L590 132L548 140L565 123Z"/>
+    <path fill="url(#brand)" d="M72 330V650L130 592V458L384 650V330L326 388V515Z"/>
+    <path fill="url(#brand)" d="M320 354L368 410H472V680L512 736L552 680V410H656L704 354Z"/>
+    <path fill="url(#brand)" d="M632 330V650L690 592V458L768 536L846 458V592L904 650V330L768 468Z"/>
+    <g fill="#0b1220" stroke-width="12">
+      <circle cx="727" cy="154" r="14"/><circle cx="118" cy="408" r="14"/>
+      <circle cx="510" cy="572" r="14"/><circle cx="870" cy="414" r="14"/>
+    </g>
+  </g>
+  <g fill="#0f172a">
+    <path d="M312 184V72H340L396 142V72H424V184H397L340 113V184Z"/>
+    <path d="M438 72H542V98H504V184H476V98H438Z"/>
+    <path d="M556 184V72H586L626 132L666 72H696V184H668V116L636 164H616L584 116V184Z"/>
+    <g transform="skewX(-8)">
+      <path d="M726 184V104H750V113Q762 101 779 101Q801 101 809 117Q822 101 843 101Q873 101 873 135V184H847V139Q847 123 834 123Q817 123 817 145V184H791V139Q791 123 778 123Q752 123 752 149V184Z"/>
+      <path d="M889 104H915V184H889ZM889 72H915V94H889Z"/>
+      <path d="M932 184V104H958V114Q970 101 990 101Q1022 101 1022 137V184H996V141Q996 123 980 123Q958 123 958 150V184Z"/>
+      <path d="M1038 144Q1038 101 1080 101Q1122 101 1122 147V155H1064Q1067 166 1084 166Q1099 166 1112 158L1121 176Q1103 187 1080 187Q1038 187 1038 144ZM1064 137H1097Q1095 120 1081 120Q1067 120 1064 137Z"/>
+      <path d="M1138 184V104H1164V117Q1175 101 1195 102V128Q1174 126 1164 143V184Z"/>
+    </g>
+  </g>
+  <g fill="#2563eb">
+    <path d="M1226 184V72H1274Q1317 72 1317 108Q1317 144 1274 144H1254V184ZM1254 120H1272Q1289 120 1289 108Q1289 96 1272 96H1254Z"/>
+    <path d="M1324 144Q1324 101 1367 101Q1410 101 1410 144Q1410 187 1367 187Q1324 187 1324 144ZM1350 144Q1350 165 1367 165Q1384 165 1384 144Q1384 123 1367 123Q1350 123 1350 144Z"/>
+    <path d="M1417 144Q1417 101 1460 101Q1503 101 1503 144Q1503 187 1460 187Q1417 187 1417 144ZM1443 144Q1443 165 1460 165Q1477 165 1477 144Q1477 123 1460 123Q1443 123 1443 144Z"/>
+    <path d="M1518 72H1544V184H1518Z"/>
+    <path d="M1558 126Q1558 101 1590 101Q1605 101 1618 107V130Q1604 121 1592 121Q1583 121 1583 127Q1583 132 1597 135Q1622 140 1622 161Q1622 187 1587 187Q1568 187 1555 179V156Q1570 167 1587 167Q1597 167 1597 161Q1597 155 1581 152Q1558 147 1558 126Z" transform="translate(-34)"/>
+  </g>
+</svg>
