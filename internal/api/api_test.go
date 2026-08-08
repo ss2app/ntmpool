@@ -345,6 +345,67 @@ func TestMinerSelfQuery(t *testing.T) {
 	}
 }
 
+func TestMinerPayments7d(t *testing.T) {
+	s, fp := newTestServer(t)
+	// 在基础 fixture（addrA 一笔 sent @ tNow-10min）之上补批次，覆盖各筛选维度
+	add := func(status core.PaymentStatus, at time.Time, outputs map[string]string) {
+		bid, _ := fp.batches.NextBatchID()
+		if err := fp.batches.Save(&payout.Batch{
+			ID: bid, Kind: "payout", Outputs: outputs,
+			Status: status, TxID: "txid-x", CreatedAt: at,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(core.PaymentConfirmed, tNow.Add(-3*24*time.Hour), map[string]string{addrA: "7.00000000"})   // 计入
+	add(core.PaymentFailed, tNow.Add(-2*24*time.Hour), map[string]string{addrA: "1.00000000"})      // failed 不计
+	add(core.PaymentVoided, tNow.Add(-1*24*time.Hour), map[string]string{addrA: "2.00000000"})      // voided 不计
+	add(core.PaymentConfirmed, tNow.Add(-9*24*time.Hour), map[string]string{addrA: "3.00000000"})   // 出窗（>8天）不计
+	add(core.PaymentConfirmed, tNow.Add(-4*24*time.Hour), map[string]string{addrB: "99.00000000"})  // 别人的不计
+
+	rec, body := get(t, s.Handler(), "/api/pools/tst/miners/"+addrA)
+	if rec.Code != 200 {
+		t.Fatalf("code=%d body=%s", rec.Code, body)
+	}
+	var d struct {
+		Payments7d     []paymentLite `json:"payments7d"`
+		RecentPayments []paymentInfo `json:"recentPayments"`
+	}
+	if err := json.Unmarshal([]byte(body), &d); err != nil {
+		t.Fatalf("%v\n%s", err, body)
+	}
+	if len(d.Payments7d) != 2 {
+		t.Fatalf("payments7d 应 2 笔（sent-10min + confirmed-3d）: %+v", d.Payments7d)
+	}
+	// fixture 的 CreatedAt 与批次 ID 无关联，行序按 ID 降序——只断言集合内容
+	got := map[string]string{}
+	for _, pl := range d.Payments7d {
+		got[string(pl.Amount)] = pl.Status
+	}
+	if got["30.00000000"] != "sent" || got["7.00000000"] != "confirmed" {
+		t.Fatalf("payments7d 内容错: %+v", d.Payments7d)
+	}
+	// recentPayments 行为不变：addrA 全状态可见（含 failed/voided），新→旧
+	if len(d.RecentPayments) != 5 {
+		t.Fatalf("recentPayments 应 5 笔: %d", len(d.RecentPayments))
+	}
+
+	// addrB：字段必须始终存在，且只见自己的打款（隔离）
+	_, body2 := get(t, s.Handler(), "/api/pools/tst/miners/"+addrB)
+	if !strings.Contains(body2, `"payments7d":[`) {
+		t.Fatalf("payments7d 字段应始终存在: %s", body2)
+	}
+	var d2 struct {
+		Payments7d []paymentLite `json:"payments7d"`
+	}
+	if err := json.Unmarshal([]byte(body2), &d2); err != nil {
+		t.Fatal(err)
+	}
+	if len(d2.Payments7d) != 1 || string(d2.Payments7d[0].Amount) != "99.00000000" {
+		t.Fatalf("addrB 应只见自己的一笔: %+v", d2.Payments7d)
+	}
+}
+
 func TestMinerDetailRateLimit(t *testing.T) {
 	s, _ := newTestServer(t)
 	h := s.Handler()
