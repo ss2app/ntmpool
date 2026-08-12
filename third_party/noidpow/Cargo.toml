@@ -1,0 +1,36 @@
+# noidpow — ParanO(1)d (NOID) Poseidon2b PoW 共识函数的 C-ABI staticlib 封装。
+# 供 NTMPool 通过 cgo 做池端 share 重算（同源铁律：只调官方共识函数，不重写算法）。
+#
+# 上游源码：C:\ntmbuild\parano1d-src（Apache-2.0，只读；path 依赖按相对路径
+# ../../../parano1d-src 引用 → Linux 重编时保持同级目录布局即可，见包内 README 注释）。
+
+[package]
+name = "noidpow"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "C-ABI staticlib wrapper around ParanO(1)d (NOID) official Poseidon2b PoW consensus functions, for NTMPool share validation via cgo"
+publish = false
+
+[lib]
+name = "noidpow"
+# staticlib = 给 Go cgo 链的产物；rlib = 让同 crate 的 gen_kat bin / 单元测试能用本库。
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# 官方共识实现（poseidon_pow_digest_from_fields / le256_lt 都从这里来）。
+noid_chain = { path = "../../../parano1d-src/noid_chain" }
+# Block128 定义（decode wire 字段用）。
+noid_core = { path = "../../../parano1d-src/noid_core" }
+# 显式钉住同一棵源码树的 poseidon2b（noid_chain 已传递依赖它；此处写明是有意同源）。
+noid_poseidon2b = { path = "../../../parano1d-src/noid_poseidon2b" }
+# gen_kat 输出 hex 用。
+hex = "0.4"
+
+# 独立 workspace（空表）：绝不能被上游 parano1d workspace 吸走。
+[workspace]
+
+# 与上游 workspace 的 release profile 对齐（只影响机器码质量，不影响共识字节）。
+[profile.release]
+lto = "thin"
+codegen-units = 1
