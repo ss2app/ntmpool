@@ -60,9 +60,10 @@ type NoidTemplate struct {
 
 // Client 一个 NOID 节点的适配器。
 type Client struct {
-	name  string
-	url   string
-	token string // Bearer（= 节点 --mining-key）；空 = 不带 Authorization
+	name     string
+	url      string
+	token    string // Bearer（= 节点 --mining-key）；空 = 不带 Authorization
+	coinbase string // getBlockTemplate 的 coinbase 参数；"" = 节点自身钱包地址（池金库）
 
 	hc    *http.Client // 主 client：轻 RPC（chainInfo/getBlockHash/submitBlock）
 	tplHC *http.Client // 拉模板专用：制备 7-35s，长超时，与 hc 分开
@@ -92,6 +93,10 @@ func New(name, url, token string) *Client {
 }
 
 func (c *Client) Name() string { return c.name }
+
+// SetCoinbase 设 getBlockTemplate 的 coinbase 参数（付款地址）。默认 ""（节点自身钱包
+// = 池金库）。设为池自有 o1 地址时要求节点带 --allow-custom-coinbase。
+func (c *Client) SetCoinbase(addr string) { c.coinbase = addr }
 
 // ---- JSON-RPC 2.0 底座（jsonrpsee；Bearer 全局中间件）----
 
@@ -262,7 +267,12 @@ func (c *Client) fetchTemplateOnce(ctx context.Context) (*NoidTemplate, error) {
 		ExpiresInSeconds    int64  `json:"expires_in_seconds"`
 		NTxs                int    `json:"n_txs"`
 	}
-	if err := c.call(ctx, c.tplHC, "paranoid_getBlockTemplate", []any{}, &r); err != nil {
+	// ★paranoid_getBlockTemplate 必须传一个 coinbase 字符串参数（官方 extminer
+	// main.rs:184-185 `self.call("paranoid_getBlockTemplate", [coinbase])`）；传 []
+	// 会被节点 jsonrpsee 判 "Invalid params: No more params"（实测）。空串 "" = 节点用
+	// 自身 mining-key 钱包地址付款（= 池金库，miner_address 进 pow_fields[8..9]）。
+	// 需付到别的地址时改传该地址（要求节点 --allow-custom-coinbase）。
+	if err := c.call(ctx, c.tplHC, "paranoid_getBlockTemplate", []any{c.coinbase}, &r); err != nil {
 		return nil, err
 	}
 	if r.TemplateID == "" {
