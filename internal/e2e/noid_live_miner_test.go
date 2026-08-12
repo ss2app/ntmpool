@@ -192,6 +192,18 @@ func TestNoidLiveMinerBridge(t *testing.T) {
 	if !strings.Contains(full, "engine=midstate") {
 		t.Fatalf("锄头未走 midstate 引擎\n%s", logs)
 	}
+	// ★池模式 stale 检测必须启用：池不服务 getChainInfo(-32601)，锄头要回退到
+	// 轮询 template_id。没有它，锄头只在每次 solve 后才换工作 —— vardiff 稳态
+	// ~10s/share 对上 ~15s 出块 ⇒ 平均三分之一的算力在挖死掉的父块。
+	if !strings.Contains(full, "pool template_id") {
+		t.Fatalf("★锄头未启用池模式 stale 检测（watchdog 回退失效 = 大量算力挖过期模板）\n%s", logs)
+	}
+	// ★★而这个回退【绝不能】穿透到节点：真节点是单飞行槽，被第二个调用者轮询
+	// getBlockTemplate 会烧掉模板槽。判据 = 假节点侧收到的拉模板次数必须仍然很少
+	// （watchdog 每 500ms 打一次池，若穿透到节点，45s 窗口会是 ~90 次）。
+	if tplCalls > 10 {
+		t.Fatalf("★★打节点拉模板 %d 次——watchdog 的池轮询穿透到节点了（会烧单飞行槽）", tplCalls)
+	}
 
 	// 全网难度 vs share 难度的量级关系应体现在「share 多、块少」上。
 	if big.NewInt(int64(shares)).Cmp(big.NewInt(int64(blocks))) <= 0 {
