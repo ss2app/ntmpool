@@ -36,14 +36,16 @@ import (
 
 const (
 	noidLivePort = 15931
-	// noidLiveShareDiff share 难度：本机锄头 ~10 MH/s ⇒ 约 10 share/s，
-	// 十几秒的测试窗口里够记满一批账，又不会把池刷爆。
+	// noidLiveShareDiff share 难度：慢机（5850U 8 线程 ~1.5 MH/s）也有 ~1.5 share/s。
 	noidLiveShareDiff = 1_000_000
-	// noidLiveNetDiff 全网难度：~30× share 难度 ⇒ 期望 ~3s 一个块，
-	// 测试窗口内必然爆块（真锄头真算力，不作弊）。
-	noidLiveNetDiff = 30_000_000
-	// noidLiveRun 挖矿窗口。
-	noidLiveRun = 25 * time.Second
+	// noidLiveNetDiff 全网难度 = 5× share 难度。
+	// ⚠这几个数是【按最慢的对拍机】定的，别按快机调：2026-08-13 首版取 3e7 + 25s 窗口，
+	//   7950X（4 线程 ~1.3 MH/s，23s/块）刚好卡线过，5850U（4 线程 783 kH/s，38s/块）
+	//   直接超时 FAIL —— 测试对机器性能太敏感就成了假红灯。
+	//   现在：5850U 8 线程 ≈1.5 MH/s ⇒ 3.3s/块，45s 窗口期望 13 块，P(零块)≈0.1%。
+	noidLiveNetDiff = 5_000_000
+	// noidLiveRun 挖矿窗口（达标即提前收工，不会真跑满）。
+	noidLiveRun = 45 * time.Second
 )
 
 // targetLEFromDiff 难度 → 256-bit LE target（与池 dialect targetLE32 同口径）。
@@ -95,7 +97,7 @@ func TestNoidLiveMinerBridge(t *testing.T) {
 	cmd := exec.CommandContext(runCtx, bin,
 		"--rpc", fmt.Sprintf("http://127.0.0.1:%d/", noidLivePort),
 		"--key", noidMinerAddr+".liverig",
-		"--threads", "4", // 够快就行，别把测试机吃满
+		"--threads", "8", // 够快就行，别把测试机吃满
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
