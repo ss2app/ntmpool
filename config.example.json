@@ -185,6 +185,44 @@
       },
       "miningEnabled": true,
       "newConnectionsEnabled": true
+    },
+    {
+      "id": "noid",
+      "symbol": "NOID",
+      "adapter": "noid-rpc",
+      "algo": "poseidon2b/noid",
+      "decimals": 6,
+      "nodes": [
+        { "url": "http://127.0.0.1:9401", "pass": "${NOID_MINING_KEY}" }
+      ],
+      "poolAddress": "o1_POOL_NODE_WALLET_ADDRESS_HERE_TODO",
+      "feeAddress": "",
+      "ports": [
+        {
+          "port": 5601, "mode": "pplns", "dialect": "noidhttp", "enabled": true,
+          "maxConns": 5000,
+          "vardiff": { "enabled": true, "startDiff": 8192, "minDiff": 256, "maxDiff": 100000000, "targetSeconds": 10 }
+        },
+        {
+          "port": 5602, "mode": "solo", "dialect": "noidhttp", "enabled": true,
+          "maxConns": 2000,
+          "vardiff": { "enabled": true, "startDiff": 32768, "minDiff": 1024, "maxDiff": 100000000, "targetSeconds": 15 }
+        }
+      ],
+      "payout": {
+        "enabled": false,
+        "scheme": "pplns",
+        "pplnsFactor": 2.0,
+        "feePercent": 5.0,
+        "soloFeePercent": 5.0,
+        "minPayout": "1.0",
+        "confirmations": 20,
+        "intervalSeconds": 120,
+        "orphanDebts": true,
+        "feeCollect": { "enabled": false, "minAmount": "" }
+      },
+      "miningEnabled": true,
+      "newConnectionsEnabled": true
     }
   ]
 }

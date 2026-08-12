@@ -38,8 +38,10 @@ func buildFamily(ctx context.Context, cfg config.CoinConfig, decimals int, inst 
 		return buildMidstateFamily(ctx, cfg, decimals, inst)
 	case "velkar-rpc":
 		return buildVelkarFamily(ctx, cfg, decimals, inst)
+	case "noid-rpc":
+		return buildNoidFamily(ctx, cfg, decimals, inst)
 	default:
-		return nil, errf("[%s] 未知适配器 %q（可选 bitcoin-rpc / cryptonote-rpc / zephyr-rpc / custom-http / dragonx-rpc / juno-rpc / brisvia-rpc / scash-rpc / noctari-rpc / btc09-http / midstate-rpc / velkar-rpc）", cfg.ID, cfg.Adapter)
+		return nil, errf("[%s] 未知适配器 %q（可选 bitcoin-rpc / cryptonote-rpc / zephyr-rpc / custom-http / dragonx-rpc / juno-rpc / brisvia-rpc / scash-rpc / noctari-rpc / btc09-http / midstate-rpc / velkar-rpc / noid-rpc）", cfg.ID, cfg.Adapter)
 	}
 }
 

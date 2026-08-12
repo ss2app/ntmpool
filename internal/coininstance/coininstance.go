@@ -146,9 +146,11 @@ func Start(parent context.Context, cfg config.CoinConfig, deps Deps) (*Instance,
 	hrCfg := hashrate.Config{}
 	if cfg.Adapter == "custom-http" || cfg.Adapter == "cryptonote-rpc" || cfg.Adapter == "dragonx-rpc" ||
 		cfg.Adapter == "juno-rpc" ||
-		cfg.Adapter == "brisvia-rpc" || cfg.Adapter == "noctari-rpc" || cfg.Adapter == "midstate-rpc" {
+		cfg.Adapter == "brisvia-rpc" || cfg.Adapter == "noctari-rpc" || cfg.Adapter == "midstate-rpc" ||
+		cfg.Adapter == "noid-rpc" {
 		// midstate：难度=期望 VDF 次数（连续标尺），算力单位 ext/s（2026-07-11
-		// 生产实测坑：漏加这行 → 34K ext/s 被 2^32 口径显成 168 TH/s，zoka 同款）
+		// 生产实测坑：漏加这行 → 34K ext/s 被 2^32 口径显成 168 TH/s，zoka 同款）。
+		// noid：难度=期望 poseidon2b 次数（连续标尺，Diff1/target），同 multiplier=1。
 		hrCfg.Multiplier = 1
 	}
 	if cfg.Adapter == "btc09-http" {
