@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 
 	"github.com/scashcc/ntmpool/internal/accounting"
+	"github.com/scashcc/ntmpool/internal/adapter"
 	"github.com/scashcc/ntmpool/internal/adapter/midstaterpc"
 	"github.com/scashcc/ntmpool/internal/config"
 	"github.com/scashcc/ntmpool/internal/core"
@@ -65,6 +66,10 @@ func buildMidstateFamily(_ context.Context, cfg config.CoinConfig, decimals int,
 		jobs:       jm,
 		dialects:   map[string]stratum.Dialect{"midstate": dialect},
 		connCount:  dialect.ConnCount,
+		// tip 通道：midstate 节点无 ZMQ/longpoll，用 300ms 探 /state 变化触发
+		// force refresh，把 2s 轮询的秒级滞后压到亚秒级（滞后=矿工在旧 job 上
+		// 白挖，60s 出块下 2.5s ≈ 4% 算力）。轮询兜底仍在 startLoops 里保留。
+		notifiers: []adapter.Notifier{c.TipNotifier(0)},
 	}, nil
 }
 
