@@ -40,56 +40,631 @@ window.NTM_CONFIG = {
   },
 
   downloads: {
-    version: 'v1.21.1',
+    // ★ 2026-08-30 起：下载页 = 锄头卡片（/download）→ 锄头详情页（/download/<id>）。
+    // 每个锄头一个条目：files=可下载文件、quick=一键命令生成器、cli=完整参数表（事实源=实跑 --help）、highlights/faq/changelog=说明。
+    // 币页 connect 命令用哪个锄头由 coins.<id>.mining.miner 指向这里的 id（file.run = 下载/解压后要执行的文件名）。
+    // 抽水属对外承诺：devFeePercent / 锄头启动横幅 / 程序内参数三者必须一致，改任一处同步另两处。
     pagePath: '/download',
     baseUrl: '/downloads',
-    files: [
+    miners: [
       {
-        id: 'windows-x64',
-        os: 'Windows x64',
-        icon: 'windows',
-        file: 'NTMminer-windows-x64-v1.21.1.exe',
-        status: 'ready',
-        sha256: '9aae785569ebe2c2a469a0e93484b1e986fe86f0d6682284671c08f0a30f78f4',
-        note: {
-          zh: 'Windows 10/11 64 位。含 CPU + NVIDIA GPU 后端，原生多显卡（--gpu-devices）。含 Kadikama (rx/kad) 挖矿支持（CPU，RandomX v2 引擎）。★v1.21.1 是 Linux 端的 glibc 兼容性修复版，Windows 版除版本号外与 v1.21.0 完全相同，已在用的矿工无需重新下载。单文件静态构建，无需任何额外 DLL，解压即用。首次运行若被 Defender 拦截，选「仍要运行」。大页说明：首次以管理员身份运行一次，锄头会自动申请「锁定内存页」权限，注销重登录后即自动启用大页（日志出现 SeLockMemoryPrivilege enabled 即生效），RandomX 系算法算力显著提升；未授权时自动回退普通页，能挖但较慢。',
-          en: 'Windows 10/11 64-bit. CPU + NVIDIA GPU backends, native multi-GPU (--gpu-devices). Includes Kadikama (rx/kad) CPU mining on the RandomX v2 engine. v1.21.1 is a Linux-side glibc compatibility fix; the Windows build is identical to v1.21.0 apart from the version string, so existing users do not need to re-download. Single static executable, no extra DLLs, no install needed. If Defender warns, choose “Run anyway”. Huge pages: run once as administrator and the miner requests the “Lock pages in memory” privilege automatically; after signing out and back in huge pages are enabled with no further setup (look for SeLockMemoryPrivilege enabled in the log), a large speedup on RandomX algorithms. Without the privilege it falls back to normal pages — still mines, just slower.',
+        id: 'ntmminer',
+        name: 'NTMminer',
+        kind: 'universal',
+        version: 'v1.21.1',
+        released: '2026-07-25',
+        color: '#2563eb',
+        logo: '/img/ntm-mark.svg',
+        symbol: 'NTM',
+        devFeePercent: 0,
+        feeAddress: null,
+        hardware: ['cpu', 'gpu'],
+        tagline: {
+          zh: '通用多算法锄头：一个文件覆盖 16 种算法，0% 抽水',
+          en: 'The universal multi-algorithm miner: one file, 16 algorithms, 0% dev fee',
+        },
+        summary: {
+          zh: 'CPU + NVIDIA GPU 同一个二进制。本站有矿池的币里 DragonX 用它挖；其余算法可接第三方矿池。体积约 30 MB。',
+          en: 'CPU + NVIDIA GPU in one binary. Among the pools on this site it mines DragonX; the other algorithms connect to third-party pools. About 30 MB.',
+        },
+        algos: ['neuromorph', 'argon2id-blocknet', 'midstate', 'rx/dragonx', 'zoka', 'rx/brva', 'rx/tar', 'rx/zeph', 'rx/dom', 'rx/scash', 'rx/kad', 'btx', 'qpow', 'btc09', 'quark', 'velkarhash'],
+        requirements: {
+          zh: 'Windows 10/11 64 位，或任意 x86-64 Linux（Ubuntu 18.04+ / Debian 10+ / CentOS 7+ / HiveOS，只需 glibc 2.17 以上）。GPU 算法（midstate / btx / qpow）需要 NVIDIA 驱动，不用装 CUDA。RandomX 系算法（rx/*、zoka）只用 CPU，GPU 不参与。',
+          en: 'Windows 10/11 64-bit, or any x86-64 Linux (Ubuntu 18.04+, Debian 10+, CentOS 7+, HiveOS; only glibc 2.17 or newer). GPU algorithms (midstate / btx / qpow) need an NVIDIA driver, no CUDA install. RandomX-family algorithms (rx/*, zoka) run on the CPU only.',
+        },
+        files: [
+          {
+            id: 'windows-x64',
+            os: 'Windows x64',
+            icon: 'windows',
+            file: 'NTMminer-windows-x64-v1.21.1.exe',
+            run: 'NTMminer-windows-x64-v1.21.1.exe',
+            status: 'ready',
+            size: 32485377,
+            sha256: '9aae785569ebe2c2a469a0e93484b1e986fe86f0d6682284671c08f0a30f78f4',
+            note: {
+              zh: '单文件静态构建，不需要任何额外 DLL，下载即用。首次运行若被 Defender 拦截，选「仍要运行」。v1.21.1 的 Windows 版除版本号外与 v1.21.0 完全相同。',
+              en: 'Single static executable, no extra DLLs, run as downloaded. If Defender warns on first run, choose "Run anyway". The Windows build of v1.21.1 is identical to v1.21.0 apart from the version string.',
+            },
+          },
+          {
+            id: 'linux-x64',
+            os: 'Linux x64 / HiveOS',
+            icon: 'linux',
+            file: 'NTMminer-linux-x64-v1.21.1',
+            run: './NTMminer-linux-x64-v1.21.1',
+            status: 'ready',
+            size: 30807952,
+            sha256: '811b829a673e275a530a617127e6db096ae4930b0c6ef58c71b1df403316491b',
+            note: {
+              zh: '通用 x86-64 Linux，老基线构建（glibc 2.17 以上即可），彻底解决旧版在 Ubuntu 22.04/20.04、HiveOS 上报 GLIBC_2.38 / GLIBCXX 版本错的问题。下载后 chmod +x 即可运行。',
+              en: 'Generic x86-64 Linux built against an old baseline (glibc 2.17+), fixing the GLIBC_2.38 / GLIBCXX version errors older builds hit on Ubuntu 22.04/20.04 and HiveOS. chmod +x and run.',
+            },
+          },
+        ],
+        quick: {
+          workerDefault: 'rig1',
+          intro: {
+            zh: '本站有矿池的币直接选；挖其它币选「其它矿池」自己填地址。填好收款地址后，下面四个框会同步生成命令。',
+            en: 'Pick a coin that has a pool on this site, or choose "Other pool" and type the pool address yourself. Fill in your payout address and the four boxes below update together.',
+          },
+          custom: {
+            algos: ['neuromorph', 'argon2id-blocknet', 'midstate', 'rx/dragonx', 'zoka', 'rx/brva', 'rx/tar', 'rx/zeph', 'rx/dom', 'rx/scash', 'rx/kad', 'btx', 'qpow', 'btc09', 'quark', 'velkarhash'],
+            template: '{bin} -a {algo} -o {pool} -u {address} --worker {worker}',
+            note: {
+              zh: '这里生成的是纯 CPU 命令。GPU 算法（midstate / btx / qpow）加 --gpu-only（纯 GPU）或 --gpu，见下方完整参数。',
+              en: 'This generates the CPU-only command. For GPU algorithms (midstate / btx / qpow) add --gpu-only (GPU only) or --gpu, see the full reference below.',
+            },
+          },
+          targets: [],
+        },
+        highlights: [
+          {
+            title: { zh: 'Windows 大页：跑一次管理员即可', en: 'Windows huge pages: run once as administrator' },
+            body: {
+              zh: '首次以管理员身份运行一次，锄头会自动申请「锁定内存页」权限，注销重登录后自动启用大页（日志出现 SeLockMemoryPrivilege enabled 即生效），RandomX 系算法算力显著提升；未授权时自动回退普通页，能挖但较慢。',
+              en: 'Run once as administrator and the miner requests the "Lock pages in memory" privilege automatically; after signing out and back in huge pages are enabled with no further setup (look for SeLockMemoryPrivilege enabled in the log) - a large speedup on RandomX algorithms. Without it the miner falls back to normal pages, still mining but slower.',
+            },
+          },
+          {
+            title: { zh: 'Linux 大页：root 自动预留', en: 'Linux huge pages: reserved automatically as root' },
+            body: {
+              zh: '以 root 或 sudo 运行时锄头自动预留 2MiB 大页（无需手动配置），RandomX 系算法提升约 70%。以普通用户运行且系统未预留大页时自动回退普通页（能挖但明显变慢），此时可请管理员先执行 sudo sysctl -w vm.nr_hugepages=1400。',
+              en: 'When run as root (or via sudo) the miner reserves 2MiB huge pages itself (no manual setup), worth roughly 70% on RandomX algorithms. Running as an unprivileged user without a pre-reserved pool falls back to normal pages (still mines, noticeably slower); ask your admin to run sudo sysctl -w vm.nr_hugepages=1400 in that case.',
+            },
+          },
+          {
+            title: { zh: '多显卡原生支持', en: 'Native multi-GPU' },
+            body: {
+              zh: 'v1.14.0 起一进程驱动全部 NVIDIA 卡：--gpu-devices 0,1,3 指定用哪几张，不写默认用全部卡；越界的编号自动忽略。想每卡单独看算力仍可每卡开一个进程。',
+              en: 'Since v1.14.0 one process drives every NVIDIA card: --gpu-devices 0,1,3 picks specific cards, omit it to use all of them; out-of-range indices are ignored. Run one process per card if you want per-card hashrate.',
+            },
+          },
+        ],
+        faq: [
+          {
+            q: { zh: 'Defender / 杀毒软件报毒怎么办？', en: 'Defender or my antivirus flags the file - what now?' },
+            a: {
+              zh: '闭源锄头常被启发式误报。先核对 SHA-256 与本页一致，再在 Defender 里选「仍要运行」或把该文件加入排除项。',
+              en: 'Closed-source miners are commonly flagged by heuristics. Verify the SHA-256 matches this page first, then choose "Run anyway" in Defender or add the file to its exclusions.',
+            },
+          },
+          {
+            q: { zh: 'Linux 报 GLIBC_2.38 not found / GLIBCXX not found？', en: 'Linux says GLIBC_2.38 not found / GLIBCXX not found?' },
+            a: {
+              zh: '那是 v1.21.0 及更早的版本在新基线上编的。换本页的 v1.21.1（老基线构建，glibc 2.17 以上通吃）即可，算法与算力完全一致。',
+              en: 'That happens with v1.21.0 and earlier, which were built on a newer baseline. Switch to the v1.21.1 on this page (old-baseline build, glibc 2.17+) - algorithms and hashrate are identical.',
+            },
+          },
+          {
+            q: { zh: 'HiveOS 怎么用？', en: 'How do I use it on HiveOS?' },
+            a: {
+              zh: '当自定义锄头（Custom miner）填入即可：可执行文件用本页 Linux 版，参数照「一键上手」生成的 Linux 命令去掉文件名那部分。',
+              en: 'Add it as a Custom miner: use the Linux build from this page, and for the arguments take the Linux command generated in Quick Setup without the executable name.',
+            },
+          },
+          {
+            q: { zh: '哪些算法能用显卡？', en: 'Which algorithms use the GPU?' },
+            a: {
+              zh: 'midstate（纯 GPU）、btx / qpow（GPU 或 CPU）。RandomX 系（rx/*、zoka）刻意抗 GPU，GPU 比 CPU 慢一个数量级，锄头只用 CPU 挖。挖 midstate 推荐用本站的 NTMminer-midstate 专用版（更小、换 job 损耗更低）。',
+              en: 'midstate (GPU only) and btx / qpow (GPU or CPU). The RandomX family (rx/*, zoka) is deliberately GPU-hostile - a GPU is an order of magnitude slower than a CPU there, so the miner uses the CPU only. For midstate we recommend the dedicated NTMminer-midstate build on this site (smaller, lower job-switch loss).',
+            },
+          },
+        ],
+        changelog: [
+          {
+            version: 'v1.21.1', date: '2026-07-25',
+            zh: 'Linux 版改用老基线（glibc 2.17）构建，解决 Ubuntu 22.04/20.04、HiveOS 上 GLIBC_2.38 / GLIBCXX_3.4.32 not found 无法启动；算法与算力和 v1.21.0 完全一致。Windows 版仅版本号变化。',
+            en: 'Linux build moved to an old glibc 2.17 baseline, fixing the GLIBC_2.38 / GLIBCXX_3.4.32 not found startup failure on Ubuntu 22.04/20.04 and HiveOS; algorithms and hashrate identical to v1.21.0. Windows build: version string only.',
+          },
+          {
+            version: 'v1.21.0', date: '2026-07-25',
+            zh: '新增 Kadikama (rx/kad) 支持（CPU，RandomX v2 引擎）。',
+            en: 'Added Kadikama (rx/kad) support (CPU, RandomX v2 engine).',
+          },
+          {
+            version: 'v1.15.0', date: '2026-07-14',
+            zh: 'Windows 版改为完全静态单文件，根治「找不到 libwinpthread-1.dll」。',
+            en: 'Windows build is now a fully static single file, fixing the "libwinpthread-1.dll not found" error.',
+          },
+          {
+            version: 'v1.14.0', date: '2026-07-12',
+            zh: '原生多显卡：一进程驱动全部卡，新增 --gpu-devices。',
+            en: 'Native multi-GPU: one process drives every card; new --gpu-devices flag.',
+          },
+        ],
+        cli: {
+          sourceNote: {
+            zh: '事实源：2026-08-29 对与本页下载项逐字节一致（SHA-256 以 9aae7855 开头）的 v1.21.1 二进制实跑 --help。中文说明忠实转写原始输出；英文为对应翻译。',
+            en: 'Source of truth: raw --help output run on 2026-08-29 from the v1.21.1 binary that is byte-for-byte identical to the download on this page (SHA-256 begins with 9aae7855). The Chinese descriptions transcribe that output faithfully; English is the translation.',
+          },
+          usage: [
+            { label: '命名参数 / Named options', command: 'NTMminer -o <host:port> -u <wallet> [选项]' },
+            { label: '旧位置式（兼容） / Legacy positional (compatible)', command: 'NTMminer <host> <port> <wallet> [bench_secs] [threads] [lanes]' },
+          ],
+          examples: [
+            { label: '示例 1 · DragonX / Example 1 · DragonX', command: 'NTMminer-windows-x64-v1.21.1.exe -a rx/dragonx -o hk.ntmminer.com:3333 -u YOUR_WALLET_ADDRESS' },
+            { label: '示例 2 · SOCKS5 / Example 2 · SOCKS5', command: 'NTMminer-windows-x64-v1.21.1.exe -a rx/dragonx -o hk.ntmminer.com:3333 -u YOUR_WALLET_ADDRESS --socks5 127.0.0.1:9050' },
+          ],
+          groups: [
+            {
+              id: 'connection', titleZh: '连接', titleEn: 'Connection',
+              options: [
+                { aliases: ['-o', '--url', '--pool-url'], value: '<host:port>', descriptionZh: '矿池地址（可带 stratum+tcp:// 前缀）', descriptionEn: 'Pool address (may include the stratum+tcp:// prefix).' },
+                { aliases: ['-u', '--user', '--address'], value: '<wallet>', descriptionZh: '钱包/登录地址', descriptionEn: 'Wallet / login address.' },
+                { aliases: ['--worker', '--rig-id'], value: '<名>', descriptionZh: 'worker 名（可选）', descriptionEn: 'Worker name (optional).' },
+                { aliases: ['-p', '--pass'], value: '<pass>', defaultZh: 'x', defaultEn: 'x', descriptionZh: '登录密码（默认 x）', descriptionEn: 'Login password (default x).' },
+                { aliases: ['--socks5', '-x'], value: '[user:pass@]host:port', descriptionZh: '经 SOCKS5 代理挖矿', descriptionEn: 'Mine through a SOCKS5 proxy.' },
+              ],
+            },
+            {
+              id: 'algorithm-hardware', titleZh: '算法与硬件', titleEn: 'Algorithms and hardware',
+              options: [
+                { aliases: ['-a', '--algo', '--coin'], value: '<名>', defaultZh: 'neuromorph', defaultEn: 'neuromorph', descriptionZh: '算法/币：neuromorph | argon2id-blocknet | midstate | rx/dragonx | zoka | rx/brva | rx/tar | rx/zeph | rx/dom | rx/scash | rx/kad | btx | qpow | btc09 | quark | velkarhash（默认 neuromorph）', descriptionEn: 'Algorithm / coin: neuromorph | argon2id-blocknet | midstate | rx/dragonx | zoka | rx/brva | rx/tar | rx/zeph | rx/dom | rx/scash | rx/kad | btx | qpow | btc09 | quark | velkarhash (default neuromorph).' },
+                { aliases: ['-t', '--threads'], value: '<n>', defaultZh: '物理核数（关 SMT 配 MLP）', defaultEn: 'Physical core count (SMT off with MLP)', descriptionZh: '线程数（默认=物理核数，关 SMT 配 MLP；上限 256）', descriptionEn: 'Number of threads (default = physical core count, SMT off with MLP; maximum 256).' },
+                { aliases: ['--smt'], value: null, defaultZh: '关', defaultEn: 'Off', descriptionZh: '改用全部逻辑核（SMT 全开）。大核机通常物理核+MLP 更快，故默认关', descriptionEn: 'Use all logical cores instead (SMT fully on). High-core-count machines are usually faster with physical cores + MLP, so this is off by default.' },
+                { aliases: ['--gpu'], value: null, descriptionZh: '开 CUDA GPU 后端（midstate=纯 GPU；btx/qpow=CPU+GPU 双挖）。单二进制内置，需 NVIDIA 驱动', descriptionEn: 'Enable the CUDA GPU backend (midstate = GPU only; btx/qpow = CPU + GPU dual mining). Built into the single binary; needs an NVIDIA driver.', scopeZh: 'CUDA GPU 后端；help 明示 midstate、btx、qpow', scopeEn: 'CUDA GPU backend; help names midstate, btx and qpow' },
+                { aliases: ['--gpu-only', '--no-cpu'], value: null, descriptionZh: '仅用 GPU 挖、不起 CPU worker（btx/qpow 关掉双挖的 CPU 边；隐含 --gpu）。GPU 矿机用这个', descriptionEn: 'Mine on the GPU only, no CPU workers (for btx/qpow this disables the CPU side of dual mining; implies --gpu). Use this on GPU rigs.', scopeZh: 'GPU 挖矿；btx/qpow 会关闭双挖的 CPU 边', scopeEn: 'GPU mining; disables the CPU side for btx/qpow' },
+                { aliases: ['--gpu-devices'], value: '<列表>', defaultZh: '全部卡', defaultEn: 'All cards', descriptionZh: '多显卡：指定用哪几张卡（逗号列表如 0,1,3；缺省=全部卡）。隐含 --gpu', descriptionEn: 'Multiple GPUs: which cards to use (comma list such as 0,1,3; default = every card). Implies --gpu.', scopeZh: '多显卡；隐含 --gpu', scopeEn: 'Multi-GPU; implies --gpu' },
+                { aliases: ['--stats-demo'], value: null, descriptionZh: '不连矿池，只刷新真实 NVML 状态（算力无 worker，显示 n/a）', descriptionEn: 'Do not connect to a pool; only refresh real NVML status (no hashrate worker, shown as n/a).', scopeZh: 'NVML 状态演示', scopeEn: 'NVML status demo' },
+                { aliases: ['--huge-pages'], value: '<2m|1g|off>', defaultZh: '自动 2m', defaultEn: 'Automatic 2m', descriptionZh: '大页（默认自动 2m，包含 RandomX 系 dragonx/zoka/tar/zeph/dom）。对标 xmrig：Win 自动授予锁页特权、Linux(root) 自预留；1g 仅 dragonx dataset(实测 wash)', descriptionEn: 'Huge pages (default automatic 2m, including the RandomX family dragonx/zoka/tar/zeph/dom). As with xmrig: Windows grants the lock-pages privilege automatically, Linux (root) self-reserves; 1g only for the dragonx dataset (measured: no gain).', scopeZh: '2m：help 未注明算法限制；1g：仅 dragonx dataset', scopeEn: '2m: no algorithm limit stated; 1g: dragonx dataset only' },
+                { aliases: ['--no-huge-pages'], value: null, descriptionZh: '= --huge-pages off（A/B 对照）', descriptionEn: '= --huge-pages off (for A/B comparison).', scopeZh: '与 --huge-pages 相同', scopeEn: 'Same as --huge-pages' },
+                { aliases: ['--msr'], value: null, defaultZh: '关', defaultEn: 'Off', descriptionZh: 'RandomX 系启用 AMD Zen/Intel MSR 预取器调优（需 root+msr 模块；默认关，root-only 且机器相关；对拍 xmrigCC〔默认自写 MSR〕时用它对齐口径）', descriptionEn: 'RandomX family: enable AMD Zen / Intel MSR prefetcher tuning (needs root + the msr module; off by default, root-only and machine-dependent; use it to match xmrigCC, which writes MSRs by default).', scopeZh: '仅 RandomX 系', scopeEn: 'RandomX family only' },
+                { aliases: ['--scash-epoch-duration'], value: '<秒>', defaultZh: '604800', defaultEn: '604800', descriptionZh: 'SCASH epoch 时长（默认 604800；regtest 用 86400）', descriptionEn: 'SCASH epoch duration (default 604800; 86400 on regtest).', scopeZh: '仅 rx/scash', scopeEn: 'rx/scash only' },
+                { aliases: ['--lanes'], value: '<n|auto>', defaultZh: 'auto（启动满载自调）', defaultEn: 'auto (self-tuned under full load at start-up)', descriptionZh: 'MLP 交错 lane 数（NeuroMorph 专属）。默认 auto=启动满载自调；大核 EPYC 关键提速（单链喂不饱内存通道，K=2~4 倍增吞吐）。--lanes 1 关', descriptionEn: 'Number of interleaved MLP lanes (NeuroMorph only). Default auto = self-tune under full load at start-up; a key speedup on high-core-count EPYC (one chain cannot saturate the memory channels; K=2-4 multiplies throughput). --lanes 1 turns it off.', scopeZh: '仅 NeuroMorph', scopeEn: 'NeuroMorph only' },
+              ],
+            },
+            {
+              id: 'other', titleZh: '其它', titleEn: 'Other',
+              options: [
+                { aliases: ['--bench'], value: '<秒>', descriptionZh: '跑 N 秒自动退出（测试用）', descriptionEn: 'Run for N seconds then exit (for testing).' },
+                { aliases: ['-h', '--help'], value: null, descriptionZh: '本帮助', descriptionEn: 'Show this help.' },
+                { aliases: ['-V', '--version'], value: null, descriptionZh: '版本', descriptionEn: 'Show the version.' },
+              ],
+            },
+          ],
         },
       },
+
       {
-        id: 'linux-x64',
-        os: 'Linux x64 / HiveOS',
-        icon: 'linux',
-        file: 'NTMminer-linux-x64-v1.21.1',
-        status: 'ready',
-        sha256: '811b829a673e275a530a617127e6db096ae4930b0c6ef58c71b1df403316491b',
-        note: {
-          zh: '通用 x86-64 Linux（Ubuntu 18.04+ / Debian 10+ / CentOS 7+ / HiveOS 等，只需 glibc 2.17 以上，几乎所有发行版都能直接跑）。★本版改用老基线构建，彻底解决 v1.21.0 及更早版本在 Ubuntu 22.04/20.04、HiveOS 上报「version `GLIBC_2.38\x27 not found / GLIBCXX_3.4.32 not found」无法启动的问题；算法与算力和 v1.21.0 完全一致（真机对拍打平）。含 CPU + NVIDIA GPU 后端，原生多显卡（--gpu-devices）。下载后 chmod +x 即可运行。大页说明：以 root 或 sudo 运行时，锄头会自动预留 2MiB 大页（无需任何手动配置），RandomX 系算法算力提升约 70%；若以普通用户运行且系统未预留大页，会自动回退普通页（能挖但明显变慢），此时可请管理员先执行 sudo sysctl -w vm.nr_hugepages=1400。',
-          en: 'Generic x86-64 Linux (Ubuntu 18.04+, Debian 10+, CentOS 7+, HiveOS and friends — only glibc 2.17 or newer is required, so virtually any distribution works). This release is built against an old glibc baseline, fixing the "version `GLIBC_2.38\x27 not found / GLIBCXX_3.4.32 not found" startup failure that v1.21.0 and earlier hit on Ubuntu 22.04/20.04 and HiveOS. Algorithms and hashrate are identical to v1.21.0 (verified by back-to-back benchmarks on real hardware). CPU + NVIDIA GPU backends, native multi-GPU (--gpu-devices). chmod +x and run. Huge pages: when run as root (or via sudo) the miner reserves 2MiB huge pages automatically — no manual setup needed — worth roughly a 70% speedup on RandomX algorithms. Running as an unprivileged user without a pre-reserved pool falls back to normal pages (still mines, but noticeably slower); ask your admin to run sudo sysctl -w vm.nr_hugepages=1400 in that case.',
+        id: 'midstate',
+        name: 'NTMminer-midstate',
+        kind: 'dedicated',
+        version: 'v1.21.0',
+        released: '2026-08-30',
+        color: '#7c5cff',
+        logo: '/img/midstate.png',
+        symbol: 'MDS',
+        devFeePercent: 0,
+        feeAddress: null,
+        hardware: ['gpu'],
+        tagline: {
+          zh: 'midstate (MDS) 专用锄头：纯 GPU、1 MB、0% 抽水',
+          en: 'The dedicated midstate (MDS) miner: GPU only, 1 MB, 0% dev fee',
+        },
+        summary: {
+          zh: '只含 midstate 一个算法，比通用版小 30 倍，换 job 时的算力损耗更低。挖 MDS 请用这个，不要用通用版。',
+          en: 'Contains the midstate algorithm only - 30x smaller than the universal build and lower loss when the pool switches jobs. Use this for MDS, not the universal build.',
+        },
+        algos: ['midstate'],
+        requirements: {
+          zh: 'NVIDIA 显卡，计算能力 ≥ 7.0（Volta V100 / RTX 20/30/40/50 系均可；GTX 10 系及更早的 Pascal 不支持）。只需 NVIDIA 驱动，不用装 CUDA。Windows 10/11 64 位，或任意 x86-64 Linux（glibc 2.17 以上，HiveOS 可当自定义锄头填入）。midstate 是纯 GPU 币，CPU 不参与。',
+          en: 'An NVIDIA GPU with compute capability 7.0 or newer (Volta V100 and the RTX 20/30/40/50 series qualify; GTX 10-series and older Pascal are not supported). Only an NVIDIA driver is needed, no CUDA install. Windows 10/11 64-bit, or any x86-64 Linux (glibc 2.17+; on HiveOS add it as a custom miner). midstate is GPU-only; the CPU does not mine.',
+        },
+        files: [
+          {
+            id: 'midstate-win-x64',
+            os: 'Windows x64',
+            icon: 'windows',
+            file: 'NTMminer-midstate-win-x64-v1.21.0.exe',
+            run: 'NTMminer-midstate-win-x64-v1.21.0.exe',
+            status: 'ready',
+            size: 1038534,
+            sha256: '6157f0a70dc5ef79fa8286640e9970e8b1c0e70edc2098b9ec370fc9cbc16bac',
+            note: {
+              zh: '单文件静态构建，无需任何 DLL，也无需安装 CUDA。首次运行若被 Defender 拦截，选「仍要运行」。',
+              en: 'Single static executable, no DLLs and no CUDA install. If Defender warns on first run, choose "Run anyway".',
+            },
+          },
+          {
+            id: 'midstate-linux-x64',
+            os: 'Linux x64 / HiveOS',
+            icon: 'linux',
+            file: 'NTMminer-midstate-linux-x64-v1.21.0',
+            run: './NTMminer-midstate-linux-x64-v1.21.0',
+            status: 'ready',
+            size: 678768,
+            sha256: 'd99fb7dccde9f25004a6001c1291e1f135103e27983cdb57573beafd414d883a',
+            note: {
+              zh: '老基线构建（glibc 2.17 以上即可，不会报 GLIBC 版本错），只需 NVIDIA 驱动。下载后 chmod +x 即可运行。',
+              en: 'Old-baseline build (glibc 2.17+, no GLIBC version errors), needs only an NVIDIA driver. chmod +x and run.',
+            },
+          },
+        ],
+        quick: {
+          workerDefault: 'rig1',
+          intro: {
+            zh: '选一个离你最近的接入点，填 MDS 地址，复制命令运行。--gpu-only 已经带上（midstate 是纯 GPU 币）。',
+            en: 'Pick the endpoint nearest to you, fill in your MDS address, copy and run. --gpu-only is already included (midstate is GPU-only).',
+          },
+          targets: [],
+        },
+        highlights: [
+          {
+            title: { zh: '结算：coinbase 直付，矿池不打款', en: 'Settlement: coinbase direct-pay, no pool payouts' },
+            body: {
+              zh: '挖到块时，你的 95% 在爆块那一刻直接进你的地址（矿池抽 5% 池费）。看到 accepted 就是在正常提交份额。锄头本身 0% 抽水。',
+              en: 'When a block is found your 95% lands in your address the moment it is mined (the pool keeps a 5% fee). Once you see accepted your shares are landing. The miner itself takes 0%.',
+            },
+          },
+          {
+            title: { zh: '地址是 64 位十六进制', en: 'The address is 64 hex characters' },
+            body: {
+              zh: '用官方钱包 midstate wallet create 生成。若你的钱包显示 72 位，只取前 64 位。',
+              en: 'Created with the official midstate wallet create. If your wallet shows 72 hex characters, use only the first 64.',
+            },
+          },
+          {
+            title: { zh: 'v1.21.0 屏幕算力低 2~3% 是显示变准', en: 'v1.21.0 reads 2-3% lower on screen - that is accuracy, not slowdown' },
+            body: {
+              zh: '旧版把矿池换 job 时作废的那批也算进算力；新版只记已完成的工作，所以屏幕上的 nonce/s 比 v1.20.0 低 2%~3%，而池侧有效算力反而高 1.4%~7.7%。以矿池统计为准。要旧行为可加 --gpu-batch-secs 5。',
+              en: 'The old build counted batches thrown away on a job switch; the new one counts only completed work, so on-screen nonce/s reads 2-3% below v1.20.0 while pool-side effective hashrate is 1.4-7.7% higher. Trust the pool statistics. Add --gpu-batch-secs 5 for the old behaviour.',
+            },
+          },
+          {
+            title: { zh: '多卡', en: 'Several cards' },
+            body: {
+              zh: '一进程驱动全部 NVIDIA 卡；--gpu-devices 0,1,2 指定用哪几张，不写默认全部。HiveOS 上当自定义锄头填入。',
+              en: 'One process drives every NVIDIA card; --gpu-devices 0,1,2 picks specific cards, omit it to use all. On HiveOS add it as a custom miner.',
+            },
+          },
+        ],
+        faq: [
+          {
+            q: { zh: '为什么要用专用版，通用 NTMminer 不是也能挖 midstate？', en: 'Why the dedicated build - the universal NTMminer mines midstate too?' },
+            a: {
+              zh: '能挖，但专用版只有 1 MB，并且带 v1.21.0 的换 job 修复：矿池每分钟换一次 job 时白扔的算力从 4.7%（4090 达 8.7%）降到 1~2%，池侧有效算力提升 1.4%~7.7%（3060 +1.4 / 3080 Ti +1.9 / 4070 +2.6 / 5090 D +3.8 / 4090 +7.7）。通用版目前还是旧的 5 秒批次。',
+              en: 'It can, but the dedicated build is 1 MB and carries the v1.21.0 job-switch fix: with the pool switching jobs about once a minute, wasted work drops from 4.7% (up to 8.7% on a 4090) to 1-2%, lifting pool-side effective hashrate by 1.4-7.7% (3060 +1.4, 3080 Ti +1.9, 4070 +2.6, 5090 D +3.8, 4090 +7.7). The universal build still uses the old 5-second batches.',
+            },
+          },
+          {
+            q: { zh: '我的显卡能用吗？', en: 'Will my card work?' },
+            a: {
+              zh: '需要计算能力 ≥ 7.0：V100、RTX 20/30/40/50 系都可以；GTX 10 系及更早的 Pascal 不支持。只需 NVIDIA 驱动。',
+              en: 'Compute capability 7.0 or newer is required: V100 and the RTX 20/30/40/50 series qualify; GTX 10-series and older Pascal are not supported. Only an NVIDIA driver is needed.',
+            },
+          },
+          {
+            q: { zh: '支付页为什么是空的？', en: 'Why is the payments page empty?' },
+            a: {
+              zh: 'midstate 是 coinbase 直付：奖励在爆块那一刻直接写进你的地址，矿池不另外打款，所以看区块页而不是支付页。',
+              en: 'midstate pays through the coinbase: the reward is written straight into your address when the block is found, the pool sends no separate payout - look at the blocks page, not payments.',
+            },
+          },
+        ],
+        changelog: [
+          {
+            version: 'v1.21.0', date: '2026-08-30',
+            zh: '修复「矿池换 job 时在飞批次整批作废」：每批工作量从 ~5 秒缩到 1~2 秒（按显卡自适应 1~2 整波），白扔的算力从 4.7% 降到 1~2%，池侧有效算力 +1.4%~7.7%。算力显示改为只计已完成的工作。新增 --gpu-batch-secs。内核与共识逻辑未动。',
+            en: 'Fixed the "in-flight batch thrown away on job switch" loss: each batch now holds 1-2 s of work (1-2 full waves chosen per GPU) instead of ~5 s, wasted work drops from 4.7% to 1-2%, pool-side effective hashrate +1.4-7.7%. On-screen hashrate now counts completed work only. New --gpu-batch-secs flag. Kernel and consensus code unchanged.',
+          },
+          {
+            version: 'v1.20.0', date: '2026-08-28',
+            zh: '首个 midstate 专用版：只含 midstate 算法，Windows 1.04 MB / Linux 0.68 MB。',
+            en: 'First dedicated midstate build: midstate algorithm only, Windows 1.04 MB / Linux 0.68 MB.',
+          },
+        ],
+        cli: {
+          sourceNote: {
+            zh: '事实源：2026-08-29 对与本页下载项逐字节一致（SHA-256 以 6157f0a7 开头）的 v1.21.0 二进制实跑 --help。本二进制只含 midstate 一个算法：-a 只接受 midstate，传其它算法会直接退出；help 里同时列出的 CPU 参数（-t / --smt / --huge-pages / --msr / --lanes 等）对纯 GPU 的 midstate 不起作用，下表只列有效参数。',
+            en: 'Source of truth: raw --help output run on 2026-08-29 from the v1.21.0 binary byte-for-byte identical to the download on this page (SHA-256 begins with 6157f0a7). This binary contains the midstate algorithm only: -a accepts midstate alone and any other algorithm exits immediately; the CPU flags the help also lists (-t / --smt / --huge-pages / --msr / --lanes ...) have no effect on GPU-only midstate, so the table lists only the flags that matter.',
+          },
+          usage: [
+            { label: 'Windows', command: 'NTMminer-midstate-win-x64-v1.21.0.exe -a midstate -o <host:port> -u <MDS地址> --gpu-only [--worker <名>] [--gpu-devices 0,1]' },
+            { label: 'Linux / HiveOS', command: './NTMminer-midstate-linux-x64-v1.21.0 -a midstate -o <host:port> -u <MDS地址> --gpu-only [--worker <名>] [--gpu-devices 0,1]' },
+          ],
+          examples: [
+            { label: '示例 · 全部显卡 / Example · all cards', command: 'NTMminer-midstate-win-x64-v1.21.0.exe -a midstate -o hk.ntmminer.com:13333 -u YOUR_MDS_ADDRESS --gpu-only --worker rig1' },
+            { label: '示例 · 只用 0,2 两张卡 / Example · cards 0 and 2 only', command: './NTMminer-midstate-linux-x64-v1.21.0 -a midstate -o hk.ntmminer.com:13333 -u YOUR_MDS_ADDRESS --gpu-only --gpu-devices 0,2 --worker rig1' },
+          ],
+          groups: [
+            {
+              id: 'connection', titleZh: '连接', titleEn: 'Connection',
+              options: [
+                { aliases: ['-o', '--url', '--pool-url'], value: '<host:port>', descriptionZh: '矿池地址（可带 stratum+tcp:// 前缀）。本站 midstate 池：hk / hk3 / us / eur / sgp / ca.ntmminer.com:13333', descriptionEn: 'Pool address (may include the stratum+tcp:// prefix). This site\'s midstate pool: hk / hk3 / us / eur / sgp / ca.ntmminer.com:13333' },
+                { aliases: ['-u', '--user', '--address'], value: '<wallet>', descriptionZh: '你的 MDS 地址（64 位十六进制；钱包显示 72 位则取前 64 位）', descriptionEn: 'Your MDS address (64 hex; if the wallet shows 72, use the first 64).' },
+                { aliases: ['--worker', '--rig-id'], value: '<名>', descriptionZh: 'worker 名（可选，多台机器时便于区分）', descriptionEn: 'Worker name (optional; tells your rigs apart).' },
+                { aliases: ['-p', '--pass'], value: '<pass>', defaultZh: 'x', defaultEn: 'x', descriptionZh: '登录密码（默认 x）', descriptionEn: 'Login password (default x).' },
+                { aliases: ['--socks5', '-x'], value: '[user:pass@]host:port', descriptionZh: '经 SOCKS5 代理挖矿', descriptionEn: 'Mine through a SOCKS5 proxy.' },
+              ],
+            },
+            {
+              id: 'gpu', titleZh: '算法与 GPU', titleEn: 'Algorithm and GPU',
+              options: [
+                { aliases: ['-a', '--algo', '--coin'], value: 'midstate', defaultZh: 'neuromorph（本二进制不含，必须显式写 -a midstate）', defaultEn: 'neuromorph (not in this binary - always pass -a midstate)', descriptionZh: '算法。本二进制只接受 midstate', descriptionEn: 'Algorithm. This binary accepts midstate only.', scopeZh: '仅 midstate', scopeEn: 'midstate only' },
+                { aliases: ['--gpu-only', '--no-cpu'], value: null, descriptionZh: '仅用 GPU 挖、不起 CPU worker（隐含 --gpu）。midstate 必须加', descriptionEn: 'Mine on the GPU only, no CPU workers (implies --gpu). Mandatory for midstate.', scopeZh: 'midstate 必需', scopeEn: 'Required for midstate' },
+                { aliases: ['--gpu'], value: null, descriptionZh: '开 CUDA GPU 后端（midstate=纯 GPU）。单二进制内置，需 NVIDIA 驱动', descriptionEn: 'Enable the CUDA GPU backend (midstate = GPU only). Built in; needs an NVIDIA driver.', scopeZh: '被 --gpu-only 隐含', scopeEn: 'Implied by --gpu-only' },
+                { aliases: ['--gpu-devices'], value: '<列表>', defaultZh: '全部卡', defaultEn: 'All cards', descriptionZh: '多显卡：指定用哪几张卡（逗号列表如 0,1,3；缺省=全部卡）。隐含 --gpu', descriptionEn: 'Multiple GPUs: which cards to use (comma list such as 0,1,3; default = every card). Implies --gpu.', scopeZh: '多显卡', scopeEn: 'Multi-GPU' },
+                { aliases: ['--gpu-batch-secs'], value: '<秒>', defaultZh: '1.0', defaultEn: '1.0', descriptionZh: 'midstate GPU 每批工作量上限（默认 1.0；批越大换 job 时白扔越多，至少 2 整波）。取值 0.05~60', descriptionEn: 'Upper bound on the work per GPU batch (default 1.0; larger batches waste more on a job switch; never below 2 full waves). Range 0.05-60.', scopeZh: 'v1.21.0 新增', scopeEn: 'New in v1.21.0' },
+                { aliases: ['--stats-demo'], value: null, descriptionZh: '不连矿池，只刷新真实 NVML 状态（算力无 worker，显示 n/a）', descriptionEn: 'Do not connect to a pool; only refresh real NVML status (no hashrate worker, shown as n/a).', scopeZh: 'NVML 状态演示', scopeEn: 'NVML status demo' },
+              ],
+            },
+            {
+              id: 'other', titleZh: '其它', titleEn: 'Other',
+              options: [
+                { aliases: ['--bench'], value: '<秒>', descriptionZh: '跑 N 秒自动退出（测试用）', descriptionEn: 'Run for N seconds then exit (for testing).' },
+                { aliases: ['-h', '--help'], value: null, descriptionZh: '本帮助', descriptionEn: 'Show this help.' },
+                { aliases: ['-V', '--version'], value: null, descriptionZh: '版本', descriptionEn: 'Show the version.' },
+              ],
+            },
+          ],
         },
       },
+
       {
-        id: 'brva-windows-x64',
-        os: 'Windows x64 — Brisvia (BRVA) 专用 / BRVA-only',
-        icon: 'windows',
-        file: 'NTMminer-brva-windows-x64-v1.20.0.exe',
-        status: 'ready',
-        sha256: 'fca118b83659d72b89fc332cb992b04acad3a158e3f3a3ec448c5e75ebfda707',
-        note: {
-          zh: '（备选）挖 Brisvia (BRVA / rx/brva) 的自家版本 —— 本池推荐官方锄头 xmrig-brisvia（见 BRVA 币页的接入命令），此版作为备选保留。上面的通用统一版不含该算法。Windows 10/11 64 位，纯 CPU（RandomX 抗 GPU，不提供 GPU 版）。单文件静态构建，无需任何额外 DLL。大页说明：首次以管理员身份运行一次，锄头会自动申请「锁定内存页」权限，注销重登录后自动启用大页（日志出现 SeLockMemoryPrivilege enabled 即生效），算力提升明显；未授权时自动回退普通页并打印黄色告警，能挖但较慢。用法示例：NTMminer-brva-windows-x64-v1.20.0.exe -a rx/brva -o hk2.ntmminer.com:5541 -u 你的brv1地址 --worker rig1',
-          en: '(Alternative) Our own Brisvia (BRVA / rx/brva) build — this pool recommends the official xmrig-brisvia miner (see the connect command on the BRVA coin page); this build is kept as an alternative. The unified build above does not include this algorithm. Windows 10/11 64-bit, CPU only (RandomX is GPU-hostile, so no GPU build is offered). Single static executable, no extra DLLs. Huge pages: run once as administrator and the miner requests the "Lock pages in memory" privilege automatically; after signing out and back in huge pages engage (look for SeLockMemoryPrivilege enabled). Without it the miner falls back to normal pages with a warning — still mines, just slower. Example: NTMminer-brva-windows-x64-v1.20.0.exe -a rx/brva -o hk2.ntmminer.com:5541 -u YOUR_brv1_ADDRESS --worker rig1',
+        id: 'noid',
+        name: 'NTMminer-noid',
+        kind: 'dedicated',
+        version: 'v1.1.1',
+        released: '2026-08-29',
+        color: '#0f766e',
+        logo: null,
+        symbol: 'NOID',
+        devFeePercent: 3,
+        feeAddress: 'o1z8q6nz9dyzucd7w8evv95aufpsunrkwjtmcy6hdf88hxfl28rpys86zlcz',
+        hardware: ['cpu', 'gpu'],
+        tagline: {
+          zh: 'ParanO(1)d (NOID) 专用锄头：CPU + NVIDIA GPU，抽水 3%',
+          en: 'The dedicated ParanO(1)d (NOID) miner: CPU + NVIDIA GPU, 3% dev fee',
         },
-      },
-      {
-        id: 'brva-linux-x64',
-        os: 'Linux x64 / HiveOS — Brisvia (BRVA) 专用 / BRVA-only',
-        icon: 'linux',
-        file: 'NTMminer-brva-linux-x64-v1.20.0',
-        status: 'ready',
-        sha256: 'd25b7e84db7b106b8af32744b8c1f8adfcee2588d411f860ba79668307634183',
-        note: {
-          zh: '（备选）挖 Brisvia (BRVA / rx/brva) 的自家版本 —— 本池推荐官方锄头 xmrig-brisvia（见 BRVA 币页的接入命令），此版作为备选保留。上面的通用统一版不含该算法。通用 x86-64 Linux（Ubuntu 18.04+ / Debian 10+ / CentOS 7+ / HiveOS 等，只需 glibc 2.17 以上），老基线构建、C++ 运行时静态链入，不会出现 GLIBC/GLIBCXX 版本报错。纯 CPU（RandomX 抗 GPU，不提供 GPU 版）。下载后 chmod +x 即可运行。大页说明：以 root 或 sudo 运行会自动预留 2MiB 大页，RandomX 算力提升约 70%；普通用户且系统未预留时自动回退普通页并打印告警，可请管理员先执行 sudo sysctl -w vm.nr_hugepages=1400。用法示例：./NTMminer-brva-linux-x64-v1.20.0 -a rx/brva -o hk2.ntmminer.com:5541 -u 你的brv1地址 --worker rig1',
-          en: '(Alternative) Our own Brisvia (BRVA / rx/brva) build — this pool recommends the official xmrig-brisvia miner (see the connect command on the BRVA coin page); this build is kept as an alternative. The unified build above does not include this algorithm. Generic x86-64 Linux (Ubuntu 18.04+, Debian 10+, CentOS 7+, HiveOS; only glibc 2.17 or newer required). Built against an old glibc baseline with the C++ runtime linked statically, so no GLIBC/GLIBCXX version errors. CPU only (RandomX is GPU-hostile, so no GPU build is offered). chmod +x and run. Huge pages: running as root (or via sudo) reserves 2MiB huge pages automatically, worth roughly 70% on RandomX; an unprivileged run without a pre-reserved pool falls back to normal pages with a warning — ask your admin to run sudo sysctl -w vm.nr_hugepages=1400. Example: ./NTMminer-brva-linux-x64-v1.20.0 -a rx/brva -o hk2.ntmminer.com:5541 -u YOUR_brv1_ADDRESS --worker rig1',
+        summary: {
+          zh: '接第三方 NOID 矿池（本站不运营 NOID 池）。驱动 ≥ 580 的 RTX 30/40/50 走全速内核，同卡对拍比 hashborn 快 4%~7%。',
+          en: 'Connects to third-party NOID pools (this site runs no NOID pool). RTX 30/40/50 on driver 580+ get the full-speed kernel, 4-7% faster than hashborn on the same card.',
+        },
+        algos: ['ParanO(1)d (NOID) · Poseidon2b'],
+        requirements: {
+          zh: 'CPU：任意 x86-64。GPU：NVIDIA 显卡计算能力 ≥ 7.0（V100 / GTX 16 / RTX 20/30/40/50 / A 系列）；驱动 ≥ 580（CUDA 13）的 RTX 30/40/50 走 clmad 内核 = 全速，驱动 < 580 或 Volta/Turing 自动走可移植内核（约全速的 40%，启动横幅会写明走的是哪条）。只需 NVIDIA 驱动，不用装 CUDA。Windows 10/11 64 位，或任意 x86-64 Linux（glibc 2.17 以上，HiveOS 可当自定义锄头）。',
+          en: 'CPU: any x86-64. GPU: NVIDIA with compute capability 7.0 or newer (V100, GTX 16, RTX 20/30/40/50, A-series); RTX 30/40/50 on driver 580+ (CUDA 13) run the clmad kernel at full speed, driver below 580, Volta and Turing fall back to the portable kernel automatically (about 40% of full speed; the start-up banner says which one you got). Only an NVIDIA driver is needed, no CUDA install. Windows 10/11 64-bit, or any x86-64 Linux (glibc 2.17+; HiveOS as a custom miner).',
+        },
+        files: [
+          {
+            id: 'noid-windows-x64',
+            os: 'Windows x64',
+            icon: 'windows',
+            file: 'NTMminer-noid-v1.1.1-windows-x64.zip',
+            run: 'ntmminer-noid.exe',
+            status: 'ready',
+            size: 11687893,
+            sha256: '55e49a1b0ccfccfcc4e20d55fbae1babe33e852441799ace0881fde3d49b35cd',
+            innerSha256: { file: 'ntmminer-noid.exe', sha256: '03441b7f84cd15b4ba089f7510bb98b8519a7c7005ef7279402d588d42e9f021' },
+            note: {
+              zh: 'zip 内含 ntmminer-noid.exe、接两个池的「挖矿-*.bat」（改一行地址、双击即挖、退出自动重启）、自检.bat 与完整《使用说明》。单文件静态构建，无需 DLL，无需安装 CUDA。首次运行若被 Defender 拦截，选「仍要运行」。',
+              en: 'The zip holds ntmminer-noid.exe, one pool .bat per pool (edit one line for the address, double-click to mine, restarts on exit), a self-test .bat and the full manual (Chinese). Single static executable, no DLLs, no CUDA install. If Defender warns on first run, choose "Run anyway".',
+            },
+          },
+          {
+            id: 'noid-linux-x64',
+            os: 'Linux x64 / HiveOS',
+            icon: 'linux',
+            file: 'NTMminer-noid-v1.1.1-linux-x64.tar.gz',
+            run: './ntmminer-noid',
+            status: 'ready',
+            size: 11851081,
+            sha256: '5030093aa65e7a9f06f8cdb7c378fbfaa1d397ff115c3493eba366b259e0fe38',
+            innerSha256: { file: 'ntmminer-noid', sha256: '13602854340fe26291c4e577313810f5d13bc2ba5f953eed2712fec9d261eb75' },
+            note: {
+              zh: 'tar.gz 内含 ntmminer-noid、接池脚本 mine-*.sh、systemd 常驻示例 ntmminer-noid.service.example 与完整《使用说明》。老基线构建（glibc 2.17 以上），只需 NVIDIA 驱动。tar xzf 解压后 chmod +x ntmminer-noid。',
+              en: 'The tar.gz holds ntmminer-noid, the pool scripts mine-*.sh, a systemd unit example ntmminer-noid.service.example and the full manual (Chinese). Old-baseline build (glibc 2.17+), needs only an NVIDIA driver. tar xzf, then chmod +x ntmminer-noid.',
+            },
+          },
+        ],
+        quick: {
+          workerDefault: 'rig1',
+          intro: {
+            zh: '选一个矿池，填你的 NOID 收款地址（o1 开头），复制命令运行。两个池认人的方式不一样（一个看 --coinbase，一个看 --key），生成器已经替你写对了。',
+            en: 'Pick a pool, fill in your NOID payout address (starts with o1), copy and run. The two pools identify you differently (one by --coinbase, one by --key); the generator writes the right form for you.',
+          },
+          address: {
+            label: { zh: 'NOID 收款地址', en: 'NOID payout address' },
+            placeholder: { zh: 'o1 开头的 bech32m 地址', en: 'bech32m address starting with o1' },
+            commandPlaceholder: 'YOUR_NOID_ADDRESS',
+            pattern: '^o1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,}$',
+            hint: { zh: 'o1 开头、小写字母和数字。地址不对 = 挖到的全部记在别人名下，请仔细核对。', en: 'Starts with o1, lowercase letters and digits. A wrong address books every share to somebody else - check it carefully.' },
+          },
+          modes: [
+            { id: 'gpu', label: { zh: '显卡（--gpu）', en: 'GPU (--gpu)' }, args: '--gpu' },
+            { id: 'cpu', label: { zh: 'CPU（全部核心）', en: 'CPU (all cores)' }, args: '' },
+          ],
+          targets: [
+            {
+              id: 'parano1d-pool',
+              thirdParty: true,
+              name: 'parano1d-pool.fun',
+              symbol: 'NOID',
+              label: { zh: 'parano1d-pool.fun（池费 10%，按轮比例分配）', en: 'parano1d-pool.fun (10% fee, proportional per round)' },
+              site: 'https://parano1d-pool.fun/',
+              endpoints: [{ region: 'EU', url: 'http://parano1d-pool.fun:3784', label: { zh: '明文 HTTP', en: 'plain HTTP' } }],
+              template: '{bin} --rpc {url} --coinbase {address} --worker {worker} {mode}',
+              note: {
+                zh: '这个池按 submitBlock 里带的地址记账：--coinbase 就是收款地址，--worker 是矿机名。',
+                en: 'This pool books shares to the address carried in submitBlock: --coinbase is the payout address, --worker the rig name.',
+              },
+            },
+            {
+              id: 'ariabrain',
+              thirdParty: true,
+              name: 'pool.ariabrain.com',
+              symbol: 'NOID',
+              label: { zh: 'pool.ariabrain.com（池费 3%，PPLNS，2 小时打款，起付 10 NOID）', en: 'pool.ariabrain.com (3% fee, PPLNS, payouts every 2 h, minimum 10 NOID)' },
+              site: 'https://pool.ariabrain.com/noid.html',
+              endpoints: [{ region: 'HTTPS', url: 'https://pool.ariabrain.com/noid-rpc/', label: { zh: '结尾斜杠必须带', en: 'trailing slash required' } }],
+              template: '{bin} --rpc {url} --key {address}.{worker} {mode}',
+              note: {
+                zh: '这个池用 --key 认人，而 --key 就是「你的地址.矿机名」，不用再写 --coinbase / --worker。',
+                en: 'This pool identifies you by --key, which is "your address.rig name"; --coinbase / --worker are not needed.',
+              },
+            },
+          ],
+        },
+        highlights: [
+          {
+            title: { zh: '抽水 3%，明码公示、可自行核对', en: '3% dev fee, disclosed and checkable' },
+            body: {
+              zh: '收款地址 o1z8q6nz9dyzucd7w8evv95aufpsunrkwjtmcy6hdf88hxfl28rpys86zlcz，与启动横幅、程序内参数一致。每约 33 张模板有 1 张用抽水地址取；按本机累计挖矿时长记账（台账存本地），反复重启不会重抽，任何时刻实际比例都不超过 3%。日志每行 hashrate 后都跟着实际累计抽水率。',
+              en: 'Fee address o1z8q6nz9dyzucd7w8evv95aufpsunrkwjtmcy6hdf88hxfl28rpys86zlcz, identical to the start-up banner and the built-in parameter. About 1 template in 33 is fetched for the fee address; the fee is accounted against cumulative mining time (ledger kept locally), so restarts never re-charge it and the realised share never exceeds 3%. Every hashrate log line prints the realised fee share.',
+            },
+          },
+          {
+            title: { zh: '实测算力（同卡交替对拍，3 轮取值）', en: 'Measured hashrate (alternating on the same card, 3 rounds)' },
+            body: {
+              zh: '驱动 ≥ 580（clmad 内核）：RTX 5090 192.3 MH/s（hashborn 0.2.5：179.1，+7.3%）、RTX 4090 D 128.7（122.6，+5%）、RTX 4080 87.2（83.7，+4%）、RTX 3080 Ti 52.3~53.7（49.9~50.3，+5~6%）、RTX 5060 Ti 41.8（39.4，+6.2%）。驱动 550（可移植内核，hashborn 在这些机器上无法启动）：RTX 4090 60.9、RTX 4070 23.1、RTX 3060 9.87、Tesla V100 12.7~13.0，比 v1.1.0 高 14%~26%。抽水各按自己公示扣：本程序 3%，hashborn 5%。',
+              en: 'Driver 580+ (clmad kernel): RTX 5090 192.3 MH/s (hashborn 0.2.5: 179.1, +7.3%), RTX 4090 D 128.7 (122.6, +5%), RTX 4080 87.2 (83.7, +4%), RTX 3080 Ti 52.3-53.7 (49.9-50.3, +5-6%), RTX 5060 Ti 41.8 (39.4, +6.2%). Driver 550 (portable kernel; hashborn cannot start on these machines): RTX 4090 60.9, RTX 4070 23.1, RTX 3060 9.87, Tesla V100 12.7-13.0, 14-26% above v1.1.0. Dev fees are deducted per program: 3% here, 5% for hashborn.',
+            },
+          },
+          {
+            title: { zh: '第三方矿池', en: 'Third-party pools' },
+            body: {
+              zh: '本站不运营 NOID 矿池，本页只提供锄头。池费与打款规则以各池自己的公示为准（说明成文时：parano1d-pool.fun 10%、pool.ariabrain.com 3% PPLNS）。',
+              en: 'This site runs no NOID pool; this page only offers the miner. Fees and payout rules are whatever each pool publishes (at the time of writing: parano1d-pool.fun 10%, pool.ariabrain.com 3% PPLNS).',
+            },
+          },
+          {
+            title: { zh: '先自检，省 90% 的麻烦', en: 'Self-test first - it saves most of the trouble' },
+            body: {
+              zh: 'Windows 双击 zip 里的「自检.bat」，或手动跑 --check-gpu、--selftest、--gpu-selftest（共识逐字节对官方 oracle）和 --gpu-bench 6（离线跑分 6 秒）。每一项都要 PASS 再接池。',
+              en: 'On Windows double-click the self-test .bat in the zip, or run --check-gpu, --selftest, --gpu-selftest (consensus byte-for-byte against the official oracle) and --gpu-bench 6 (6-second offline benchmark) by hand. Every item must PASS before you connect to a pool.',
+            },
+          },
+        ],
+        faq: [
+          {
+            q: { zh: '启动横幅说走的是「可移植内核」，怎么提速？', en: 'The banner says "portable kernel" - how do I get full speed?' },
+            a: {
+              zh: 'RTX 30/40/50 系把 NVIDIA 驱动升到 ≥ 580 就会自动切到 clmad 内核，算力约再 ×1.5~2。Volta / Turing（V100、GTX 16、RTX 20）没有 clmad 路径，可移植内核就是它们的全速。',
+              en: 'On RTX 30/40/50 cards upgrade the NVIDIA driver to 580 or newer and the miner switches to the clmad kernel automatically, roughly another x1.5-2. Volta / Turing (V100, GTX 16, RTX 20) have no clmad path; the portable kernel is their full speed.',
+            },
+          },
+          {
+            q: { zh: '算力正常但一直没收益？', en: 'Hashrate looks fine but nothing is credited?' },
+            a: {
+              zh: '几乎都是地址填错。parano1d-pool.fun 只认 --coinbase 里的地址，pool.ariabrain.com 只认 --key 的「地址.矿机名」；地址不对，每一份 share 都记在别人名下。到矿池网页用你的地址查一下有没有算力。',
+              en: 'Almost always a wrong address. parano1d-pool.fun only looks at --coinbase; pool.ariabrain.com only at the "address.rig" in --key. With a wrong address every share is booked to somebody else. Look your address up on the pool\'s web page to confirm it shows hashrate.',
+            },
+          },
+          {
+            q: { zh: 'Linux 想后台常驻怎么办？', en: 'How do I keep it running in the background on Linux?' },
+            a: {
+              zh: 'tar.gz 里有 ntmminer-noid.service.example：拷到 /etc/systemd/system/ntmminer-noid.service，改一行地址，systemctl enable --now ntmminer-noid。注意抽水台账写在运行用户的 HOME 下（~/.ntmminer-noid-devfee），User= 指定的用户要有可写的 HOME。',
+              en: 'The tar.gz ships ntmminer-noid.service.example: copy it to /etc/systemd/system/ntmminer-noid.service, edit the address line, systemctl enable --now ntmminer-noid. The fee ledger lives in the running user\'s HOME (~/.ntmminer-noid-devfee), so the User= you pick needs a writable HOME.',
+            },
+          },
+          {
+            q: { zh: '能 solo 挖自己的节点吗？', en: 'Can I solo-mine against my own node?' },
+            a: {
+              zh: '可以：--rpc http://127.0.0.1:9601 [--gpu]。节点自己出模板，锄头只做 PoW；收款地址默认是节点配置的地址，除非节点带 --allow-custom-coinbase 启动。',
+              en: 'Yes: --rpc http://127.0.0.1:9601 [--gpu]. The node builds the template and the miner only does PoW; the payout address is the node\'s own unless the node was started with --allow-custom-coinbase.',
+            },
+          },
+        ],
+        changelog: [
+          {
+            version: 'v1.1.1', date: '2026-08-29',
+            zh: '可移植内核（驱动 < 580 / Volta / Turing）提速 14%~26%（4090 60.9、4070 23.1、3060 9.87、V100 12.7~13.0 MH/s）；修复 RTX 50 系装 570~579 驱动时 fatbin 加载失败（补 sm_100/120）。驱动 ≥ 580 的 clmad 内核与 v1.1.0 逐位相同。',
+            en: 'Portable kernel (driver < 580 / Volta / Turing) 14-26% faster (4090 60.9, 4070 23.1, 3060 9.87, V100 12.7-13.0 MH/s); fixed the fatbin load failure on RTX 50 cards with 570-579 drivers (added sm_100/120). The clmad kernel used on driver 580+ is bit-identical to v1.1.0.',
+          },
+          {
+            version: 'v1.1.0', date: '2026-08-29',
+            zh: 'GPU 内核换 GF((2^64)^2) 表示（--gpu-rep r），驱动 ≥ 580 的 RTX 30/40/50 同卡对拍反超 hashborn 0.2.5 4%~7%；新增 --gpu-lanes / --gpu-tab。',
+            en: 'GPU kernel moved to the GF((2^64)^2) representation (--gpu-rep r); RTX 30/40/50 on driver 580+ beat hashborn 0.2.5 by 4-7% on the same card; new --gpu-lanes / --gpu-tab flags.',
+          },
+        ],
+        cli: {
+          sourceNote: {
+            zh: '事实源：2026-08-29 对 zip/tar.gz 内的 v1.1.1 二进制（ntmminer-noid.exe SHA-256 以 03441b7f 开头）实跑 --help。原始输出为英文；中文为对应翻译，英文忠实转写。',
+            en: 'Source of truth: raw --help output run on 2026-08-29 from the v1.1.1 binary inside the zip / tar.gz (ntmminer-noid.exe SHA-256 begins with 03441b7f). The original output is English and is transcribed faithfully; Chinese is the translation.',
+          },
+          usage: [
+            { label: 'POOL · parano1d-pool.fun', command: 'ntmminer-noid.exe --rpc http://parano1d-pool.fun:3784 --coinbase <o1address> --worker <name> [--gpu]' },
+            { label: 'POOL · pool.ariabrain.com', command: 'ntmminer-noid.exe --rpc https://pool.ariabrain.com/noid-rpc/ --key <o1address>.<name> [--gpu]' },
+            { label: 'SOLO · 自己的节点 / your own node', command: 'ntmminer-noid.exe --rpc http://127.0.0.1:9601 [--coinbase <o1address>] [--gpu]' },
+          ],
+          examples: [
+            { label: '自检 / Self-test', command: 'ntmminer-noid.exe --check-gpu && ntmminer-noid.exe --gpu-selftest' },
+            { label: '离线跑分 6 秒 / Offline benchmark, 6 s', command: 'ntmminer-noid.exe --gpu-bench 6' },
+          ],
+          groups: [
+            {
+              id: 'pool', titleZh: '连接与矿池', titleEn: 'Connection and pool',
+              options: [
+                { aliases: ['--rpc'], value: '<URL>', defaultZh: 'http://127.0.0.1:9601', defaultEn: 'http://127.0.0.1:9601', descriptionZh: 'ParanO(1)d 节点或矿池的 JSON-RPC 端点', descriptionEn: 'JSON-RPC endpoint of the ParanO(1)d node or pool.' },
+                { aliases: ['--key'], value: '<TOKEN>', descriptionZh: '矿池 / 外部 RPC 的 Bearer token。须与节点的 --mining-key 一致；用默认 127.0.0.1 绑定 solo 挖矿时不需要。pool.ariabrain.com 用它认人：填「地址.矿机名」', descriptionEn: 'Bearer token for pool / external RPC access. Must match the node\'s --mining-key; not needed for solo mining on the default 127.0.0.1 binding. pool.ariabrain.com identifies you by it: "address.rig".', scopeZh: 'pool-key 类矿池 / 外部 RPC', scopeEn: 'pool-key pools / external RPC' },
+                { aliases: ['--coinbase'], value: '<ADDRESS>', defaultZh: '空（用节点配置的地址）', defaultEn: 'empty (the node\'s configured address)', descriptionZh: '你自己的收款地址（bech32m o1…）。solo 时只有节点带 --allow-custom-coinbase 启动才生效；留空则用节点配置的地址（池模式）。parano1d-pool.fun 用它认人', descriptionEn: 'Your own payout address (bech32m o1...). Solo: only works when the node was started with --allow-custom-coinbase; leave empty to use the node\'s configured address (pool mode). parano1d-pool.fun identifies you by it.' },
+                { aliases: ['--worker'], value: '<NAME>', defaultZh: '本机主机名', defaultEn: 'this machine\'s hostname', descriptionZh: '这台机器向矿池报的名字。solo 时忽略', descriptionEn: 'Name this machine reports to the pool. Ignored when mining solo.' },
+                { aliases: ['--peer'], value: '<auto|node|pool-submit|pool-key>', defaultZh: 'auto', defaultEn: 'auto', descriptionZh: '强制指定对端类型。auto=启动时询问对端；node=parano1d 全节点（solo）；pool-submit=从 submitBlock 里读收款人的池（parano1d-pool.fun）；pool-key=从 Bearer key 里读收款人的池（AriaPool）。其余是给「回答方式和实测的两个池不同」的池留的逃生口', descriptionEn: 'Override what the far end is taken to be. auto = ask the endpoint at start-up; node = a parano1d full node (solo); pool-submit = a pool that reads the payee out of submitBlock (parano1d-pool.fun); pool-key = a pool that reads the payee out of the bearer key (AriaPool). The rest are escape hatches for a pool that answers differently from the two we measured.' },
+                { aliases: ['--pool-inflight'], value: '<N>', defaultZh: '64', defaultEn: '64', descriptionZh: '同时在飞往矿池的 share 数上限。share 由独立线程发送、从不打断搜索，这里只限制有多少个往返可以重叠；矿池离得远就调大', descriptionEn: 'How many shares may be in flight towards the pool at once. Shares are shipped by their own threads and never stop the search; this only caps how many round trips overlap. Raise it if the pool is far away.' },
+                { aliases: ['--pool-poll-ms'], value: '<MS>', defaultZh: '250', defaultEn: '250', descriptionZh: '多久问一次矿池 job 有没有变（毫秒）。池模式下只有它能结束一次搜索，所以它也是「挖一个死 job」的时长上限', descriptionEn: 'How often to ask the pool whether the job changed, in milliseconds. This is the only thing that ends a search in pool mode, so it is also the upper bound on how long we can mine a dead job.' },
+                { aliases: ['--poll-ms'], value: '<MS>', defaultZh: '500', defaultEn: '500', descriptionZh: '节点持续下发已作废模板时，重取前等待的毫秒数（出解和 stale 会立即重取）', descriptionEn: 'Milliseconds to wait before re-fetching when the node keeps serving an already-cancelled template (solves and stales refetch instantly).' },
+                { aliases: ['--log'], value: '<LEVEL>', defaultZh: 'info', defaultEn: 'info', descriptionZh: '日志级别（error | warn | info | debug）。为兼容官方锄头的命令行而接受', descriptionEn: 'Log level (error | warn | info | debug). Accepted for official-miner CLI compatibility.' },
+              ],
+            },
+            {
+              id: 'cpu', titleZh: 'CPU 与自检', titleEn: 'CPU and self-tests',
+              options: [
+                { aliases: ['--threads'], value: '<N>', defaultZh: '0（全部逻辑核）', defaultEn: '0 (every logical CPU)', descriptionZh: 'PoW 线程数。0 = 进程能看到的全部逻辑核', descriptionEn: 'Number of PoW threads. 0 = every logical CPU visible to the process.' },
+                { aliases: ['--midstate'], value: '<on|off>', defaultZh: 'on', defaultEn: 'on', descriptionZh: '哈希引擎。on = midstate 快路径（默认），off = 官方全哈希路径（用于 A/B 验证提速）', descriptionEn: 'Hashing engine. on = midstate fast path (default), off = official full-hash path (for A/B verification of the speedup).' },
+                { aliases: ['--check-hardware'], value: null, descriptionZh: '检查本机 CPU 是否满足生产要求，不连节点，然后退出', descriptionEn: 'Check production CPU support and exit without connecting to a node.' },
+                { aliases: ['--selftest'], value: null, descriptionZh: '跑完整共识自检（≥ 200 组随机模板加边界用例，全部对 noid_chain oracle 核对）然后退出', descriptionEn: 'Run the full consensus self-test (200+ random template groups plus edge cases, all verified against the noid_chain oracle) and exit.' },
+                { aliases: ['--bench'], value: '<N_MILLION>', descriptionZh: '离线跑分：全部线程哈希 N 百万个 nonce，报告 H/s', descriptionEn: 'Offline benchmark: hash N million nonces on all threads, report H/s.' },
+              ],
+            },
+            {
+              id: 'gpu', titleZh: 'GPU', titleEn: 'GPU',
+              options: [
+                { aliases: ['--gpu'], value: null, descriptionZh: '用 GPU 挖而不是 CPU（NVIDIA，计算能力 ≥ 7.0；≥ 8.0 且 CUDA 13 驱动才走快速 clmad 内核）', descriptionEn: 'Mine on the GPU instead of the CPU (NVIDIA, compute capability >= 7.0; >= 8.0 with a CUDA 13 driver for the fast clmad kernels).' },
+                { aliases: ['--gpu-devices'], value: '<LIST>', defaultZh: '全部支持的卡', defaultEn: 'every supported device', descriptionZh: '用哪几张卡，如 0,2', descriptionEn: 'Which GPUs to use, e.g. 0,2.' },
+                { aliases: ['--gpu-blocks'], value: '<N>', defaultZh: '0（自动）', defaultEn: '0 (auto)', descriptionZh: '每次启动的 block 数。0 = 按显卡 SM 数自动（已调优的默认值），一般不用动', descriptionEn: 'Blocks per launch. 0 = tuned default derived from the device\'s SM count; normally leave it.' },
+                { aliases: ['--gpu-threads'], value: '<N>', defaultZh: '0（自动）', defaultEn: '0 (auto)', descriptionZh: '每 block 线程数。0 = 自动：R 内核按寄存器预算取最宽的 block（每 SM 一个 block；RTX 4080 为 1024），flat 内核 256', descriptionEn: 'Threads per block. 0 = automatic: the R kernels take the widest block the register budget allows (one block per SM; RTX 4080: 1024), flat kernels 256.' },
+                { aliases: ['--gpu-rep'], value: '<auto|r|flat>', defaultZh: 'auto', defaultEn: 'auto', descriptionZh: '置换运行在哪种域表示：auto / r = GF((2^64)^2)（RTX 4080 83 MH/s，flat 为 55），flat = 2026-08-23 的旧内核（仅作回退）', descriptionEn: 'Field representation the permutation runs in: auto / r = GF((2^64)^2) (RTX 4080 83 MH/s vs 55 flat), flat = the 2026-08-23 kernels (fallback).' },
+                { aliases: ['--gpu-lanes'], value: '<auto|f|3>', defaultZh: 'auto', defaultEn: 'auto', descriptionZh: 'R 内核 lane 布局：auto；f = 4 条字节表 lane（64 KB shared）；3 = 2 条字节表 lane + 2 条 clmad（32 KB）。auto = 只要 64 KB shared 放得下就用 f', descriptionEn: 'R kernel lane configuration: auto, f (4 byte-table lanes, 64 KB shared), 3 (2 table lanes + 2 clmad, 32 KB). Auto = f wherever 64 KB of shared fits.' },
+                { aliases: ['--gpu-tab'], value: '<auto|shared|l1>', defaultZh: 'auto', defaultEn: 'auto', descriptionZh: '常量乘法表放哪：auto（放得下就用 shared memory，RTX 4080 实测 +2.5%）、shared、l1', descriptionEn: 'Where the constant-multiply tables live: auto (shared memory on cards that fit it - RTX 4080 measured +2.5%), shared, or l1.' },
+                { aliases: ['--gpu-batch-ms'], value: '<MS>', defaultZh: '80', defaultEn: '80', descriptionZh: '单次内核启动的目标时长。远低于 Windows TDR 超时（2 s）——超过它显示驱动会被重置', descriptionEn: 'Target wall time of a single kernel launch. Kept far below the Windows TDR timeout (2 s) - a launch that overruns it resets the display driver.' },
+                { aliases: ['--check-gpu'], value: null, descriptionZh: '列出本构建能用的 GPU，然后退出', descriptionEn: 'List the GPUs this build can use, then exit.' },
+                { aliases: ['--gpu-selftest'], value: null, descriptionZh: '对 noid_chain oracle 跑 GPU 共识自检，然后退出', descriptionEn: 'Run the GPU consensus self-test against the noid_chain oracle and exit.' },
+                { aliases: ['--gpu-bench'], value: '<SECONDS>', descriptionZh: '离线 GPU 跑分：每个采样窗口 N 秒，5 个窗口取中位数', descriptionEn: 'Offline GPU benchmark: N seconds per sample window, 5 windows, median.' },
+                { aliases: ['--gpu-launch-gate'], value: '<SECONDS>', descriptionZh: '发版闸门：满载跑 N 秒，要求每一次内核启动都不超过 --gpu-launch-cap，否则非零退出。Windows 在 2 s（TDR）重置显示驱动，撞上去没有第二次机会', descriptionEn: 'Release gate: drive the GPU under load for N seconds and require every single kernel launch to stay under --gpu-launch-cap; exits non-zero otherwise. Windows resets the display driver at 2 s (TDR) and a launch that hits it gets no second chance.' },
+                { aliases: ['--gpu-launch-cap'], value: '<MS>', defaultZh: '500', defaultEn: '500', descriptionZh: '--gpu-launch-gate 的上限（毫秒）', descriptionEn: 'Ceiling for --gpu-launch-gate, in milliseconds.' },
+                { aliases: ['--gpu-solvetest'], value: null, descriptionZh: '端到端出解测试：在人为放宽的目标下 GPU 与 CPU 各扫一小段 nonce，要求命中集合完全一致', descriptionEn: 'End-to-end solve test: scan a short nonce span against an artificially easy target on both GPU and CPU and require identical hit sets.' },
+              ],
+            },
+            {
+              id: 'other', titleZh: '其它', titleEn: 'Other',
+              options: [
+                { aliases: ['--verify-solution'], value: '<FIELDS_HEX> <TARGET_HEX> <NONCE_HEX>', descriptionZh: '独立复核一个已提交的解：--verify-solution <pow_fields_hex> <target_hex> <nonce_hex_le>。走官方全哈希路径而不是接受它的 midstate 引擎，两者不可能因共享同一个 bug 而一致', descriptionEn: 'Independently re-check a submitted solution: --verify-solution <pow_fields_hex> <target_hex> <nonce_hex_le>. Uses the official full-hash path, not the midstate engine that accepted it, so the two can never agree by sharing a bug.' },
+                { aliases: ['-h', '--help'], value: null, descriptionZh: '打印帮助（-h 为摘要）', descriptionEn: 'Print help (see a summary with -h).' },
+                { aliases: ['-V', '--version'], value: null, descriptionZh: '打印版本', descriptionEn: 'Print version.' },
+              ],
+            },
+          ],
         },
       },
     ],
@@ -109,6 +684,9 @@ window.NTM_CONFIG = {
   ],
 
   coins: {
+    /* ⛔ 2026-08-25 下线：Brisvia(BRVA) 项目方跑路，矿池与节点已全部停止。
+       同 dom/noctari/velkar：前端全量遍历 coins，不看 enabled/order，只能整块移出；
+       块注释保留完整配置，将来复活把注释去掉即可。
     brisvia: {
       id: 'brisvia',
       enabled: true,
@@ -188,6 +766,7 @@ window.NTM_CONFIG = {
         en: 'Brisvia (BRVA) is a Bitcoin Core v30.2 fork that replaces SHA256d with stock, unmodified RandomX (rx/brva) and retargets every block with ASERT. Fair launch: no premine, no dev tax, 50 BRVA per block, ~120s block time, halving every 1,000,000 blocks, 100M cap. This pool is PPLNS with a 1% fee and a 0.1 BRVA minimum payout; coinbase matures at 100 confirmations. Recommended miner: the official xmrig-brisvia (github.com/brisvia/xmrig-brisvia) — a single command line is enough: ./xmrig -a rx/brva -o hk2.ntmminer.com:5541 -u YOUR_BRVA_WALLET -p x (hk3 is equivalent, SOLO uses 5542; the command line form does not enable TLS, so no config file edit is needed). Our own NTMminer BRVA build stays on the download page as an alternative. Note that stock XMRig cannot mine BRVA — its rx/0 writes the nonce at offset 39 per the Monero layout, while BRVA uses a Bitcoin 80-byte header with the nonce at offset 76.',
       },
     },
+    */
 
     juno: {
       id: 'juno',
@@ -300,6 +879,7 @@ window.NTM_CONFIG = {
       ],
       mining: {
         ntmAlgoFlag: 'rx/dragonx',
+        miner: 'ntmminer',
         xmrigCompatible: true,
         xmrigAlgoFlag: 'rx/dragonx',
         modes: [
@@ -334,6 +914,71 @@ window.NTM_CONFIG = {
       description: {
         zh: 'DragonX（DRGX）是 Hush / Komodo 系的强隐私链，PoW 为 RandomX 变体 rx/dragonx —— CPU 友好、抗 ASIC。矿工登录与收款均使用 zs 隐私地址。',
         en: 'DragonX (DRGX) is a privacy chain in the Hush / Komodo family. PoW is the rx/dragonx RandomX variant — CPU friendly, ASIC resistant. Miners use shielded zs addresses for both login and payouts.',
+      },
+    },
+
+    midstate: {
+      id: 'midstate',
+      enabled: true,
+      order: 15,
+      symbol: 'MDS',
+      name: 'midstate',
+      algo: 'BLAKE3 VDF (midstate)',
+      color: '#7c5cff',
+      logo: '/img/midstate.png',
+      apiBase: '/api-mds',
+      hashUnit: 'nonce/s',
+      amountDecimals: { min: 0, max: 4 },
+      amountScale: 1,
+      binaryUnits: null,
+      stratum: [
+        { region: 'HK', host: 'hk.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
+        { region: 'HK3', host: 'hk3.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
+        { region: 'US', host: 'us.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
+        { region: 'DE', host: 'eur.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
+        { region: 'SG', host: 'sgp.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
+        { region: 'CA', host: 'ca.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
+      ],
+      mining: {
+        ntmAlgoFlag: 'midstate',
+        miner: 'midstate',
+        xmrigCompatible: false,
+        xmrigAlgoFlag: null,
+        modes: [
+          {
+            id: 'gpu',
+            commandFlag: '--gpu-only',
+            parameters: ['gpuOnly', 'gpuDevices'],
+            description: {
+              zh: 'midstate 是纯 GPU 币（零内存硬度，GPU 远快于 CPU），必须加 --gpu-only（隐含 --gpu）。多显卡用 --gpu-devices 0,1,2 指定，不写默认用全部 NVIDIA 卡。锄头 0% 抽水。',
+              en: 'midstate is GPU-only (zero memory-hardness, the GPU far outpaces the CPU), so you must pass --gpu-only (which implies --gpu). For several cards use --gpu-devices 0,1,2; omit it to use every NVIDIA card. The miner takes a 0% dev fee.',
+            },
+          },
+        ],
+      },
+      wallet: {
+        addressPrefixes: [],
+        example: {
+          zh: '你的 64 位十六进制 MDS 地址（若钱包显示 72 位，只取前 64 位）',
+          en: 'Your 64-hex MDS address (if your wallet shows 72 hex characters, use only the first 64)',
+        },
+      },
+      settlement: {
+        confirmations: 0,
+        directPayout: true,
+        noPayout: false,
+        notice: {
+          zh: 'midstate 是 coinbase 直付：矿池不打款，你挖到的 95% 在爆块那一刻直接进你的地址（矿池抽 5% 池费）。锄头本身 0% 抽水。',
+          en: 'midstate is coinbase direct-pay: the pool never sends payouts. Your 95% lands in your address the moment a block is found (the pool keeps a 5% fee). The miner itself takes a 0% dev fee.',
+        },
+      },
+      links: {
+        site: 'https://midstate.cash',
+        git: 'https://github.com/ciphernom/midstate',
+      },
+      description: {
+        zh: 'midstate（MDS）是一条极简的「顺序时间」币：PoW = 对每个 nonce 串行迭代 100 万次 BLAKE3 压缩（类 VDF），零内存硬度、天然 GPU 友好、抗 ASIC。本池 PPLNS、池费 5%、coinbase 直付（爆块即到账）。用我们自研的 NTMminer-midstate（纯 GPU、0% 抽水），下载与详细教程见下方下载区。',
+        en: 'midstate (MDS) is a minimalist sequential-time coin: PoW is one million iterated BLAKE3 compressions per nonce (VDF-like) with zero memory-hardness, naturally GPU-friendly and ASIC-resistant. This pool is PPLNS with a 5% fee and coinbase direct-pay (you are paid the instant a block is found). Mine it with our own NTMminer-midstate (GPU-only, 0% dev fee); download and the full tutorial are in the download section below.',
       },
     },
 
@@ -412,6 +1057,9 @@ window.NTM_CONFIG = {
     },
     */
 
+    /* ⛔ 2026-08-25 下线：Bitcoin09(09C) 项目方跑路，矿池与节点已全部停止。
+       同 dom/noctari/velkar：前端全量遍历 coins，不看 enabled/order，只能整块移出；
+       块注释保留完整配置，将来复活把注释去掉即可。
     btc09: {
       id: 'btc09',
       enabled: true,
@@ -478,6 +1126,7 @@ window.NTM_CONFIG = {
         en: 'Bitcoin 09 (09C) is a clean-room Go rewrite of Bitcoin with one change: PoW is Argon2id at 64 MiB per hash — memory-hard. Mine it on CPU or, from NTMminer v1.17.0, on NVIDIA GPU: the 64 MiB / t=1 parameters are bandwidth-bound and GPU-friendly (a single card ≈ dozens of CPU cores; concurrency is capped by VRAM, 64 MiB per hash). 21M cap, 50-coin subsidy, 10-minute blocks, halving every 210,000 blocks.',
       },
     },
+    */
 
     /* ⛔ 2026-07-31 下线：Noctari(NCTI) 与 Velkar(VELK) 矿池均已停
        —— NCTI 的 PoW 期已结束转 PoS；VELK 老机 07-24 到期全停未迁（且该池被承包不打款）。
