@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BRC 矿池仪表盘 · BrowserCoin</title>
+<meta name="description" content="BrowserCoin (BRC) 矿池 brc.ntmminer.com — 实时池状态、矿工查询、爆块与打款记录。1% 抽水锄头 NTMminer。">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x26CF;</text></svg>">
+<style>
+:root{
+  --bg-canvas:#0c0d12; --bg-sunken:#101116; --surface-1:#16171d; --surface-2:#1d1f26;
+  --surface-3:#252731; --line-subtle:#2a2c34; --line-strong:#414550;
+  --text-primary:#d1d4db; --text-secondary:#b3b7c0; --text-muted:#9297a2; --text-disabled:#626772;
+  --brand-cyan:#61e9fc; --brand-blue:#30b9f8; --brand-violet:#8072fa;
+  --ok:#7fb99a; --warn:#d1ad6a; --crit:#d27d8a;
+  --font-sans:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei UI","PingFang SC","Noto Sans CJK SC",Arial,sans-serif;
+  --font-mono:ui-monospace,"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
+body{background:var(--bg-canvas);color:var(--text-primary);font-family:var(--font-sans);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--brand-blue);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1180px;margin:0 auto;padding:0 16px 48px}
+header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:18px 0 14px;border-bottom:1px solid var(--line-subtle)}
+.brand{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.brand .logo{font-size:20px;font-weight:700;letter-spacing:.3px}
+.brand .logo em{font-style:normal;color:var(--brand-cyan)}
+.brand .sub{color:var(--text-muted);font-size:12.5px}
+.top-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:999px;border:1px solid var(--line-strong);background:var(--surface-1);font-size:12.5px;color:var(--text-secondary)}
+.pill .dot{width:8px;height:8px;border-radius:50%;background:var(--text-disabled);flex:none}
+.pill.ok .dot{background:var(--ok)} .pill.warn .dot{background:var(--warn)} .pill.crit .dot{background:var(--crit)}
+button{font-family:inherit;font-size:13px;color:var(--text-primary);background:var(--surface-2);border:1px solid var(--line-strong);border-radius:8px;padding:6px 14px;cursor:pointer}
+button:hover{background:var(--surface-3)}
+button:disabled{color:var(--text-disabled);cursor:default}
+.pager{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:12px}
+.pager button{padding:5px 12px;font-size:12.5px}
+.pager .pager-info{color:var(--text-muted);font-size:12.5px;font-variant-numeric:tabular-nums}
+.banner{margin:14px 0 0;padding:12px 16px;border-radius:10px;font-size:13.5px;display:none}
+.banner.show{display:block}
+.banner.warn{background:#2a2416;border:1px solid #4d4227;color:#e4cf9a}
+.banner.crit{background:#2a181c;border:1px solid #543038;color:#e8aab4}
+.banner .b-sub{margin-top:4px;font-size:12.5px;opacity:.85}
+main{display:grid;gap:16px;margin-top:16px}
+.card{background:var(--surface-1);border:1px solid var(--line-subtle);border-radius:12px;padding:18px 18px 16px}
+.card-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.card-head h2{font-size:15.5px;font-weight:600}
+.card-head .src{color:var(--text-disabled);font-size:11.5px;font-family:var(--font-mono)}
+.note{color:var(--warn);font-size:12.5px;min-height:0}
+.note:empty{display:none}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(172px,1fr));gap:10px}
+.tile{background:var(--bg-sunken);border:1px solid var(--line-subtle);border-radius:10px;padding:12px 14px;min-width:0}
+.tile .k{color:var(--text-muted);font-size:12px;margin-bottom:4px}
+.tile .v{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums;word-break:break-all;color:var(--text-primary)}
+.tile .v .unit{font-size:12px;font-weight:400;color:var(--text-muted);margin-left:3px}
+.tile .c{color:var(--text-disabled);font-size:11.5px;margin-top:4px;line-height:1.4}
+.table-wrap{overflow-x:auto;border:1px solid var(--line-subtle);border-radius:10px;background:var(--bg-sunken)}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:640px}
+th{color:var(--text-muted);font-weight:500;font-size:12px;text-align:left;padding:9px 12px;border-bottom:1px solid var(--line-subtle);background:var(--surface-1);white-space:nowrap}
+td{padding:8px 12px;border-bottom:1px solid var(--line-subtle);font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--text-secondary)}
+tr:last-child td{border-bottom:none}
+td.empty{color:var(--text-disabled);text-align:center;padding:18px 12px;white-space:normal}
+.mono{font-family:var(--font-mono);font-size:12.5px}
+.badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;border:1px solid transparent}
+.badge.ok{color:var(--ok);border-color:#2f4a3d;background:#16211c}
+.badge.warn{color:var(--warn);border-color:#4d4227;background:#221d12}
+.badge.crit{color:var(--crit);border-color:#543038;background:#221317}
+.badge.info{color:var(--brand-blue);border-color:#1e3a4d;background:#121c24}
+.badge.muted{color:var(--text-muted);border-color:var(--line-strong);background:var(--surface-2)}
+.sec-title{color:var(--text-secondary);font-size:13px;font-weight:600;margin:14px 0 8px}
+.sec-title:first-of-type{margin-top:0}
+.lookup{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.lookup input{flex:1 1 340px;min-width:0;background:var(--bg-sunken);border:1px solid var(--line-strong);border-radius:8px;color:var(--text-primary);font-family:var(--font-mono);font-size:13px;padding:8px 12px}
+.lookup input:focus{outline:none;border-color:var(--brand-blue)}
+.lookup input::placeholder{color:var(--text-disabled)}
+.err{color:var(--crit);font-size:12.5px;margin-top:6px}
+.err:empty{display:none}
+.hidden{display:none}
+.mini{color:var(--text-muted);font-size:12.5px;margin:10px 0 0;word-break:break-all}
+.mini b{color:var(--text-secondary);font-weight:600}
+.guide-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.guide-box{background:var(--bg-sunken);border:1px solid var(--line-subtle);border-radius:10px;padding:14px}
+.guide-box h3{font-size:13.5px;margin-bottom:8px;color:var(--text-secondary)}
+.guide-box ul{list-style:none}
+.guide-box li{padding:3px 0;font-size:13px;color:var(--text-secondary)}
+.guide-box li .lab{color:var(--text-muted)}
+.dl-list li{padding:4px 0}
+pre.cmd{background:#0a0b0f;border:1px solid var(--line-subtle);border-radius:8px;padding:10px 12px;font-family:var(--font-mono);font-size:12.5px;color:var(--brand-cyan);overflow-x:auto;margin-top:8px}
+footer{margin-top:22px;padding-top:14px;border-top:1px solid var(--line-subtle);color:var(--text-disabled);font-size:12px;line-height:1.8;word-break:break-all}
+footer .mono{font-size:11.5px}
+@media (max-width:560px){
+  .tiles{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+  .tile .v{font-size:17px}
+  body{font-size:13.5px}
+}
+
+/* ── 接入指南：跨全宽 + 宽松排版（原先挤在 260px 网格列里）── */
+.guide-box.wide{grid-column:1/-1;padding:18px 20px}
+.guide-box.wide h3{font-size:14.5px;margin-bottom:12px;color:var(--text-primary)}
+.guide-box.wide li{padding:4px 0;line-height:1.7}
+.guide-box.wide .mini{margin-top:12px;line-height:1.75}
+.guide-box.wide pre.cmd{margin-top:10px;margin-bottom:2px;padding:12px 14px}
+.guide-lead{color:var(--text-secondary);font-size:13px;line-height:1.75;margin-bottom:14px}
+ol.steps{list-style:none;counter-reset:stepc;display:grid;gap:4px}
+/* ★特异性必须压过 .guide-box.wide li（0,2,1），否则 padding-left 被覆盖、
+   圆形序号会直接压在文字上。这里用 .guide-box.wide ol.steps>li（0,3,2）。 */
+.guide-box.wide ol.steps>li{counter-increment:stepc;position:relative;
+  padding:8px 0 10px 34px;font-size:13px;color:var(--text-secondary);line-height:1.7}
+.guide-box.wide ol.steps>li::before{content:counter(stepc);position:absolute;left:0;top:7px;
+  width:22px;height:22px;border-radius:50%;box-sizing:border-box;
+  background:var(--surface-3);border:1px solid var(--line-strong);color:var(--brand-cyan);
+  font-size:12px;font-weight:600;line-height:20px;text-align:center}
+.guide-box.wide ol.steps>li>pre.cmd{margin-top:8px}
+.guide-box.wide ol.steps>li>.mini{margin-top:8px}
+.kv-rows{display:grid;margin-top:2px}
+.kv-row{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:18px;padding:11px 0;border-bottom:1px solid var(--line-subtle)}
+.kv-row:last-child{border-bottom:none}
+.kv-k{color:var(--text-primary);font-size:13px;font-weight:600}
+.kv-k .kv-note{display:block;color:var(--text-disabled);font-size:11.5px;font-weight:400;margin-top:2px}
+.kv-v{color:var(--text-muted);font-size:12.5px;line-height:1.7;min-width:0;word-break:break-word}
+.kv-v .mono{display:inline-block;word-break:break-all}
+@media (max-width:640px){
+  .kv-row{grid-template-columns:1fr;gap:5px;padding:12px 0}
+  .guide-box.wide{padding:16px 14px}
+}
+#langBtn{font-variant-numeric:tabular-nums;min-width:64px}
+/* ★上排「费率/下载」原先挤在 minmax(260px) 的窄列里、右侧还空着一大片。
+   放宽到 420px：1180px 视口下变成 2 列 × 约 575px，长句不再频繁折行。 */
+.guide-grid{grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
+.guide-box{padding:16px 18px}
+.guide-box li{padding:5px 0;line-height:1.7}
+.guide-box h3{font-size:14px;margin-bottom:10px;color:var(--text-primary)}
+.dl-list li{padding:6px 0}
+/* sha256 不用 break-all 折成三行，改成单行可横向滚动，便于整段复制核对 */
+.sha-list{margin-top:8px;display:grid;gap:3px}
+.sha-list>div{font-family:var(--font-mono);font-size:11.5px;color:var(--text-muted);
+  white-space:nowrap;overflow-x:auto;padding-bottom:1px}
+.sha-list .sha-k{color:var(--text-secondary)}
+
+/* ★上排「费率/下载」原先挤在 minmax(260px) 的窄列里，右侧还空着一大片。
+   放宽到 420px：1180px 视口下是 2 列 × 约 575px，长句不再频繁折行。 */
+.guide-grid{grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
+.guide-box{padding:16px 18px}
+.guide-box li{padding:5px 0;line-height:1.7}
+.guide-box h3{font-size:14px;margin-bottom:10px;color:var(--text-primary)}
+.dl-list li{padding:6px 0}
+/* sha256 不再 break-all 折成三行：单行 + 横向滚动，方便整段选中复制 */
+.sha-list{margin-top:8px;display:grid;gap:3px}
+.sha-list>div{font-family:var(--font-mono);font-size:11.5px;color:var(--text-muted);
+  white-space:nowrap;overflow-x:auto;padding-bottom:1px}
+.sha-list .sha-k{color:var(--text-secondary);display:inline-block;min-width:78px}
+
+/* ==== NM-ENTRY-TABLE BEGIN ==== */
+/* 接入入口表：一行一条线路，右侧徽章标注状态；.ent-new 是本次新增的抗 DDoS 线路 */
+.ent-rows{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.ent-row{display:flex;gap:12px;align-items:flex-start;background:var(--bg-sunken);
+  border:1px solid var(--line-subtle);border-radius:10px;padding:11px 13px}
+.ent-row.ent-new{border-color:var(--brand-cyan);box-shadow:0 0 0 1px rgba(97,233,252,.14)}
+.ent-row.ent-down{opacity:.62}
+.ent-loc{flex:none;min-width:104px;font-size:13px;color:var(--text-primary);font-weight:600}
+.ent-main{flex:1;min-width:0}
+.ent-main .mono{display:block;overflow-x:auto;white-space:nowrap;padding-bottom:1px}
+.ent-desc{font-size:12px;color:var(--text-muted);margin-top:4px}
+.ent-tags{flex:none;display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+@media(max-width:620px){
+  .ent-row{flex-wrap:wrap;gap:7px}
+  .ent-loc{min-width:0}
+  .ent-tags{flex-direction:row;width:100%;justify-content:flex-start}
+}
+/* ==== NM-ENTRY-TABLE END ==== */
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="brand">
+    <span class="logo">&#x26CF; <em>BRC</em> 矿池</span>
+    <span class="sub" data-en="BrowserCoin · brc.ntmminer.com · NTMminer · 1% dev fee">BrowserCoin · brc.ntmminer.com · NTMminer · 1% 抽水锄头</span>
+  </div>
+  <div class="top-right">
+    <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">加载中…</span></span>
+    <button id="langBtn" type="button" title="Switch language">EN</button>
+    <button id="refreshBtn" type="button">刷新</button>
+  </div>
+</header>
+
+<div class="banner" id="syncBanner"></div>
+
+<main>
+
+<!-- ── 池状态 ─────────────────────────────────────────── -->
+<section class="card">
+  <div class="card-head">
+    <h2>池状态</h2>
+    <span class="src">/health · /stats · /network</span>
+  </div>
+  <div class="note" id="poolNote"></div>
+  <div class="tiles">
+    <div class="tile"><div class="k">区块高度</div><div class="v" id="t-height">—</div><div class="c" id="c-height"></div></div>
+    <div class="tile"><div class="k">池算力</div><div class="v" id="t-poolhr">—</div><div class="c">近 30 分钟均值 · 按已接受 share</div></div>
+    <div class="tile"><div class="k">全网算力</div><div class="v" id="t-nethr">—</div><div class="c" id="c-nethr">按最近 50 块难度与实际出块间隔</div></div>
+    <div class="tile"><div class="k">在线矿工</div><div class="v" id="t-miners">—</div><div class="c" id="c-miners"></div></div>
+    <div class="tile"><div class="k">当前难度</div><div class="v" id="t-diff">—</div><div class="c" id="c-diff">compact (nBits) 原始值</div></div>
+    <div class="tile"><div class="k">池占全网</div><div class="v" id="t-share">—</div><div class="c" id="c-share">近 24 小时按实际出块</div></div>
+    <div class="tile"><div class="k">已入账爆块</div><div class="v" id="t-found">—</div><div class="c" id="c-found"></div></div>
+    <div class="tile"><div class="k">最新爆块</div><div class="v" id="t-lastblock">—</div><div class="c" id="c-lastblock"></div></div>
+    <div class="tile"><div class="k">平均出块</div><div class="v" id="t-avgblk">—</div><div class="c" id="c-avgblk">目标 150 秒</div></div>
+    <div class="tile"><div class="k">当前区块奖励</div><div class="v" id="t-reward">—</div><div class="c" id="c-reward"></div></div>
+    <div class="tile"><div class="k">累计已付矿工</div><div class="v" id="t-paid">—</div><div class="c">BRC</div></div>
+    <div class="tile"><div class="k">待付余额</div><div class="v" id="t-owed">—</div><div class="c" id="c-owed">BRC</div></div>
+  </div>
+</section>
+
+<!-- ── 矿工查询 ───────────────────────────────────────── -->
+<section class="card">
+  <div class="card-head">
+    <h2>矿工查询</h2>
+    <span class="src">/miner/:addr · /balance · /jackpot · /miner/:addr/workers</span>
+  </div>
+  <form class="lookup" id="lookupForm">
+    <input id="addrInput" type="text" spellcheck="false" autocomplete="off"
+           placeholder="输入你的 64 位十六进制收款地址（0-9 a-f）" maxlength="64">
+    <button type="submit" id="lookupBtn">查询</button>
+  </form>
+  <div class="err" id="addrErr"></div>
+
+  <div id="minerResult" class="hidden">
+    <div class="mini">地址：<span class="mono" id="m-addr"></span></div>
+    <div class="note" id="m-note" style="margin-top:8px"></div>
+    <div class="tiles" style="margin-top:10px">
+      <div class="tile"><div class="k">待付余额</div><div class="v" id="m-owed">—</div><div class="c">BRC · 未支付部分</div></div>
+      <div class="tile"><div class="k">累计收益</div><div class="v" id="m-earned">—</div><div class="c">BRC · 已入账总额</div></div>
+      <div class="tile"><div class="k">已支付</div><div class="v" id="m-paid">—</div><div class="c">BRC</div></div>
+      <div class="tile"><div class="k">在途打款</div><div class="v" id="m-inflight">—</div><div class="c">BRC · 已广播待确认</div></div>
+      <div class="tile"><div class="k">当前算力</div><div class="v" id="m-hr">—</div><div class="c">约 6 分钟窗口</div></div>
+      <div class="tile"><div class="k">池内占比</div><div class="v" id="m-share">—</div><div class="c">PPLNS 衰减窗口权重</div></div>
+      <div class="tile"><div class="k">爆块数</div><div class="v" id="m-blocks">—</div><div class="c">本地址爆出并入账的块</div></div>
+      <div class="tile"><div class="k">PPLNS 收益</div><div class="v" id="m-pplns">—</div><div class="c">BRC · 按份额分得</div></div>
+      <div class="tile"><div class="k">爆块奖励收益</div><div class="v" id="m-fbonus">—</div><div class="c">BRC · finder bonus 累计</div></div>
+      <div class="tile"><div class="k">权重状态</div><div class="v" id="m-warm">—</div><div class="c" id="m-warm-c"></div></div>
+      <div class="tile"><div class="k">预计下次打款</div><div class="v" id="m-eta">—</div><div class="c" id="m-eta-c">达到最小起付后按轮询打款</div></div>
+    </div>
+    <div class="mini" id="m-balance-line"></div>
+    <div class="mini" id="m-jackpot-line"></div>
+
+    <div class="sec-title">待成熟分成（本地址）</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>高度</th><th>剩余确认</th><th>预计成熟</th><th>我的分成 (BRC)</th><th>其中爆块奖励 (BRC)</th></tr></thead>
+        <tbody id="m-pending-body"></tbody>
+      </table>
+    </div>
+
+    <div class="sec-title">活跃 worker</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Worker ID</th><th>引擎</th><th>算力</th><th>接受 share</th><th>过期 share</th><th>最后 share</th><th>权重状态</th></tr></thead>
+        <tbody id="m-workers-body"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ── 爆块记录 ───────────────────────────────────────── -->
+<section class="card">
+  <div class="card-head">
+    <h2>爆块记录</h2>
+    <span class="src">/pool/pending · /pool/blocks</span>
+  </div>
+  <div class="sec-title">待成熟区块（等待 12 个确认）</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>高度</th><th>爆块者</th><th>区块价值 (BRC)</th><th>其中手续费 (BRC)</th><th>剩余确认</th><th>预计成熟</th></tr></thead>
+      <tbody id="pendingBody"></tbody>
+    </table>
+  </div>
+  <div class="sec-title">已入账爆块</div>
+  <div style="color:var(--text-muted);font-size:12.5px;margin:2px 0 8px" data-en="Note: an “Unpaid” status does not mean payouts are stuck — every share that reaches the minimum payout is paid automatically. The badge only turns “Paid” once every split of that block, including small below-minimum shares still accumulating, has been paid out.">说明：打款状态「待付」不代表打款卡住——达到最小起付额的分成会自动打款；该徽章要等这个块分账中的每一笔（包括低于起付线、仍在累积的小额份额）全部付清才会变成「已付」。</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>高度</th><th>时间</th><th>爆块者</th><th>奖励 (BRC)</th><th>努力值</th><th>爆块奖励</th><th>打款状态</th></tr></thead>
+      <tbody id="blocksBody"></tbody>
+    </table>
+  </div>
+  <div class="pager" id="blocksPager"></div>
+</section>
+
+<!-- ── 打款记录 ───────────────────────────────────────── -->
+<section class="card">
+  <div class="card-head">
+    <h2>打款记录</h2>
+    <span class="src">/pool/payouts</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>矿工</th><th>金额 (BRC)</th><th>状态</th><th>提交时间</th><th>到账时间</th></tr></thead>
+      <tbody id="payoutsBody"></tbody>
+    </table>
+  </div>
+  <div class="pager" id="payoutsPager"></div>
+</section>
+
+<!-- ── 接入指南 ───────────────────────────────────────── -->
+<section class="card">
+  <div class="card-head">
+    <h2>接入指南</h2>
+    <span class="src">/stats · /version</span>
+  </div>
+  <div class="guide-grid">
+    <div class="guide-box">
+      <h3>费率与规则</h3>
+      <ul>
+        <li><span class="lab">池费率：</span><span id="g-fee">5%</span>（从爆块奖励中收取）</li>
+        <li><span class="lab">爆块者奖励：</span><span data-en="extra ">额外 </span><span id="g-bonus">3%</span><span data-en=" (finder bonus — goes to whoever finds the block)">（finder bonus，谁爆块谁得）</span></li>
+        <li><span class="lab">成熟确认数：</span>12 个区块</li>
+        <li><span class="lab">最小起付：</span><span id="g-minpay">0.01520000</span> BRC</li>
+        <li data-en-html='<span class="lab">Miner dev fee: </span>1% &mdash; one minute in every 100 mines to the developer address <span class="mono">2520e8d6d0ecb52bf5ba79b3d41a045f6d2aef26984c152f3c19f1d74d7ebab0</span>, verifiable on-chain and on this page'><span class="lab">锄头抽水：</span>1% —— 每 100 分钟为开发地址挖 1 分钟，收款地址 <span class="mono">2520e8d6d0ecb52bf5ba79b3d41a045f6d2aef26984c152f3c19f1d74d7ebab0</span>，链上与本页均可查证</li>
+        <li><span class="lab">结算模式：</span>PPLNS（时间衰减窗口）</li>
+      </ul>
+      <div class="mini" id="g-version"></div>
+      <div class="mini" id="g-notice"></div>
+    </div>
+    <div class="guide-box">
+      <h3 data-en="Download NTMminer (v1.6.0)">下载 NTMminer（v1.6.0）</h3>
+      <ul class="dl-list">
+        <li>&#x1F4BB; <a href="https://www.ntmminer.com/downloads/NTMminer-brc-cpu-win64-v1.6.0.exe" data-en="Windows CPU build">Windows CPU 版</a></li>
+        <li>&#x1F3AE; <a href="https://www.ntmminer.com/downloads/NTMminer-brc-gpu-win64-v1.6.0.exe" data-en="Windows GPU build">Windows GPU 版</a> <span style="opacity:.6" data-en="(needs NVIDIA drivers)">(需 NVIDIA 驱动)</span></li>
+        <li>&#x1F427; <a href="https://www.ntmminer.com/downloads/NTMminer-brc-cpu-linux-x64-v1.6.0" data-en="Linux CPU build">Linux CPU 版</a> <span style="opacity:.6" data-en="(glibc 2.17+: runs on Ubuntu 18.04 / Debian 10 / HiveOS and newer)">(glibc 2.17+：Ubuntu 18.04 / Debian 10 / HiveOS 起均可跑)</span></li>
+        <li>&#x1F680; <a href="https://www.ntmminer.com/downloads/NTMminer-brc-gpu-linux-x64-v1.6.0" data-en="Linux GPU build">Linux GPU 版</a></li>
+      </ul>
+      <div class="mini" data-en-html="The Windows builds are statically linked and need no extra DLLs. The Linux builds need <span class=&quot;mono&quot;>libcurl4</span> present on the system (pre-installed on almost every distro, bundled with HiveOS).<br>On Linux, make it executable first: <span class=&quot;mono&quot;>chmod +x NTMminer-brc-cpu-linux-x64-v1.6.0</span>">
+        Windows 版为静态链接，不需要额外 DLL；Linux 版需系统有 <span class="mono">libcurl4</span>（绝大多数发行版预装，HiveOS 自带）。<br>Linux 下载后先加执行权限：<span class="mono">chmod +x NTMminer-brc-cpu-linux-x64-v1.6.0</span></div>
+      <div class="mini">
+        <span data-en-html="<b>sha256 checksums</b> &mdash; verify after downloading, so you know the file was not tampered with in transit:"><b>sha256 校验值</b>（下载后可自行核对，确保文件没被中途篡改）：</span>
+        <div class="sha-list">
+          <div><span class="sha-k">cpu-win64</span>dad880a8a388266a990b70c1cdbc7f66761ff3a4a79fae596c983ba3b5837286</div>
+          <div><span class="sha-k">gpu-win64</span>cec3bf669c609dcf2a8aa37ed813a2f9ac29372c3d444a0d93b2923f1663cdb7</div>
+          <div><span class="sha-k">cpu-linux</span>58b3ae6841388dbd58193d91dea326d44a32a76a6d933cf518e85227e5ca58fb</div>
+          <div><span class="sha-k">gpu-linux</span>908a4c5a9b7be0fd72a397506e309e14392a4ad7238e68c2980218565fefde14</div>
+        </div>
+      </div>
+    </div>
+    <div class="guide-box wide">
+      <h3 data-en="Quick start — one command">快速开始（一条命令）</h3>
+      <ol class="steps">
+        <li><span data-en-html="<b>Download</b> the build for your platform from the box above."><b>下载</b> 上面对应平台的 NTMminer</span></li>
+        <li><span data-en-html="<b>Run it</b>, replacing the address with your own:"><b>运行</b>，把地址换成你自己的：</span>
+          <pre class="cmd">NTMminer-brc-cpu-win64-v1.6.0.exe --address &lt;你的64hex地址&gt;</pre>
+          <div class="mini" data-en-html="Linux: <span class=&quot;mono&quot;>./NTMminer-brc-cpu-linux-x64-v1.6.0 --address &lt;your-64hex-address&gt;</span>">Linux：<span class="mono">./NTMminer-brc-cpu-linux-x64-v1.6.0 --address &lt;你的64hex地址&gt;</span></div>
+          <div class="mini" data-en-html="That is the whole thing — nothing else to fill in. <b>Pool address, thread count, core pinning and huge pages are all built in or auto-tuned</b>: the first launch measures the best thread count and pinning for your machine (20-40 seconds, once only; the result is cached and later starts are instant).">
+            就这一条，别的都不用填。<b>池地址、线程数、绑核、大页全部内置或自动校准</b>：首次启动会自动测算最优线程数与绑核方式（约 20-40 秒，只跑一次，结果缓存，之后秒启动）。</div>
+        </li>
+        <li><span data-en-html="<b>Check your earnings</b> — enter your address in the Miner Lookup box at the top of this page."><b>查收益</b>：回到本页顶部「矿工查询」输入你的地址</span></li>
+      </ol>
+    </div>
+
+    <div class="guide-box wide">
+      <h3 data-en="Entry points (pick any one — you can switch freely)">接入入口（任选其一，可自行更换）</h3>
+      <div class="guide-lead" data-en-html="Every entry below reaches <b>the same pool and the same ledger</b> — earnings are identical, only the network route differs. Pass the one nearest to you with <span class=&quot;mono&quot;>--pool</span>; <b>you can change host and port yourself at any time</b>, no need to ask us. If you pass nothing, the miner probes its built-in default and falls back to HTTP automatically.">
+        下面每个入口连的都是<b>同一个矿池、同一个账本</b>，收益完全一样，只是网络线路不同。用 <span class="mono">--pool</span> 填离你最近的那个即可；<b>主机和端口你随时可以自己改</b>，不用问我们。什么都不填时，锄头会探测内置默认入口，连不上会自动回退 HTTP。</div>
+
+      <div class="ent-rows">
+        <div class="ent-row ent-new">
+          <div class="ent-loc" data-en="Germany">德国</div>
+          <div class="ent-main">
+            <span class="mono">--pool stratum+tcp://eur.ntmminer.com:5521</span>
+            <div class="ent-desc" data-en="Europe. Runs on OVH with always-on DDoS scrubbing.">欧洲线路。OVH 机房，DDoS 流量清洗常驻</div>
+          </div>
+          <div class="ent-tags"><span class="badge info" data-en="NEW">新增</span><span class="badge ok" data-en="anti-DDoS">抗 DDoS</span></div>
+        </div>
+        <div class="ent-row">
+          <div class="ent-loc" data-en="Hong Kong">香港</div>
+          <div class="ent-main">
+            <span class="mono">--pool stratum+tcp://hk.ntmminer.com:5521</span>
+            <div class="ent-desc" data-en="Lowest latency for miners in mainland China.">中国大陆矿工延迟最低</div>
+          </div>
+          <div class="ent-tags"><span class="badge ok" data-en="online">正常</span></div>
+        </div>
+        <div class="ent-row">
+          <div class="ent-loc">HTTP</div>
+          <div class="ent-main">
+            <span class="mono">--pool https://brc.ntmminer.com</span>
+            <div class="ent-desc" data-en="Runs over port 443 behind Cloudflare — the least likely to be blocked, and the safest choice on a fussy network.">走 443 端口、有 Cloudflare 防护，最不容易被封，网络环境挑剔时最稳</div>
+          </div>
+          <div class="ent-tags"><span class="badge ok" data-en="most compatible">兼容性最好</span></div>
+        </div>
+        <div class="ent-row">
+          <div class="ent-loc" data-en="United States">美国</div>
+          <div class="ent-main">
+            <span class="mono">--pool stratum+tcp://us.ntmminer.com:5521</span>
+            <div class="ent-desc" data-en="The Americas. This is the miner's built-in default, so it works even if you pass no --pool.">美洲线路。它是锄头的内置默认入口，所以不加 --pool 也能直接用</div>
+          </div>
+          <div class="ent-tags"><span class="badge ok" data-en="online">正常</span><span class="badge info" data-en="miner default">锄头默认</span></div>
+        </div>
+      </div>
+
+      <div class="mini" data-en="Stratum is a persistent connection with pushed jobs, so it has lower latency than HTTP polling; HTTP runs over port 443 and is the least likely to be firewalled. Share validation and payout rules are identical on both.">
+        Stratum 是长连接、推送新任务，延迟比 HTTP 轮询低；HTTP 走 443 端口，最不容易被防火墙拦。两种协议的份额与结算规则完全一致。</div>
+    </div>
+
+    <div class="guide-box wide">
+      <h3 data-en="Using a third-party pool">接第三方矿池</h3>
+      <div class="guide-lead" data-en-html="NTMminer is not locked to our pool. It works with any pool speaking the BrowserCoin pool protocol (<span class=&quot;mono&quot;>/register</span> + <span class=&quot;mono&quot;>/job</span> + <span class=&quot;mono&quot;>/share</span>):">
+        NTMminer 不锁池。任何兼容 BrowserCoin 池协议（<span class="mono">/register</span> + <span class="mono">/job</span> + <span class="mono">/share</span>）的矿池都能连：</div>
+      <pre class="cmd">NTMminer-brc-cpu-win64-v1.6.0.exe --address &lt;你在那个池的地址&gt; --pool https://&lt;第三方池地址&gt;</pre>
+      <div class="mini" data-en-html="Note: <b>once you pass <span class=&quot;mono&quot;>--pool</span> explicitly, the miner does exactly what you asked</b> and will not fall back to our pool. Use the payout address registered with that pool.">
+        注意：<b>一旦显式写了 <span class="mono">--pool</span>，锄头就完全按你指定的来</b>，不会再自动回退到我们的池。地址要填你在那个池登记的收款地址。</div>
+    </div>
+
+    <div class="guide-box wide">
+      <h3 data-en="All command-line options">全部参数</h3>
+      <div class="kv-rows">
+        <div class="kv-row"><div class="kv-k"><span class="mono">--address &lt;64hex&gt;</span></div>
+          <div class="kv-v" data-en-html="<b>Required.</b> Your BRC payout address (64 hexadecimal characters)."><b>必填</b>。你的 BRC 收款地址（64 位十六进制）</div></div>
+        <div class="kv-row"><div class="kv-k"><span class="mono">--pool &lt;url&gt;</span></div>
+          <div class="kv-v" data-en-html="Pool address. Accepts <span class=&quot;mono&quot;>https://</span> and <span class=&quot;mono&quot;>stratum+tcp://host:port</span>. Omit it to use the built-in default.">矿池地址。支持 <span class="mono">https://</span> 与 <span class="mono">stratum+tcp://主机:端口</span>。不填则用内置默认池</div></div>
+        <div class="kv-row"><div class="kv-k"><span class="mono">--threads &lt;n&gt;</span></div>
+          <div class="kv-v" data-en="Set the thread count by hand. Doing so skips auto-calibration.">手动指定线程数。填了就跳过自动校准</div></div>
+        <div class="kv-row"><div class="kv-k"><span class="mono">--smt</span> / <span class="mono">--no-smt</span></div>
+          <div class="kv-v" data-en="Force all logical cores / physical cores only. On platforms with less than 1 MiB L2 per core, physical-cores-only is often faster.">强制用全部逻辑核 / 只用物理核。每核 L2 小于 1MiB 的平台，用物理核往往更快</div></div>
+        <div class="kv-row"><div class="kv-k"><span class="mono">--tune</span></div>
+          <div class="kv-v" data-en-html="Re-run auto-calibration and overwrite the cache. <b>Worth doing after a hardware change or overclock, or whenever the hashrate looks off.</b>">强制重新自动校准并覆盖缓存。<b>换硬件、超频、或觉得算力不对时跑一次</b></div></div>
+        <div class="kv-row"><div class="kv-k"><span class="mono">--no-tune</span></div>
+          <div class="kv-v" data-en="Disable auto-calibration and use static defaults.">关闭自动校准，用静态默认值</div></div>
+        <div class="kv-row"><div class="kv-k"><span class="mono">--pin</span> / <span class="mono">--no-pin</span></div>
+          <div class="kv-v" data-en="Force core pinning on / off (default: decided automatically from the NUMA layout).">强制开启 / 关闭线程绑核（默认按 NUMA 分布自动决定）</div></div>
+        <div class="kv-row"><div class="kv-k"><span class="mono">--interleave &lt;1|2|4&gt;</span></div>
+          <div class="kv-v" data-en="Interleaved instances per thread, default 1. On nearly every machine the default is fastest.">单线程内交错实例数，默认 1。绝大多数机器保持默认最快</div></div>
+        <div class="kv-row"><div class="kv-k"><span class="mono">--no-huge</span></div>
+          <div class="kv-v" data-en="Disable 2 MiB huge pages (on by default; huge pages usually give a clear speedup).">关闭 2MiB 大页（默认开启；大页通常带来明显提速）</div></div>
+        <div class="kv-row"><div class="kv-k"><span class="mono">--gpu</span></div>
+          <div class="kv-v" data-en-html="GPU mode (GPU builds only). This mode uses <b>the GPU only</b> and starts no CPU threads.">GPU 模式（仅 GPU 版二进制）。此模式<b>只用显卡</b>，不启动 CPU 线程</div></div>
+        <div class="kv-row"><div class="kv-k"><span class="mono">--gpu-device &lt;n&gt;</span></div>
+          <div class="kv-v" data-en="Pick which GPU to use, starting from 0.">指定第几张显卡，从 0 开始</div></div>
+      </div>
+      <div class="mini" data-en-html="<b>Mining on CPU and GPU at once</b>: just run two processes — one without <span class=&quot;mono&quot;>--gpu</span> (CPU) and one with it (GPU), both using the same address.">
+        <b>CPU + GPU 同时挖</b>：开两个进程即可 —— 一个不带 <span class="mono">--gpu</span>（跑 CPU），一个带 <span class="mono">--gpu</span>（跑显卡），两个都用同一个地址。</div>
+      <div class="mini" data-en-html="On big machines (EPYC, Threadripper, multi-socket servers) it is worth running <span class=&quot;mono&quot;>--tune</span> once and letting the miner find its own best configuration.">
+        EPYC / 线程撕裂者 / 多路服务器等大核机器，建议首次跑一次 <span class="mono">--tune</span>，让锄头自己找最优配置。</div>
+    </div>
+
+    <div class="guide-box wide">
+      <h3 data-en="About the 1% dev fee (stated plainly)">关于 1% 抽水（明码标价）</h3>
+      <div class="guide-lead" data-en-html="NTMminer takes a <b>1% dev fee</b>: for one minute out of every 100, it mines to the developer address; the other 99 minutes are entirely yours.">
+        NTMminer 收取 <b>1% 抽水</b>：每 100 分钟里有 1 分钟为开发者地址挖矿，其余 99 分钟全部归你。</div>
+      <div class="kv-rows">
+        <div class="kv-row"><div class="kv-k" data-en="Dev fee address">抽水地址</div>
+          <div class="kv-v"><span class="mono">2520e8d6d0ecb52bf5ba79b3d41a045f6d2aef26984c152f3c19f1d74d7ebab0</span></div></div>
+        <div class="kv-row"><div class="kv-k" data-en="How to verify it">怎么核对</div>
+          <div class="kv-v" data-en-html="The miner prints this address at startup. While running, the <span class=&quot;mono&quot;>抽水accepted</span> counter on the status line (that label is printed literally by the miner) is the dev-fee share count, kept separate from your own <span class=&quot;mono&quot;>accepted</span> — so you can check the ratio yourself at any time.">锄头启动时会打印这个地址；运行中状态行里的 <span class="mono">抽水accepted</span> 就是抽水份额数，和你自己的 <span class="mono">accepted</span> 分开计数，随时能自己算比例</div></div>
+        <div class="kv-row"><div class="kv-k" data-en="When the clock starts">时间从哪算</div>
+          <div class="kv-v" data-en-html="From the moment <b>mining actually begins</b>. Startup self-test and auto-calibration are not counted — they do not eat into your time.">从<b>开始挖矿</b>起算。启动自检与自动校准的耗时不计入，不占你的时间</div></div>
+        <div class="kv-row"><div class="kv-k" data-en="Restarts never cost you more">重启不会多抽</div>
+          <div class="kv-v" data-en="The miner keeps its own tally on your machine, so restarting — however often — never repeats the first stint. Over time it converges strictly to 1%.">锄头在本机记账，反复重启也不会重复抽首轮 —— 长期严格收敛到 1%</div></div>
+        <div class="kv-row"><div class="kv-k" data-en="Same 1% on third-party pools">挖第三方池同样是 1%</div>
+          <div class="kv-v" data-en="The dev fee mines on whichever pool you are connected to, under the same rule. Switching pools never increases it.">抽水用的是你所连的那个池，规则一致，不会因为换池而变多</div></div>
+      </div>
+      <div class="mini" data-en-html="This 1% and the pool's 5% fee are two separate things: the pool fee comes out of block rewards, the dev fee is miner run-time. Both are stated openly.">
+        本池池费 5% 与这 1% 是两回事：池费从爆块奖励里收，抽水是锄头的算力时间。两者都写在明面上。</div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div>矿池收款热钱包地址（链上可查证）：<span class="mono" id="f-pooladdr">—</span></div>
+  <div id="f-updated">每 30 秒自动刷新</div>
+  <div>本页所有数据均来自矿池 API 实时返回，绝无估算或编造；「全网算力」为矿池引擎按最近 50 块的真实难度与实际出块间隔换算（/network 接口，另附 24 小时精确窗口均值）；「池占全网」主值为近 24 小时本池与全网实际出块数之比（canonical 链上事实）。</div>
+</footer>
+
+</div>
+
+<noscript><div style="padding:20px;color:#d27d8a">本页需要启用 JavaScript 才能加载矿池实时数据。<br>This page needs JavaScript enabled to load live pool data.</div></noscript>
+
+<script>
+'use strict';
+
+/* ── i18n：中英切换 ────────────────────────────────────────
+   DICT 同时服务两处：静态 DOM 文本节点整体匹配，以及 JS 里的 T()。
+   静态里我们自己写的长句用 data-en / data-en-html 属性，优先于 DICT。 */
+var I18N_DICT = {"矿池": "Pool","加载中…": "Loading…","刷新": "Refresh","刷新中…": "Refreshing…","查询": "Look up","查询中…": "Looking up…","池状态": "Pool Status","区块高度": "Block Height","池算力": "Pool Hashrate","全网算力": "Network Hashrate","在线矿工": "Active Miners","当前难度": "Difficulty","池占全网": "Pool Share","已入账爆块": "Credited Blocks","最新爆块": "Last Block","平均出块": "Avg Block Time","当前区块奖励": "Block Reward","累计已付矿工": "Total Paid","待付余额": "Unpaid Balance","近 30 分钟均值 · 按已接受 share": "30-min average · by accepted shares","按最近 50 块难度与实际出块间隔": "From last 50 blocks' difficulty and actual intervals","compact (nBits) 原始值": "compact (nBits) raw value","近 24 小时按实际出块": "Last 24h, by actual blocks found","目标 150 秒": "Target 150s","BRC": "BRC","矿工查询": "Miner Lookup","输入你的 64 位十六进制收款地址（0-9 a-f）": "Enter your 64-hex payout address (0-9 a-f)","地址：": "Address: ","累计收益": "Total Earned","已支付": "Paid","在途打款": "In-flight Payout","当前算力": "Your Hashrate","池内占比": "Share of Pool","爆块数": "Blocks Found","PPLNS 收益": "PPLNS Earnings","爆块奖励收益": "Finder Bonus Earned","权重状态": "Weight State","预计下次打款": "Next Payout ETA","BRC · 未支付部分": "BRC · unpaid portion","BRC · 已入账总额": "BRC · total credited","BRC · 已广播待确认": "BRC · broadcast, awaiting confirmation","约 6 分钟窗口": "~6-minute window","PPLNS 衰减窗口权重": "PPLNS decay-window weight","本地址爆出并入账的块": "Blocks found by this address and credited","BRC · 按份额分得": "BRC · by share weight","BRC · finder bonus 累计": "BRC · finder bonus total","达到最小起付后按轮询打款": "Paid on the next round once minimum payout is reached","待成熟分成（本地址）": "Pending Maturity (this address)","活跃 worker": "Active Workers","高度": "Height","剩余确认": "Confs Left","预计成熟": "Matures In","我的分成 (BRC)": "My Share (BRC)","其中爆块奖励 (BRC)": "Incl. Finder Bonus (BRC)","引擎": "Engine","算力": "Hashrate","接受 share": "Accepted","过期 share": "Stale","最后 share": "Last Share","爆块记录": "Blocks","待成熟区块（等待 12 个确认）": "Pending Blocks (awaiting 12 confirmations)","爆块者": "Finder","区块价值 (BRC)": "Block Value (BRC)","其中手续费 (BRC)": "Incl. Tx Fees (BRC)","时间": "Time","奖励 (BRC)": "Reward (BRC)","努力值": "Luck","爆块奖励": "Finder Bonus","打款状态": "Payout Status","打款记录": "Payouts","矿工": "Miner","金额 (BRC)": "Amount (BRC)","状态": "Status","提交时间": "Submitted","到账时间": "Confirmed","接入指南": "Getting Started"," 秒": "s"," 分": "m"," 小时": "h"," 秒前": "s ago","暂不可用": "unavailable","（网络错误）": " (network error)","‹ 上一页": "‹ Prev","第 ": "Page "," 页 · 共 ": " · "," 条": " total","下一页 ›": "Next ›","链尖尚未获得外部数据源佐证": "chain tip not yet corroborated by external sources","同步停滞": "sync stalled","启动对账未完成": "startup reconciliation incomplete","无法连接": "Unreachable","无法连接矿池 API（/health 无响应），页面数据可能已过期，请稍后刷新。": "Cannot reach the pool API (/health did not respond). Data on this page may be stale — please refresh shortly.","已同步 · 高度 ": "Synced · height ","同步中 · ": "Syncing · ","⚠ 池同步/佐证中：高度 ": "⚠ Pool syncing/corroborating: height "," — 矿工连接与 share 提交不受影响，页面统计与入账随佐证恢复自动继续。": " — mining and share submission are unaffected; stats and crediting resume automatically once corroboration recovers.","挖矿暂停：": "Mining paused: ","同步停滞（syncStalled）": "sync stalled (syncStalled)","链尖待佐证（canonicalCorroborated=false）": "chain tip awaiting corroboration (canonicalCorroborated=false)","已同步": "Synced","同步/佐证中": "Syncing"," · 90 秒活跃窗口": " · 90s active window","待成熟 ": "pending "," · 24 小时 ": " · 24h "," · 努力值 ": " · luck ","尚无已入账爆块": "No credited blocks yet"," · 在途 ": " · in flight ","按最近 50 块难度与实际间隔（约 2 小时）": "From last 50 blocks' difficulty and actual intervals (~2h)"," · 24 小时均值 ": " · 24h average ","（同步中 · 为已同步高度处的链上值）": " (syncing · on-chain value at the synced height)"," · 期望 ": " · expected "," hash/块": " hash/block","近 24 小时实际出块 ": "Blocks found in last 24h: ","目标 ": "Target "," · 50 块均值 ": " · 50-block average "," · 下次减半 @ ": " · next halving @ ","（剩 ": " ("," 块）": " blocks left)"," · 当前算力占比 ": " · current hashrate share ","当前算力占比 · 池 30 分钟均值 / 全网 50 块窗口": "Current hashrate share · pool 30-min avg / network 50-block window","数据": "data","（池同步中）": " (pool syncing)","暂无待成熟区块": "No pending blocks","含": "incl. ","无": "none","已付": "Paid","待付": "Unpaid","暂无已入账爆块": "No credited blocks","（池同步中，尚未开始挖矿）": " (pool syncing, mining not started)","已到账": "Confirmed","在途": "In flight","暂无打款记录": "No payouts yet","最新锄头版本：v": "Latest miner version: v","公告：": "Notice: ","冷启动": "Cold start","爬坡中": "Ramping","满权重": "Full weight","衰减中": "Decaying","网络错误": "Network error","部分数据暂不可用：": "Some data is unavailable: ","预计 ": "about "," 后满权重": " to full weight","PPLNS 窗口权重状态": "PPLNS window weight state","待付达到最小起付，进入打款队列": "Unpaid balance has reached the minimum — queued for payout","待付未达最小起付或暂无数据": "Unpaid balance is below the minimum, or no data yet","/balance 接口视图：earned ": "/balance view: earned ","（浮点显示，精确值以上方 8 位小数为准）": " (float display; the 8-decimal values above are authoritative)","爆块奖励（finder bonus ": "Finder bonus (","）：你的爆块次数 ": "): blocks you found "," · 全池最近爆块者 ": " · pool's latest finder "," @ 高度 ": " @ height "," · 全池暂无爆块记录": " · no blocks found by the pool yet","暂无待成熟分成": "No pending share","未知": "unknown","当前无活跃 worker（90 秒窗口内无 share）": "No active workers (no shares in the last 90s)","地址格式不对：应为 64 位十六进制字符串（仅 0-9、a-f）。": "Invalid address: expected a 64-character hex string (0-9, a-f only).","每 30 秒自动刷新 · 上次更新 ": "Auto-refresh every 30s · last updated ","费率与规则": "Fees & Rules","池费率：": "Pool fee: ","（从爆块奖励中收取）": " (taken from the block reward)","爆块者奖励：": "Finder bonus: ","成熟确认数：": "Confirmations: ","12 个区块": "12 blocks","最小起付：": "Minimum payout: ","锄头抽水：": "Miner dev fee: ","结算模式：": "Payout scheme: ","PPLNS（时间衰减窗口）": "PPLNS (time-decayed window)","矿池收款热钱包地址（链上可查证）：": "Pool hot wallet address (verifiable on-chain): ","每 30 秒自动刷新": "Auto-refresh every 30s","本页所有数据均来自矿池 API 实时返回，绝无估算或编造；「全网算力」为矿池引擎按最近 50 块的真实难度与实际出块间隔换算（/network 接口，另附 24 小时精确窗口均值）；「池占全网」主值为近 24 小时本池与全网实际出块数之比（canonical 链上事实）。": "Every figure on this page comes live from the pool API — nothing is estimated or fabricated. \"Network hashrate\" is derived by the pool engine from the last 50 blocks' real difficulty and actual block intervals (/network endpoint, with a precise 24h window average alongside). \"Pool share\" is the ratio of blocks actually found by this pool versus the whole network over the last 24h (canonical on-chain fact).","本页需要启用 JavaScript 才能加载矿池实时数据。": "This page needs JavaScript enabled to load live pool data."};
+var LANG = (function () {
+  try { var v = localStorage.getItem('brc_lang'); if (v === 'en' || v === 'zh') return v; } catch (e) {}
+  return (navigator.language || '').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en';
+})();
+function T(s) {
+  if (LANG !== 'en' || typeof s !== 'string') return s;
+  var hit = I18N_DICT[s];
+  return hit === undefined ? s : hit;
+}
+function applyLang() {
+  var en = LANG === 'en';
+  document.documentElement.lang = en ? 'en' : 'zh-CN';
+  // ① 我们自己写的块：data-en / data-en-html
+  var nodes = document.querySelectorAll('[data-en],[data-en-html]');
+  for (var i = 0; i < nodes.length; i++) {
+    var el = nodes[i];
+    var isHtml = el.hasAttribute('data-en-html');
+    var enText = isHtml ? el.getAttribute('data-en-html') : el.getAttribute('data-en');
+    if (el.getAttribute('data-zh') === null)
+      el.setAttribute('data-zh', isHtml ? el.innerHTML : el.textContent);
+    if (isHtml) el.innerHTML = en ? enText : el.getAttribute('data-zh');
+    else el.textContent = en ? enText : el.getAttribute('data-zh');
+  }
+  // ② 其余静态文本节点：整段命中 DICT 才换，避免误伤地址/数字
+  var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+  var n;
+  while ((n = walker.nextNode())) {
+    var p = n.parentNode;
+    if (!p || p.closest('[data-en],[data-en-html],pre,script,style')) continue;
+    var raw = n.nodeValue, key = raw.trim();
+    if (!key) continue;
+    if (en) {
+      var hit = I18N_DICT[key];
+      if (hit !== undefined) {
+        if (n.__zh === undefined) n.__zh = raw;
+        n.nodeValue = raw.replace(key, hit);
+      }
+    } else if (n.__zh !== undefined) {
+      n.nodeValue = n.__zh;
+    }
+  }
+  // ③ placeholder / title
+  var ph = document.querySelector('#addrInput, .lookup input');
+  if (ph) {
+    if (!ph.getAttribute('data-zh-ph')) ph.setAttribute('data-zh-ph', ph.placeholder || '');
+    var phZh = ph.getAttribute('data-zh-ph');
+    ph.placeholder = en ? (I18N_DICT[phZh] || phZh) : phZh;
+  }
+  var lb = document.getElementById('langBtn');
+  if (lb) lb.textContent = en ? '中文' : 'EN';
+}
+function setLang(v) {
+  LANG = v;
+  try { localStorage.setItem('brc_lang', v); } catch (e) {}
+  applyLang();
+  if (typeof refresh === 'function') { try { refresh(); } catch (e) {} }
+}
+
+(function () {
+  var API = '';                 // 同源矿池 API
+  var REFRESH_MS = 30000;
+  var CONFIRMATIONS = 12;       // 生产配置 CONFIRMATIONS=12（deploy/brc-pool.env.production）
+  var currentAddr = null;
+  var gSynced = null;           // /health.synced：null=未知
+  var gShare24h = false;        // 本轮刷新里「池占全网」主值是否已由 24h 实际出块数填充
+  var refreshing = false;
+
+  function byId(id) { return document.getElementById(id); }
+  function setText(id, v) { byId(id).textContent = (v === null || v === undefined || v === '') ? '—' : v; }
+
+  // ── fetch（15s 超时；返回 {ok,status,body}，body 解析失败为 null）──
+  function getJSON(path) {
+    var ctl = new AbortController();
+    var t = setTimeout(function () { ctl.abort(); }, 15000);
+    return fetch(API + path, { cache: 'no-store', signal: ctl.signal })
+      .then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (body) {
+          return { ok: r.ok, status: r.status, body: body };
+        });
+      })
+      .catch(function () { return { ok: false, status: 0, body: null }; })
+      .finally(function () { clearTimeout(t); });
+  }
+
+  // ── 格式化（金额一律 BigInt，1 BRC = 1e8 wei，保留 8 位）──
+  function fmtBrc(wei) {
+    if (wei === null || wei === undefined) return null;
+    var w;
+    try { w = BigInt(String(wei)); } catch (e) { return null; }
+    var neg = w < 0n; if (neg) w = -w;
+    var whole = (w / 100000000n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    var frac = (w % 100000000n).toString().padStart(8, '0');
+    return (neg ? '-' : '') + whole + '.' + frac;
+  }
+  function fmtInt(n) {
+    if (n === null || n === undefined || typeof n !== 'number' || !isFinite(n)) return null;
+    return n.toLocaleString('en-US');
+  }
+  function fmtPct(x, d) {
+    if (x === null || x === undefined || typeof x !== 'number' || !isFinite(x)) return null;
+    return (x * 100).toFixed(d === undefined ? 2 : d) + '%';
+  }
+  function fmtHs(h) {
+    if (h === null || h === undefined || typeof h !== 'number' || !isFinite(h) || h < 0) return null;
+    var u = [' H/s', ' kH/s', ' MH/s', ' GH/s', ' TH/s', ' PH/s'], i = 0;
+    while (h >= 1000 && i < u.length - 1) { h /= 1000; i++; }
+    return (i === 0 ? Math.round(h).toString() : h.toFixed(h >= 100 ? 1 : 2)) + u[i];
+  }
+  function fmtTs(t) {
+    if (t === null || t === undefined || typeof t !== 'number' || !isFinite(t)) return null;
+    // API mixes units: /pool/blocks + lastBlock use SECONDS (~1.78e9); /pool/payouts
+    // submittedTs/settledTs use MILLISECONDS (~1.78e12, Date.now()). Auto-detect by
+    // magnitude so a ms value isn't multiplied by 1000 again (which showed year 58528).
+    // Threshold 1e12: seconds stay < 1e12 until year ~33000; ms passed 1e12 back in 2001.
+    var ms = t > 1e12 ? t : t * 1000;
+    try { return new Date(ms).toLocaleString('zh-CN', { hour12: false }); } catch (e) { return null; }
+  }
+  function fmtDur(sec) {
+    if (sec === null || sec === undefined || typeof sec !== 'number' || !isFinite(sec)) return null;
+    sec = Math.max(0, Math.round(sec));
+    if (sec < 60) return sec + T(' 秒');
+    var m = Math.floor(sec / 60), s = sec % 60;
+    if (m < 60) return m + T(' 分') + (s ? ' ' + s + T(' 秒') : '');
+    var h = Math.floor(m / 60), mm = m % 60;
+    return h + T(' 小时') + (mm ? ' ' + mm + T(' 分') : '');
+  }
+  function shortHex(h) {
+    if (typeof h !== 'string' || h.length === 0) return null;
+    return h.length <= 16 ? h : h.slice(0, 8) + '…' + h.slice(-6);
+  }
+
+  // ── DOM 构造（全部 textContent，杜绝注入）──
+  function td(content) {
+    var d = document.createElement('td');
+    if (content instanceof Node) d.appendChild(content);
+    else d.textContent = (content === null || content === undefined) ? '—' : String(content);
+    return d;
+  }
+  function hexCell(h) {
+    var s = document.createElement('span');
+    s.className = 'mono'; s.title = typeof h === 'string' ? h : '';
+    s.textContent = shortHex(h) || '—';
+    return s;
+  }
+  function badge(text, kind) {
+    var s = document.createElement('span');
+    s.className = 'badge ' + kind; s.textContent = text;
+    return s;
+  }
+  function fillTable(tbodyId, rows, emptyMsg, colCount) {
+    var tb = byId(tbodyId);
+    tb.replaceChildren();
+    if (!rows || !rows.length) {
+      var r = document.createElement('tr'), c = td(emptyMsg);
+      c.className = 'empty'; c.colSpan = colCount;
+      r.appendChild(c); tb.appendChild(r);
+      return;
+    }
+    rows.forEach(function (cells) {
+      var r = document.createElement('tr');
+      cells.forEach(function (c) { r.appendChild(td(c)); });
+      tb.appendChild(r);
+    });
+  }
+  function unavailMsg(res, what) {
+    return what + T('暂不可用') + (res.status ? '（HTTP ' + res.status + '）' : T('（网络错误）'));
+  }
+
+  // ── 分页（打款/爆块记录，每页 15 条；30s 刷新保留当前页码）──
+  var PAGE_SIZE = 15;
+  var pagerState = {};
+  function paginate(tbodyId, pagerId, rows, emptyMsg, colCount) {
+    var prev = pagerState[tbodyId];
+    pagerState[tbodyId] = {
+      rows: rows || [], emptyMsg: emptyMsg, colCount: colCount, pagerId: pagerId,
+      page: prev ? prev.page : 0
+    };
+    renderPage(tbodyId);
+  }
+  function renderPage(tbodyId) {
+    var st = pagerState[tbodyId];
+    var total = st.rows.length;
+    var pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (st.page > pages - 1) st.page = pages - 1;
+    if (st.page < 0) st.page = 0;
+    var start = st.page * PAGE_SIZE;
+    var slice = st.rows.slice(start, start + PAGE_SIZE);
+    fillTable(tbodyId, slice.length ? slice : null, st.emptyMsg, st.colCount);
+    var pg = byId(st.pagerId);
+    pg.replaceChildren();
+    if (total <= PAGE_SIZE) return; // 不足一页不显示翻页控件
+    var prevBtn = document.createElement('button');
+    prevBtn.textContent = T('‹ 上一页'); prevBtn.disabled = st.page <= 0;
+    prevBtn.addEventListener('click', function () { st.page--; renderPage(tbodyId); });
+    var info = document.createElement('span');
+    info.className = 'pager-info';
+    info.textContent = T('第 ') + (st.page + 1) + ' / ' + pages + T(' 页 · 共 ') + total + T(' 条');
+    var nextBtn = document.createElement('button');
+    nextBtn.textContent = T('下一页 ›'); nextBtn.disabled = st.page >= pages - 1;
+    nextBtn.addEventListener('click', function () { st.page++; renderPage(tbodyId); });
+    pg.appendChild(prevBtn); pg.appendChild(info); pg.appendChild(nextBtn);
+  }
+
+  // ── /health → 顶部状态 + 同步横幅 ──
+  var PAUSE_REASON = {
+    'canonical-unconfirmed': T('链尖尚未获得外部数据源佐证'),
+    'sync-stalled': T('同步停滞'),
+    'pending-reconciliation': T('启动对账未完成')
+  };
+  function renderHealth(res) {
+    var pill = byId('statusPill'), banner = byId('syncBanner');
+    var h = res.body;
+    if (!h || typeof h.synced !== 'boolean') {
+      gSynced = null;
+      pill.className = 'pill crit';
+      setText('statusText', T('无法连接'));
+      banner.className = 'banner crit show';
+      banner.replaceChildren();
+      banner.appendChild(document.createTextNode(T('无法连接矿池 API（/health 无响应），页面数据可能已过期，请稍后刷新。')));
+      return h;
+    }
+    gSynced = h.synced;
+    if (h.synced) {
+      pill.className = 'pill ok';
+      setText('statusText', T('已同步 · 高度 ') + (fmtInt(h.height) || '—'));
+      banner.className = 'banner';
+      banner.replaceChildren();
+    } else {
+      pill.className = 'pill warn';
+      setText('statusText', T('同步中 · ') + (fmtInt(h.height) || '—'));
+      banner.className = 'banner warn show';
+      banner.replaceChildren();
+      var l1 = document.createElement('div');
+      l1.textContent = T('⚠ 池同步/佐证中：高度 ') + (fmtInt(h.height) || '—') + T(' — 矿工连接与 share 提交不受影响，页面统计与入账随佐证恢复自动继续。');
+      banner.appendChild(l1);
+      var reasons = [];
+      if (h.miningPaused) {
+        var rz = h.miningPauseReason;
+        reasons.push(T('挖矿暂停：') + (PAUSE_REASON[rz] || '') + (rz ? '（' + rz + '）' : ''));
+      }
+      if (h.syncStalled) reasons.push(T('同步停滞（syncStalled）'));
+      if (h.canonicalCorroborated === false) reasons.push(T('链尖待佐证（canonicalCorroborated=false）'));
+      if (reasons.length) {
+        var l2 = document.createElement('div');
+        l2.className = 'b-sub';
+        l2.textContent = reasons.join(' · ');
+        banner.appendChild(l2);
+      }
+    }
+    return h;
+  }
+
+  // ── /stats → 池状态卡（份额口径的池算力、在线矿工、爆块与支付总额）──
+  function renderStats(res, notes) {
+    if (!res.ok || !res.body) { notes.push(unavailMsg(res, '/stats')); return; }
+    var s = res.body;
+    setText('t-height', fmtInt(s.height));
+    setText('c-height', gSynced === true ? T('已同步') : gSynced === false ? T('同步/佐证中') : '');
+    setText('t-poolhr', fmtHs(s.poolHashrateHs));
+    setText('t-miners', fmtInt(s.activeMiners));
+    setText('c-miners', 'worker ' + (fmtInt(s.activeWorkers) || '—') + T(' · 90 秒活跃窗口'));
+    // 「池占全网」不再用 /stats 的 shareOfNetwork（6 分钟池窗 ÷ 15 块网窗，纯瞬时、
+    // 噪声大且与 24h 爆块占比口径错配）——主值改由 renderNetwork 用 24h 实际出块数填充。
+    setText('t-found', fmtInt(s.blocksFound));
+    setText('c-found', T('待成熟 ') + (fmtInt(s.blocksPending) || '—') + T(' · 24 小时 ') + (fmtInt(s.blocksLast24h) || '—'));
+    if (s.lastBlock && typeof s.lastBlock.height === 'number') {
+      setText('t-lastblock', '#' + fmtInt(s.lastBlock.height));
+      setText('c-lastblock', (fmtTs(s.lastBlock.ts) || '') +
+        (typeof s.lastBlock.effortPct === 'number' ? T(' · 努力值 ') + s.lastBlock.effortPct.toFixed(2) + '%' : ''));
+    } else {
+      setText('t-lastblock', null);
+      setText('c-lastblock', T('尚无已入账爆块'));
+    }
+    setText('t-paid', fmtBrc(s.paidToMinersWei));
+    setText('t-owed', fmtBrc(s.owedToMinersWei));
+    var inFlight = fmtBrc(s.inFlightTotalWei);
+    setText('c-owed', 'BRC' + (inFlight !== null ? T(' · 在途 ') + inFlight : ''));
+    // 接入指南的动态费率/起付（真实配置回显）
+    if (typeof s.feePct === 'number') setText('g-fee', (s.feePct * 100).toFixed(s.feePct * 100 % 1 ? 1 : 0) + '%');
+    if (typeof s.finderBonusPct === 'number') setText('g-bonus', (s.finderBonusPct * 100).toFixed(s.finderBonusPct * 100 % 1 ? 1 : 0) + '%');
+    var minPay = fmtBrc(s.minPayoutWei);
+    if (minPay !== null) setText('g-minpay', minPay);
+    if (typeof s.poolAddress === 'string' && s.poolAddress) setText('f-pooladdr', s.poolAddress);
+  }
+
+  // ── /network → 全网算力（引擎按真实区块头难度/时间戳估算）、难度、出块 ──
+  function renderNetwork(res, notes) {
+    gShare24h = false; // 每轮先复位：/network 拉不到时绝不能沿用上一轮的填充标记
+    if (!res.ok || !res.body) { notes.push(unavailMsg(res, '/network')); return; }
+    var n = res.body;
+    // 主值用 50 块（约 2 小时）窗口：15 块窗口的泊松噪声 ±26%，读数会在真实算力不变时
+    // 大幅跳动；50 块 ±14% 明显更稳。caption 再给 24 小时精确窗口均值对照。
+    var hr = (typeof n.estHashrate === 'number') ? n.estHashrate
+           : (typeof n.estHashrateRecent === 'number') ? n.estHashrateRecent : null;
+    setText('t-nethr', fmtHs(hr));
+    setText('c-nethr', T('按最近 50 块难度与实际间隔（约 2 小时）') +
+      (typeof n.estHashrate24hHs === 'number' ? T(' · 24 小时均值 ') + fmtHs(n.estHashrate24hHs) : '') +
+      (gSynced === false ? T('（同步中 · 为已同步高度处的链上值）') : ''));
+    setText('t-diff', fmtInt(n.difficulty));
+    // 难度 caption：compact 原始值 + 精确期望 hash/块（链上 blockWork 换算，服务端出）。
+    var expHashes = null;
+    if (typeof n.expectedHashesPerBlock === 'string') {
+      var eh = Number(n.expectedHashesPerBlock);
+      if (isFinite(eh) && eh > 0) expHashes = eh;
+    }
+    setText('c-diff', T('compact (nBits) 原始值') + (expHashes !== null ? T(' · 期望 ') + fmtInt(Math.round(expHashes)) + T(' hash/块') : ''));
+    // 「池占全网」主值 = 近 24 小时双方实际出块数之比（canonical 链上事实，零估算）。
+    if (typeof n.blocks24h === 'number' && n.blocks24h > 0 && typeof n.poolBlocks24h === 'number') {
+      setText('t-share', fmtPct(n.poolBlocks24h / n.blocks24h, 1));
+      setText('c-share', T('近 24 小时实际出块 ') + fmtInt(n.poolBlocks24h) + ' / ' + fmtInt(n.blocks24h));
+      gShare24h = true;
+    }
+    setText('t-avgblk', typeof n.avgBlockTimeRecentS === 'number' ? n.avgBlockTimeRecentS.toFixed(1) + T(' 秒') : null);
+    setText('c-avgblk', T('目标 ') + (typeof n.targetBlockTimeS === 'number' ? n.targetBlockTimeS : 150) + T(' 秒') +
+      (typeof n.avgBlockTimeS === 'number' ? T(' · 50 块均值 ') + n.avgBlockTimeS.toFixed(1) + T(' 秒') : ''));
+    setText('t-reward', fmtBrc(n.rewardNowWei));
+    setText('c-reward', 'BRC' + (typeof n.nextHalvingHeight === 'number'
+      ? T(' · 下次减半 @ ') + fmtInt(n.nextHalvingHeight) + T('（剩 ') + (fmtInt(n.blocksUntilHalving) || '—') + T(' 块）') : ''));
+  }
+
+  // ── 近 30 分钟池算力（覆盖 /stats 的 6 分钟窗口值）+ 当前算力占比 ──
+  // /series/pool 每点是 ~15 秒一桶的瞬时 share 算力（work/dt），会 0↔数十万剧烈抖；
+  // 桶 dt 相等，故近 30 分钟简单平均 == Σwork/Σdt == 真实 30 分钟持续算力（无偏，
+  // 因 share 的 work 按 vardiff 记账）。仍是「按实际 share」——不做估算/反推。
+  function renderSmoothedPoolHr(seriesRes, netRes) {
+    if (!seriesRes || !seriesRes.ok || !Array.isArray(seriesRes.body)) return; // 拉不到就保留 /stats 原值
+    var now = Math.floor(Date.now() / 1000), lo = now - 1800, sum = 0, n = 0;
+    for (var i = 0; i < seriesRes.body.length; i++) {
+      var p = seriesRes.body[i];
+      if (p && typeof p.t === 'number' && p.t > lo &&
+          typeof p.poolHashrateHs === 'number' && isFinite(p.poolHashrateHs) && p.poolHashrateHs >= 0) {
+        sum += p.poolHashrateHs; n++;
+      }
+    }
+    if (n === 0) return; // 窗口内无样本就保留 /stats 原值
+    var avg = sum / n;
+    setText('t-poolhr', fmtHs(avg));
+    // 当前算力占比 = 上面的池算力(30 分钟均值) ÷ 全网算力 tile 同款 50 块窗口值，
+    // 与两个 tile 显示值严格自洽（可手算对得上）。24h 出块占比是主值时它进 caption；
+    // /network 的 24h 字段不可用时才降级为主值（并如实标注口径）。
+    var netHr = null;
+    if (netRes && netRes.ok && netRes.body) {
+      var nb = netRes.body;
+      netHr = (typeof nb.estHashrate === 'number') ? nb.estHashrate
+            : (typeof nb.estHashrateRecent === 'number') ? nb.estHashrateRecent : null;
+    }
+    if (typeof netHr === 'number' && netHr > 0) {
+      var cur = fmtPct(avg / netHr, 1);
+      if (cur === null) return;
+      if (gShare24h) {
+        var cEl = byId('c-share');
+        if (cEl) cEl.textContent = cEl.textContent + T(' · 当前算力占比 ') + cur;
+      } else {
+        setText('t-share', cur);
+        setText('c-share', T('当前算力占比 · 池 30 分钟均值 / 全网 50 块窗口'));
+      }
+    }
+  }
+
+  // ── /pool/pending + /pool/blocks → 爆块记录 ──
+  function renderBlocks(pendRes, blocksRes) {
+    if (!pendRes.ok || !Array.isArray(pendRes.body)) {
+      fillTable('pendingBody', null, unavailMsg(pendRes, T('数据')) + (gSynced === false ? T('（池同步中）') : ''), 6);
+    } else {
+      fillTable('pendingBody', pendRes.body.map(function (b) {
+        return [
+          fmtInt(b.height),
+          hexCell(b.finderHex),
+          fmtBrc(b.rewardWei),
+          fmtBrc(b.totalFeesWei),
+          (typeof b.confsRemaining === 'number' ? b.confsRemaining + ' / ' + CONFIRMATIONS : null),
+          fmtDur(b.etaSec)
+        ];
+      }), T('暂无待成熟区块'), 6);
+    }
+    if (!blocksRes.ok || !Array.isArray(blocksRes.body)) {
+      paginate('blocksBody', 'blocksPager', null, unavailMsg(blocksRes, T('数据')) + (gSynced === false ? T('（池同步中）') : ''), 7);
+    } else {
+      paginate('blocksBody', 'blocksPager', blocksRes.body.map(function (b) {
+        return [
+          fmtInt(b.height),
+          fmtTs(b.ts),
+          hexCell(b.finder),
+          fmtBrc(b.rewardWei),
+          (typeof b.effortPct === 'number' ? b.effortPct.toFixed(2) + '%' : null),
+          (b.finderBonus === true ? T('含') : b.finderBonus === false ? T('无') : null),
+          b.payoutStatus === 'paid' ? badge(T('已付'), 'ok')
+            : b.payoutStatus === 'awaiting' ? badge(T('待付'), 'warn')
+            : badge(String(b.payoutStatus || '—'), 'muted')
+        ];
+      }), T('暂无已入账爆块') + (gSynced === false ? T('（池同步中，尚未开始挖矿）') : ''), 7);
+    }
+  }
+
+  // ── /pool/payouts → 打款记录（接口无 txid 字段，故不显示）──
+  function renderPayouts(res) {
+    if (!res.ok || !Array.isArray(res.body)) {
+      paginate('payoutsBody', 'payoutsPager', null, unavailMsg(res, T('数据')) + (gSynced === false ? T('（池同步中）') : ''), 5);
+      return;
+    }
+    paginate('payoutsBody', 'payoutsPager', res.body.map(function (p) {
+      return [
+        hexCell(p.miner),
+        fmtBrc(p.amountWei),
+        p.status === 'settled' ? badge(T('已到账'), 'ok')
+          : p.status === 'in-flight' ? badge(T('在途'), 'warn')
+          : badge(String(p.status || '—'), 'muted'),
+        fmtTs(p.submittedTs),
+        fmtTs(p.settledTs)
+      ];
+    }), T('暂无打款记录') + (gSynced === false ? T('（池同步中，尚未开始挖矿）') : ''), 5);
+  }
+
+  // ── /version → 指南卡的版本提示 ──
+  function renderVersion(res) {
+    if (!res.ok || !res.body) return;
+    var v = res.body;
+    setText('g-version', v.latestMinerVersion ? T('最新锄头版本：v') + v.latestMinerVersion : '');
+    setText('g-notice', v.notice ? T('公告：') + v.notice : '');
+    byId('g-version').style.display = v.latestMinerVersion ? '' : 'none';
+    byId('g-notice').style.display = v.notice ? '' : 'none';
+  }
+
+  // ── 矿工查询：/miner/:addr（精确 wei）+ /balance + /jackpot + /workers ──
+  var WARM_STATE = { cold: T('冷启动'), ramping: T('爬坡中'), full: T('满权重'), fading: T('衰减中') };
+  function refreshMiner() {
+    if (!currentAddr) return Promise.resolve();
+    var addr = currentAddr;
+    setText('m-note', T('查询中…'));
+    return Promise.all([
+      getJSON('/miner/' + addr),
+      getJSON('/balance?address=' + addr),
+      getJSON('/jackpot?address=' + addr),
+      getJSON('/miner/' + addr + '/workers')
+    ]).then(function (rs) {
+      var mv = rs[0], bal = rs[1], jp = rs[2], wk = rs[3];
+      byId('minerResult').classList.remove('hidden');
+      setText('m-addr', addr);
+
+      var fails = [];
+      if (!mv.ok) fails.push('/miner（' + (mv.status || T('网络错误')) + '）');
+      if (!bal.ok) fails.push('/balance（' + (bal.status || T('网络错误')) + '）');
+      if (!jp.ok) fails.push('/jackpot（' + (jp.status || T('网络错误')) + '）');
+      if (!wk.ok) fails.push('/workers（' + (wk.status || T('网络错误')) + '）');
+      byId('m-note').textContent = fails.length ? T('部分数据暂不可用：') + fails.join('、') : '';
+
+      var m = (mv.ok && mv.body) ? mv.body : null;
+      setText('m-owed', m ? fmtBrc(m.owedWei) : null);
+      setText('m-earned', m ? fmtBrc(m.earnedWei) : null);
+      setText('m-paid', m ? fmtBrc(m.paidWei) : null);
+      setText('m-inflight', m ? fmtBrc(m.inFlightWei) : null);
+      setText('m-hr', m ? fmtHs(m.hashrateHs) : null);
+      setText('m-share', m ? fmtPct(m.shareOfPool) : null);
+      setText('m-blocks', m ? fmtInt(m.blocksFound) : null);
+      setText('m-pplns', m ? fmtBrc(m.pplnsEarnedWei) : null);
+      setText('m-fbonus', m ? fmtBrc(m.finderBonusWei) : null);
+      if (m && typeof m.warmState === 'string') {
+        setText('m-warm', (WARM_STATE[m.warmState] || m.warmState) +
+          (typeof m.warmupPct === 'number' && (m.warmState === 'ramping' || m.warmState === 'fading')
+            ? ' ' + Math.round(m.warmupPct * 100) + '%' : ''));
+        setText('m-warm-c', m.warmState === 'ramping' && typeof m.warmupEtaSec === 'number' && m.warmupEtaSec > 0
+          ? T('预计 ') + fmtDur(m.warmupEtaSec) + T(' 后满权重')
+          : T('PPLNS 窗口权重状态'));
+      } else { setText('m-warm', null); setText('m-warm-c', ''); }
+      setText('m-eta', m && typeof m.etaToSendSec === 'number' ? fmtDur(m.etaToSendSec) : null);
+      setText('m-eta-c', m && typeof m.etaToSendSec === 'number'
+        ? T('待付达到最小起付，进入打款队列') : T('待付未达最小起付或暂无数据'));
+
+      // /balance 接口原样回显（浮点视图；精确金额以上方 wei 换算为准）
+      var bl = byId('m-balance-line');
+      if (bal.ok && bal.body) {
+        bl.textContent = T('/balance 接口视图：earned ') + bal.body.earnedBrc + ' · pending ' + bal.body.pendingBrc +
+          ' · paid ' + bal.body.paidBrc + ' ' + (bal.body.currency || '') + T('（浮点显示，精确值以上方 8 位小数为准）');
+      } else bl.textContent = '';
+
+      var jl = byId('m-jackpot-line');
+      if (jp.ok && jp.body) {
+        var j = jp.body;
+        jl.replaceChildren();
+        jl.appendChild(document.createTextNode(
+          T('爆块奖励（finder bonus ') + (typeof j.finderBonusPct === 'number' ? (j.finderBonusPct * 100) + '%' : '—') +
+          T('）：你的爆块次数 ')));
+        var b1 = document.createElement('b'); b1.textContent = String(j.yourBlockStrikes ?? '—');
+        jl.appendChild(b1);
+        if (j.lastWinner) {
+          jl.appendChild(document.createTextNode(T(' · 全池最近爆块者 ')));
+          jl.appendChild(hexCell(j.lastWinner));
+          if (typeof j.lastStrikeHeight === 'number') jl.appendChild(document.createTextNode(T(' @ 高度 ') + fmtInt(j.lastStrikeHeight)));
+        } else {
+          jl.appendChild(document.createTextNode(T(' · 全池暂无爆块记录')));
+        }
+      } else jl.textContent = '';
+
+      // 待成熟分成
+      if (m && Array.isArray(m.pending)) {
+        fillTable('m-pending-body', m.pending.map(function (p) {
+          return [
+            fmtInt(p.height),
+            (typeof p.confsRemaining === 'number' ? p.confsRemaining + ' / ' + CONFIRMATIONS : null),
+            fmtDur(p.etaSec),
+            fmtBrc(p.amountWei),
+            fmtBrc(p.finderBonusWei)
+          ];
+        }), T('暂无待成熟分成'), 5);
+      } else {
+        fillTable('m-pending-body', null, mv.ok ? T('暂无待成熟分成') : unavailMsg(mv, T('数据')), 5);
+      }
+
+      // worker 明细
+      if (wk.ok && Array.isArray(wk.body)) {
+        fillTable('m-workers-body', wk.body.map(function (w) {
+          return [
+            hexCell(w.workerId),
+            (w.engine === 'unknown' ? T('未知') : w.engine),
+            fmtHs(w.hashrateHs),
+            fmtInt(w.accepted),
+            fmtInt(w.stale),
+            (typeof w.lastShareSec === 'number' ? w.lastShareSec + T(' 秒前') : null),
+            (typeof w.warmState === 'string' ? (WARM_STATE[w.warmState] || w.warmState) : null)
+          ];
+        }), T('当前无活跃 worker（90 秒窗口内无 share）'), 7);
+      } else {
+        fillTable('m-workers-body', null, unavailMsg(wk, T('数据')), 7);
+      }
+    });
+  }
+
+  function lookup(addrRaw) {
+    var errEl = byId('addrErr');
+    var addr = String(addrRaw || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(addr)) {
+      errEl.textContent = T('地址格式不对：应为 64 位十六进制字符串（仅 0-9、a-f）。');
+      return;
+    }
+    errEl.textContent = '';
+    currentAddr = addr;
+    try { localStorage.setItem('brc_addr', addr); } catch (e) {}
+    refreshMiner();
+  }
+
+  // ── 总刷新 ──
+  function refreshAll() {
+    if (refreshing) return Promise.resolve();
+    refreshing = true;
+    var btn = byId('refreshBtn');
+    btn.disabled = true; btn.textContent = T('刷新中…');
+    return Promise.all([
+      getJSON('/health'),
+      getJSON('/stats'),
+      getJSON('/network'),
+      getJSON('/pool/pending'),
+      getJSON('/pool/blocks?limit=20'),
+      getJSON('/pool/payouts'),
+      getJSON('/version'),
+      getJSON('/series/pool')
+    ]).then(function (rs) {
+      renderHealth(rs[0]);
+      var notes = [];
+      renderStats(rs[1], notes);
+      renderNetwork(rs[2], notes);
+      // 用近 30 分钟 share 时序覆盖池算力/池占全网（比 /stats 的 6 分钟窗口稳，
+      // 收敛真实持续算力；矿工少时 6 分钟窗口噪声太大，会跳到实感不符的低值）。
+      renderSmoothedPoolHr(rs[7], rs[2]);
+      byId('poolNote').textContent = notes.join('；');
+      renderBlocks(rs[3], rs[4]);
+      renderPayouts(rs[5]);
+      renderVersion(rs[6]);
+      byId('f-updated').textContent = T('每 30 秒自动刷新 · 上次更新 ') +
+        new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      if (currentAddr) return refreshMiner();
+    }).finally(function () {
+      refreshing = false;
+      btn.disabled = false; btn.textContent = T('刷新');
+    });
+  }
+
+  // ── 事件绑定与启动 ──
+  byId('lookupForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    lookup(byId('addrInput').value);
+  });
+  byId('refreshBtn').addEventListener('click', function () { refreshAll(); });
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) refreshAll();
+  });
+  setInterval(function () { if (!document.hidden) refreshAll(); }, REFRESH_MS);
+
+  try {
+    var saved = localStorage.getItem('brc_addr');
+    if (saved && /^[0-9a-f]{64}$/.test(saved)) {
+      byId('addrInput').value = saved;
+      currentAddr = saved;
+    }
+  } catch (e) {}
+  refreshAll();
+
+  // ── 语言切换绑定 ──
+  (function () {
+    var b = document.getElementById('langBtn');
+    if (b) b.addEventListener('click', function () { setLang(LANG === 'en' ? 'zh' : 'en'); });
+    applyLang();
+  })();
+})();
+</script>
+
+</body>
+</html>

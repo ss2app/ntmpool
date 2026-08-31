@@ -391,7 +391,7 @@ window.NTM_CONFIG = {
             {
               id: 'connection', titleZh: '连接', titleEn: 'Connection',
               options: [
-                { aliases: ['-o', '--url', '--pool-url'], value: '<host:port>', descriptionZh: '矿池地址（可带 stratum+tcp:// 前缀）。本站 midstate 池：hk / hk3 / us / eur / sgp / ca.ntmminer.com:13333', descriptionEn: 'Pool address (may include the stratum+tcp:// prefix). This site\'s midstate pool: hk / hk3 / us / eur / sgp / ca.ntmminer.com:13333' },
+                { aliases: ['-o', '--url', '--pool-url'], value: '<host:port>', descriptionZh: '矿池地址（可带 stratum+tcp:// 前缀）。本站 midstate 池：hk / us / eur.ntmminer.com:13333', descriptionEn: 'Pool address (may include the stratum+tcp:// prefix). This site\'s midstate pool: hk / us / eur.ntmminer.com:13333' },
                 { aliases: ['-u', '--user', '--address'], value: '<wallet>', descriptionZh: '你的 MDS 地址（64 位十六进制；钱包显示 72 位则取前 64 位）', descriptionEn: 'Your MDS address (64 hex; if the wallet shows 72, use the first 64).' },
                 { aliases: ['--worker', '--rig-id'], value: '<名>', descriptionZh: 'worker 名（可选，多台机器时便于区分）', descriptionEn: 'Worker name (optional; tells your rigs apart).' },
                 { aliases: ['-p', '--pass'], value: '<pass>', defaultZh: 'x', defaultEn: 'x', descriptionZh: '登录密码（默认 x）', descriptionEn: 'Login password (default x).' },
@@ -709,15 +709,9 @@ window.NTM_CONFIG = {
       stratum: [
         { region: 'HK2', host: 'hk2.ntmminer.com', port: 5541, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'HK2', host: 'hk2.ntmminer.com', port: 5542, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
-        { region: 'HK3', host: 'hk3.ntmminer.com', port: 5541, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'HK3', host: 'hk3.ntmminer.com', port: 5542, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
         // 2026-08-02 新增三条 OVH 抗 DDoS 线路（德/新/加），端到端实测已通
-        { region: 'SGP', host: 'sgp.ntmminer.com', port: 5541, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'SGP', host: 'sgp.ntmminer.com', port: 5542, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
         { region: 'EUR', host: 'eur.ntmminer.com', port: 5541, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'EUR', host: 'eur.ntmminer.com', port: 5542, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
-        { region: 'CA', host: 'ca.ntmminer.com', port: 5541, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'CA', host: 'ca.ntmminer.com', port: 5542, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
       ],
       mining: {
         ntmAlgoFlag: 'rx/brva',
@@ -790,14 +784,8 @@ window.NTM_CONFIG = {
       stratum: [
         { region: 'HK', host: 'hk.ntmminer.com', port: 5561, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'HK', host: 'hk.ntmminer.com', port: 5562, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
-        { region: 'HK3', host: 'hk3.ntmminer.com', port: 5561, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'HK3', host: 'hk3.ntmminer.com', port: 5562, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
-        { region: 'SGP', host: 'sgp.ntmminer.com', port: 5561, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'SGP', host: 'sgp.ntmminer.com', port: 5562, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
         { region: 'DE', host: 'eur.ntmminer.com', port: 5561, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'DE', host: 'eur.ntmminer.com', port: 5562, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
-        { region: 'CA', host: 'ca.ntmminer.com', port: 5561, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'CA', host: 'ca.ntmminer.com', port: 5562, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
         { region: 'US', host: 'us.ntmminer.com', port: 5561, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'US', host: 'us.ntmminer.com', port: 5562, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
       ],
@@ -871,14 +859,8 @@ window.NTM_CONFIG = {
         { region: 'HK', host: 'hk.ntmminer.com', port: 7777, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
         { region: 'HK2', host: 'hk2.ntmminer.com', port: 3333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'HK2', host: 'hk2.ntmminer.com', port: 7777, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
-        { region: 'HK3', host: 'hk3.ntmminer.com', port: 3333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'HK3', host: 'hk3.ntmminer.com', port: 7777, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
-        { region: 'SG', host: 'sgp.ntmminer.com', port: 3333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'SG', host: 'sgp.ntmminer.com', port: 7777, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
         { region: 'DE', host: 'eur.ntmminer.com', port: 3333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'DE', host: 'eur.ntmminer.com', port: 7777, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
-        { region: 'CA', host: 'ca.ntmminer.com', port: 3333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'CA', host: 'ca.ntmminer.com', port: 7777, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
         { region: 'US', host: 'us.ntmminer.com', port: 3333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'US', host: 'us.ntmminer.com', port: 7777, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
       ],
@@ -938,11 +920,8 @@ window.NTM_CONFIG = {
       binaryUnits: null,
       stratum: [
         { region: 'HK', host: 'hk.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'HK3', host: 'hk3.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'US', host: 'us.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'DE', host: 'eur.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'SG', host: 'sgp.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'CA', host: 'ca.ntmminer.com', port: 13333, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
       ],
       mining: {
         ntmAlgoFlag: 'midstate',
@@ -1082,15 +1061,9 @@ window.NTM_CONFIG = {
       stratum: [
         { region: 'HK2', host: 'hk2.ntmminer.com', port: 8344, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'HK2', host: 'hk2.ntmminer.com', port: 8345, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
-        { region: 'HK3', host: 'hk3.ntmminer.com', port: 8344, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'HK3', host: 'hk3.ntmminer.com', port: 8345, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
         // 2026-08-02 新增三条 OVH 抗 DDoS 线路（德/新/加），端到端实测已通
-        { region: 'SGP', host: 'sgp.ntmminer.com', port: 8344, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'SGP', host: 'sgp.ntmminer.com', port: 8345, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
         { region: 'EUR', host: 'eur.ntmminer.com', port: 8344, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
         { region: 'EUR', host: 'eur.ntmminer.com', port: 8345, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
-        { region: 'CA', host: 'ca.ntmminer.com', port: 8344, mode: 'pool', label: { zh: 'VarDiff', en: 'VarDiff' }, tls: false },
-        { region: 'CA', host: 'ca.ntmminer.com', port: 8345, mode: 'solo', label: { zh: 'SOLO', en: 'SOLO' }, tls: false },
       ],
       mining: {
         ntmAlgoFlag: 'btc09',
