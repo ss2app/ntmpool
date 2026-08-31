@@ -9,7 +9,7 @@ window.NTM_CONFIG = {
     assets: {
       master: '/img/logo-ref.png',
       mark: '/img/ntm-mark.svg',
-      lockup: '/img/ntmminer-pools-light.svg',
+      lockup: '/img/ntmminer-pools-light.20260831.svg',
       favicon: '/img/favicon.svg',
       ogImage: '/img/og-ntmminer-pools.png',
     },
