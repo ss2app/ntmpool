@@ -1,7 +1,7 @@
 # NTMPool — 通用多币种矿池核心
 
 > 工厂级统一矿池核心。目标：**一套核心，接入所有币**，功能全面超越 miningcore。
-> 私有仓库：`scashcc/ntmpool`（闭源，只发二进制/镜像）。
+> 开源仓库：`ss2app/ntmpool`（MIT License，2026-09-23 起开源；此前为私有仓 `scashcc/ntmpool`，只发二进制/镜像）。
 
 ## 这个项目是什么
 
